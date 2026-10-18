@@ -1,0 +1,28 @@
+name: Build N1kroks Kona DEBUG drivers
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout pinned driver source
+        uses: actions/checkout@v4
+        with:
+          repository: WOA-Kona/Drivers
+          ref: 3dcdec0bd59e3e77be92629b2ed9e095ae6e19e8
+          path: kona-source
+      - name: Build ARM64 DEBUG packages
+        shell: pwsh
+        run: ./Resources/Scripts/build_kona_drivers.ps1 -Source kona-source -Destination kona-packages
+      - name: Upload packages and build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: N1kroks-Kona-ARM64-DEBUG-3dcdec0
+          path: kona-packages/
+          if-no-files-found: error
+          retention-days: 30
