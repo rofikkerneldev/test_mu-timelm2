@@ -1,0 +1,24 @@
+# LG V60 ThinQ 5G timelm / JP / rev_10 initial bring-up
+# Packaging adapted from N1kroks/Mu-Silicium e3db358e29ca5cf0050f896208758ed018ec92ab:
+# header v1 for boot-from-partition compatibility. DTB appended to gzip kernel.
+# Device-tested DEBUG firmware: menu/GOP, internal boot and ARM64 WinPE work.
+# Windows 22H2 Specialize/OOBE completion and USB mass storage remain unresolved.
+[status]
+model_count = 1
+
+[boot_shim]
+requires_kernel_header = true
+
+[uefi_fd]
+base = 0x9FC00000
+size = 0x300000
+
+[boot_image_kernel]
+kernel_compression = "gzip"
+append_dtb = true
+
+[boot_image]
+header_version = 1
+base = 0
+pagesize = 4096
+cmdline = "androidboot.hardware=timelm androidboot.product.hardware.sku=fg androidboot.vendor.lge.sku_carrier=JP androidboot.vendor.lge.model.name=LM-V600 androidboot.vendor.lge.hw.revision=rev_10 androidboot.vendor.lge.hw.subrev=subrev_1 lge.touchid=0"

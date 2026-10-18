@@ -1,5 +1,5 @@
 diff --git a/MdeModulePkg/Application/BootManagerMenuApp/BootManagerMenu.c b/MdeModulePkg/Application/BootManagerMenuApp/BootManagerMenu.c
-index ef19319614..72b399bfa0 100644
+index 5bba6ea816..4eba6fc901 100644
 --- a/MdeModulePkg/Application/BootManagerMenuApp/BootManagerMenu.c
 +++ b/MdeModulePkg/Application/BootManagerMenuApp/BootManagerMenu.c
 @@ -6,6 +6,8 @@ SPDX-License-Identifier: BSD-2-Clause-Patent
@@ -106,11 +106,39 @@ index ef19319614..72b399bfa0 100644
  }
  
  /**
+@@ -1118,15 +1139,27 @@ BootManagerMenuEntry (
+         case CHAR_NULL:
+           switch (Key.ScanCode) {
+             case SCAN_UP:
++            case SCAN_PAGE_UP:
++            case SCAN_HOME:
+               SelectItem = BootMenuData.SelectItem == 0 ? BootMenuData.ItemCount - 1 : BootMenuData.SelectItem - 1;
+               BootMenuSelectItem (SelectItem, &BootMenuData);
+               break;
+ 
+             case SCAN_DOWN:
++            case SCAN_PAGE_DOWN:
++            case SCAN_END:
+               SelectItem = BootMenuData.SelectItem == BootMenuData.ItemCount - 1 ? 0 : BootMenuData.SelectItem + 1;
+               BootMenuSelectItem (SelectItem, &BootMenuData);
+               break;
+ 
++            case 0x102:
++              gST->ConOut->ClearScreen (gST->ConOut);
++              BdsSetConsoleMode (FALSE);
++              BootFromSelectOption (BootOption, BootOptionCount, BootMenuData.SelectItem);
++              BdsSetConsoleMode (TRUE);
++              DrawBootPopupMenu (&BootMenuData);
++              break;
++
+             case SCAN_ESC:
+               gST->ConOut->ClearScreen (gST->ConOut);
+               ExitApplication = TRUE;
 diff --git a/MdeModulePkg/Application/BootManagerMenuApp/BootManagerMenu.h b/MdeModulePkg/Application/BootManagerMenuApp/BootManagerMenu.h
-index 876237df18..2aa50e256e 100644
+index 697a44aeae..8b45ad193d 100644
 --- a/MdeModulePkg/Application/BootManagerMenuApp/BootManagerMenu.h
 +++ b/MdeModulePkg/Application/BootManagerMenuApp/BootManagerMenu.h
-@@ -23,7 +23,7 @@ SPDX-License-Identifier: BSD-2-Clause-Patent
+@@ -22,7 +22,7 @@ SPDX-License-Identifier: BSD-2-Clause-Patent
  #include <Protocol/BootLogo.h>
  
  #define TITLE_TOKEN_COUNT  1

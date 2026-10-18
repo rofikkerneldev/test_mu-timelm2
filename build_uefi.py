@@ -335,6 +335,7 @@ def create_android_boot_img (ctx: BuildContext, image_kernel_config: dict, image
     # mkbootimg Argument Map
     argument_map = {
         "base":           "--base",
+        "pagesize":       "--pagesize",
         "cmdline":        "--cmdline",
         "dtb":            "--dtb",
         "dtb_offset":     "--dtb_offset",
@@ -353,7 +354,7 @@ def create_android_boot_img (ctx: BuildContext, image_kernel_config: dict, image
         value = image_config.get (key)
 
         # Append Argument Value
-        if value:
+        if value is not None:
             cmd.append (option)
             cmd.append (str (value))
 
