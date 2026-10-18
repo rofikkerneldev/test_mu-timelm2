@@ -46,6 +46,57 @@ DefinitionBlock ("", "DSDT", 2, "LGE   ", "TIMELM  ", 0x00000001)
                 Name (_RMV, Zero)
             }
         }
+        // N1kroks WOA-Kona/Drivers 3dcdec0 contract.
+        // One mapped TLMM span is required by the driver's tile-offset model.
+        Device (GPIO)
+        {
+            Name (_HID, "KONA1001")
+            Name (_UID, Zero)
+            Name (_CCA, Zero)
+            Name (_CRS, ResourceTemplate ()
+            {
+                Memory32Fixed (ReadWrite, 0x0F100000, 0x00B00000)
+                // Three logical 64-pin banks share the DT SPI 208 / GSIV 240.
+                Interrupt (ResourceConsumer, Level, ActiveHigh, Shared) { 240 }
+                Interrupt (ResourceConsumer, Level, ActiveHigh, Shared) { 240 }
+                Interrupt (ResourceConsumer, Level, ActiveHigh, Shared) { 240 }
+            })
+        }
+        Device (SPMI)
+        {
+            Name (_HID, "KONA1002")
+            Name (_UID, Zero)
+            Name (_CCA, Zero)
+            Name (_CRS, ResourceTemplate ()
+            {
+                // Ordered CORE, CHNLS, OBSRVR, INTR, CNFG as required by SPMI.sys.
+                Memory32Fixed (ReadWrite, 0x0C440000, 0x00001100)
+                Memory32Fixed (ReadWrite, 0x0C600000, 0x02000000)
+                Memory32Fixed (ReadWrite, 0x0E600000, 0x00100000)
+                Memory32Fixed (ReadWrite, 0x0E700000, 0x000A0000)
+                Memory32Fixed (ReadWrite, 0x0C40A000, 0x00026000)
+            })
+        }
+        Device (PMIC)
+        {
+            Name (_HID, "KONA1003")
+            Name (_UID, Zero)
+            Name (_DEP, Package () { \_SB.SPMI })
+            // Populated SID pairs from timelm Recovery's live SPMI device tree.
+            // Subtypes are read by PMIC.sys; no PMK8002 at SID 6/7 is assumed.
+            Method (PCFG, 0, NotSerialized)
+            {
+                Return (Package ()
+                {
+                    5,
+                    Package () { 0x00, 0x01 }, // PM8150
+                    Package () { 0x02, 0x03 }, // PM8150B
+                    Package () { 0x04, 0x05 }, // PM8150L
+                    Package () { 0x08, 0x09 }, // PMXPRAIRIE / modem PMIC
+                    Package () { 0x0A, 0x0B }  // PM8009
+                })
+            }
+        }
         Device (CPU0)
         {
             Name (_HID, "ACPI0007")
