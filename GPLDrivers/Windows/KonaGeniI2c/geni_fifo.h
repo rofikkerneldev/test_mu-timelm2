@@ -56,6 +56,7 @@ typedef struct GI_IO {
     void (*Pause)(void *);
     GI_U32 TxDepth, RxDepth;
     int Ready;
+    GI_U32 ClockSelect;
 } GI_IO;
 
 enum GI_RESULT GiInitialize(GI_IO *io);

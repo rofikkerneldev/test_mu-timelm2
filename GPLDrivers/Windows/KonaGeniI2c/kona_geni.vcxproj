@@ -37,6 +37,8 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="driver.c" /><ClCompile Include="geni_fifo.c" />
+    <ClCompile Include="board_windows.c" /><ClCompile Include="touch_clock.c" /><ClCompile Include="touch_board.c" />
+    <ClInclude Include="board_windows.h" /><ClInclude Include="touch_clock.h" /><ClInclude Include="touch_board.h" />
     <ClInclude Include="geni_fifo.h" /><Inf Include="kona_geni.inx" />
     <FilesToPackage Include="$(TargetPath)" />
   </ItemGroup>

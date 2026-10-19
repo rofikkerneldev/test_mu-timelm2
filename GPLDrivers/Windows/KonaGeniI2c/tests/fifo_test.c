@@ -83,7 +83,7 @@ static void Pause(void *context)
 }
 static GI_IO Setup(MOCK *m)
 {
-    GI_IO io = {m, Read, Write, Now, Cancel, Pause, 0, 0, 0};
+    GI_IO io = {m, Read, Write, Now, Cancel, Pause, 0, 0, 0, 0};
     memset(m, 0, sizeof(*m));
     m->Regs[GI_FW_REV / 4] = 3u << 8;
     m->Regs[GI_HW_TX / 4] = m->Regs[GI_HW_RX / 4] = (32u << 24) | (4u << 16);

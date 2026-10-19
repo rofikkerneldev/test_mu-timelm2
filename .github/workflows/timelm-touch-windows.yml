@@ -1,0 +1,83 @@
+name: Build native Windows timelm touch bring-up
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'GPLDrivers/Windows/**'
+      - 'Resources/DeviceOverlays/timelm/Drivers/KonaGPIO/**'
+      - 'Resources/Scripts/build_kona_drivers.ps1'
+      - 'Platforms/LG/timelmPkg/Experimental/TouchWindows.asl'
+      - '.github/workflows/timelm-touch-windows.yml'
+  pull_request:
+    paths:
+      - 'GPLDrivers/Windows/**'
+      - 'Resources/DeviceOverlays/timelm/Drivers/KonaGPIO/**'
+      - 'Resources/Scripts/build_kona_drivers.ps1'
+      - 'Platforms/LG/timelmPkg/Experimental/TouchWindows.asl'
+      - '.github/workflows/timelm-touch-windows.yml'
+permissions:
+  contents: read
+jobs:
+  windows-host-and-client:
+    runs-on: windows-2022
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - shell: pwsh
+        run: |
+          ./Resources/Scripts/build_geni_i2c.ps1
+          ./Resources/Scripts/build_sw42902_touch.ps1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: timelm-native-touch-host-and-client
+          path: |
+            GPLDrivers/Windows/KonaGeniI2c/out/
+            GPLDrivers/Windows/Sw42902Touch/driver/kmdf/out/
+          if-no-files-found: warn
+  windows-gpio:
+    runs-on: windows-2022
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: WOA-Kona/Drivers
+          ref: 3dcdec0bd59e3e77be92629b2ed9e095ae6e19e8
+          path: kona-source
+      - shell: pwsh
+        run: ./Resources/Scripts/build_kona_drivers.ps1 -Source ./kona-source -Destination ./kona-packages -TimelmTouchFixes
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: timelm-native-touch-gpio
+          path: kona-packages/
+          if-no-files-found: warn
+  lifecycle-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test clock rollback, power ordering and failed cleanup
+        run: |
+          gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+            GPLDrivers/Windows/KonaGeniI2c/tests/board_test.c \
+            GPLDrivers/Windows/KonaGeniI2c/touch_clock.c \
+            GPLDrivers/Windows/KonaGeniI2c/touch_board.c -o /tmp/touch-board-test
+          /tmp/touch-board-test
+          gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+            GPLDrivers/Windows/KonaGeniI2c/tests/fifo_test.c \
+            GPLDrivers/Windows/KonaGeniI2c/geni_fifo.c -o /tmp/touch-fifo-test
+          /tmp/touch-fifo-test
+          gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+            GPLDrivers/Windows/Sw42902Touch/tests/protocol_test.c -o /tmp/touch-protocol-test
+          /tmp/touch-protocol-test
+      - name: Compile disabled native Windows board ACPI
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y acpica-tools
+          iasl -ve -p /tmp/TouchWindows Platforms/LG/timelmPkg/Experimental/TouchWindows.asl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: timelm-native-touch-acpi-disabled
+          path: /tmp/TouchWindows.aml
+          if-no-files-found: error

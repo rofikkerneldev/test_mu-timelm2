@@ -6,12 +6,14 @@
 #include <spbcx.h>
 #include <reshub.h>
 #include "geni_fifo.h"
+#include "board_windows.h"
 
 typedef struct DEVICE_CONTEXT {
     PUCHAR Registers;
     GI_IO Io;
     SPBREQUEST CurrentRequest;
     BOOLEAN HandoffVerified, Started;
+    GENI_BOARD Board;
 } DEVICE_CONTEXT;
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DEVICE_CONTEXT, GetDeviceContext)
 
@@ -115,31 +117,46 @@ NTSTATUS GeniPrepare(WDFDEVICE device, WDFCMRESLIST raw, WDFCMRESLIST translated
 {
     DEVICE_CONTEXT *context = GetDeviceContext(device);
     WDFKEY key;
-    ULONG verified = 0, sourceHz = 0, i, memoryCount = 0;
+    ULONG verified = 0, sourceHz = 0, native = 0, i, memoryCount = 0;
     NTSTATUS status;
     UNICODE_STRING handoffName = RTL_CONSTANT_STRING(L"FirmwareHandoffVerified");
     UNICODE_STRING clockName = RTL_CONSTANT_STRING(L"SourceClockHz");
+    UNICODE_STRING nativeName = RTL_CONSTANT_STRING(L"NativeBoardInitEnabled");
     PCM_PARTIAL_RESOURCE_DESCRIPTOR memory = NULL;
     UNREFERENCED_PARAMETER(raw);
-    /* This gate precedes ALL MMIO reads. It is intentionally off in the INF.
-     * A successful build does not establish clocks, ownership or pinmux. */
+    GeniRecord(device, L"TimelmHostStage", 1);
+    /* Native board init is a separate opt-in from inherited firmware state.
+     * Both paths are disabled in the default INF and require real ACPI. */
     status = WdfDeviceOpenRegistryKey(device, PLUGPLAY_REGKEY_DEVICE,
         KEY_READ, WDF_NO_OBJECT_ATTRIBUTES, &key);
     if (!NT_SUCCESS(status)) return status;
+    (void)WdfRegistryQueryULong(key, &nativeName, &native);
     status = WdfRegistryQueryULong(key, &handoffName, &verified);
     if (NT_SUCCESS(status)) status = WdfRegistryQueryULong(key, &clockName, &sourceHz);
     WdfRegistryClose(key);
-    if (!NT_SUCCESS(status) || verified != 1 || sourceHz != 19200000u)
+    if (native != 1 && (!NT_SUCCESS(status) || verified != 1 || sourceHz != 19200000u)) {
+        GeniRecord(device, L"TimelmHostStatus", (ULONG)STATUS_DEVICE_NOT_READY);
         return STATUS_DEVICE_NOT_READY;
+    }
     for (i = 0; i < WdfCmResourceListGetCount(translated); ++i) {
         PCM_PARTIAL_RESOURCE_DESCRIPTOR r = WdfCmResourceListGetDescriptor(translated, i);
-        if (r && r->Type == CmResourceTypeMemory) { memory = r; ++memoryCount; }
+        if (r && r->Type == CmResourceTypeMemory) {
+            ++memoryCount;
+            if (r->u.Memory.Start.QuadPart == 0xa94000) memory = r;
+        }
     }
-    if (memoryCount != 1 || memory->u.Memory.Start.QuadPart != 0xa94000 ||
+    if (memoryCount != (native == 1 ? 3u : 1u) || !memory ||
         memory->u.Memory.Length != 0x4000) return STATUS_DEVICE_CONFIGURATION_ERROR;
+    if (native == 1) {
+        status = GeniBoardPrepare(&context->Board, device, translated);
+        if (!NT_SUCCESS(status)) return status;
+    }
     context->Registers = MmMapIoSpaceEx(memory->u.Memory.Start, 0x4000,
         PAGE_READWRITE | PAGE_NOCACHE);
-    if (!context->Registers) return STATUS_INSUFFICIENT_RESOURCES;
+    if (!context->Registers) {
+        if (context->Board.Native) GeniBoardRelease(&context->Board);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
     context->HandoffVerified = TRUE;
     context->Io.Context = context;
     context->Io.Read = ReadRegister;
@@ -147,6 +164,8 @@ NTSTATUS GeniPrepare(WDFDEVICE device, WDFCMRESLIST raw, WDFCMRESLIST translated
     context->Io.NowUs = NowUs;
     context->Io.Cancelled = Cancelled;
     context->Io.Pause = Pause;
+    context->Started = FALSE;
+    GeniRecord(device, L"TimelmHostStage", 2);
     return STATUS_SUCCESS;
 }
 
@@ -160,6 +179,7 @@ NTSTATUS GeniRelease(WDFDEVICE device, WDFCMRESLIST resources)
         MmUnmapIoSpace(context->Registers, 0x4000);
         context->Registers = NULL;
     }
+    if (context->Board.Native) GeniBoardRelease(&context->Board);
     return STATUS_SUCCESS;
 }
 
@@ -167,21 +187,43 @@ NTSTATUS GeniD0Entry(WDFDEVICE device, WDF_POWER_DEVICE_STATE previous)
 {
     DEVICE_CONTEXT *context = GetDeviceContext(device);
     enum GI_RESULT result;
+    NTSTATUS status;
+    ULONG select = 0;
     UNREFERENCED_PARAMETER(previous);
     if (!context->HandoffVerified || context->Started) return STATUS_DEVICE_NOT_READY;
+    if (context->Board.Native) {
+        status = GeniBoardStart(&context->Board, context->Registers, &select);
+        if (!NT_SUCCESS(status)) return status;
+    }
+    context->Io.ClockSelect = select;
+    GeniRecord(device, L"TimelmHostStage", 3);
+    GeniRecord(device, L"TimelmGeniFirmware", ReadRegister(context, GI_FW_REV));
+    GeniRecord(device, L"TimelmGeniFifoDisabled", ReadRegister(context, GI_IF_DISABLE));
     result = GiInitialize(&context->Io);
+    if (result == GiOk && context->Board.Native &&
+        !NT_SUCCESS(GeniBoardConfirmClock(&context->Board))) {
+        WriteRegister(context, GI_IRQ_ENABLE, 0);
+        context->Io.Ready = 0;
+        result = GiNotReady;
+    }
     if (result == GiOk) context->Started = TRUE;
-    return ResultStatus(result);
+    else if (context->Board.Native) (void)GeniBoardStop(&context->Board);
+    status = ResultStatus(result);
+    GeniRecord(device, L"TimelmHostStage", result == GiOk ? 4 : 3);
+    GeniRecord(device, L"TimelmHostStatus", (ULONG)status);
+    return status;
 }
 NTSTATUS GeniD0Exit(WDFDEVICE device, WDF_POWER_DEVICE_STATE next)
 {
     DEVICE_CONTEXT *context = GetDeviceContext(device);
     UNREFERENCED_PARAMETER(next);
     if (context->Io.Ready) {
+        if (ReadRegister(context, GI_STATUS) & 1u) (void)GiAbort(&context->Io);
         WriteRegister(context, GI_IRQ_ENABLE, 0);
         WriteRegister(context, GI_IRQ_GATE, 0);
         context->Io.Ready = 0;
     }
+    if (context->Board.Native) return GeniBoardStop(&context->Board);
     return STATUS_SUCCESS;
 }
 

@@ -1,7 +1,8 @@
 param(
     [Parameter(Mandatory=$true)][string]$Source,
     [Parameter(Mandatory=$true)][string]$Destination,
-    [switch]$TimelmGpioFixes
+    [switch]$TimelmGpioFixes,
+    [switch]$TimelmTouchFixes
 )
 $ErrorActionPreference = 'Stop'
 $Source = (Resolve-Path -LiteralPath $Source).Path
@@ -11,14 +12,19 @@ $expected = '3dcdec0bd59e3e77be92629b2ed9e095ae6e19e8'
 $actual = (& git -C $Source rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $actual -ne $expected) { throw "Unexpected driver source: $actual" }
 $patchMetadata = @()
-if ($TimelmGpioFixes) {
+if ($TimelmGpioFixes -or $TimelmTouchFixes) {
     $overlay = Join-Path $PSScriptRoot '../DeviceOverlays/timelm/Drivers/KonaGPIO'
-    $patch = (Resolve-Path -LiteralPath (Join-Path $overlay 'timelm-gpio.patch')).Path
-    $helper = (Resolve-Path -LiteralPath (Join-Path $overlay 'PinConfig.h')).Path
-    $targetHelper = Join-Path $Source 'src/GPIO/PinConfig.h'
-    if ((Test-Path -LiteralPath $targetHelper) -and
-        (Get-FileHash -LiteralPath $helper).Hash -ne (Get-FileHash -LiteralPath $targetHelper).Hash) {
-        throw 'Existing PinConfig.h differs from the timelm helper'
+    $patchName = if ($TimelmTouchFixes) { 'timelm-touch.patch' } else { 'timelm-gpio.patch' }
+    $patch = (Resolve-Path -LiteralPath (Join-Path $overlay $patchName)).Path
+    $helpers = @('PinConfig.h')
+    if ($TimelmTouchFixes) { $helpers += 'TouchBus.h' }
+    foreach ($name in $helpers) {
+        $helper = (Resolve-Path -LiteralPath (Join-Path $overlay $name)).Path
+        $targetHelper = Join-Path $Source ('src/GPIO/' + $name)
+        if ((Test-Path -LiteralPath $targetHelper) -and
+            (Get-FileHash -LiteralPath $helper).Hash -ne (Get-FileHash -LiteralPath $targetHelper).Hash) {
+            throw "Existing $name differs from the timelm helper"
+        }
     }
     & git -C $Source apply --check -- $patch 2>$null
     if ($LASTEXITCODE -eq 0) {
@@ -28,8 +34,13 @@ if ($TimelmGpioFixes) {
         & git -C $Source apply --reverse --check -- $patch 2>$null
         if ($LASTEXITCODE -ne 0) { throw 'GPIO source is neither clean nor already patched as expected' }
     }
-    Copy-Item -LiteralPath $helper -Destination $targetHelper
-    $patchMetadata = @($patch, $helper) | ForEach-Object {
+    $metadataFiles = @($patch)
+    foreach ($name in $helpers) {
+        $helper = (Resolve-Path -LiteralPath (Join-Path $overlay $name)).Path
+        Copy-Item -LiteralPath $helper -Destination (Join-Path $Source ('src/GPIO/' + $name))
+        $metadataFiles += $helper
+    }
+    $patchMetadata = $metadataFiles | ForEach-Object {
         [ordered]@{name=[IO.Path]::GetFileName($_);sha256=(Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant()}
     }
 }

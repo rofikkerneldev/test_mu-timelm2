@@ -5,6 +5,7 @@ enum GI_RESULT GiInitialize(GI_IO *io)
 {
     GI_U32 tx, rx;
     io->Ready = 0;
+    if (io->ClockSelect > 7u) return GiInvalid;
     /* Caller must establish a powered, clocked, owned MMIO domain BEFORE
      * even these reads. Register values cannot prove that prerequisite. */
     if (((io->Read(io->Context, GI_FW_REV) >> 8) & 255u) != 3u ||
@@ -36,7 +37,7 @@ enum GI_RESULT GiInitialize(GI_IO *io)
     io->Write(io->Context, GI_RX_RFR, io->RxDepth);
     io->Write(io->Context, GI_TX_WM, 1);
     /* Fixed 100 kHz, only after a verified 19.2 MHz firmware handoff. */
-    io->Write(io->Context, GI_CLK_SEL, 0);
+    io->Write(io->Context, GI_CLK_SEL, io->ClockSelect);
     io->Write(io->Context, GI_CLK_CFG, (7u << 4) | 1u);
     io->Write(io->Context, GI_SCL, (10u << 20) | (12u << 10) | 26u);
     io->Write(io->Context, GI_IRQ_CLEAR, 0xffffffffu);

@@ -18,6 +18,9 @@ kona_geni.sys
 [Geni.NT.HW]
 AddReg=Handoff
 [Handoff]
+; Windows clock/GPIO bring-up; requires the additive GPIO touch interface,
+; exact board ACPI resources and explicit hardware experiment activation.
+HKR,,NativeBoardInitEnabled,0x00010001,0
 ; Never enable until firmware has an independently validated bus handoff.
 HKR,,FirmwareHandoffVerified,0x00010001,0
 HKR,,SourceClockHz,0x00010001,0
