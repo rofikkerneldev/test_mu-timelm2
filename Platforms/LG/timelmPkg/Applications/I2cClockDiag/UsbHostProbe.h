@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 // Minimal ABI prefix, not a copy of the vendor implementation. See USB-HOST.md.
+#include <Protocol/PciIo.h>
+
 typedef struct TIMELM_USB_CONFIG TIMELM_USB_CONFIG;
 typedef EFI_STATUS (EFIAPI *USB_CORE_BASE)(TIMELM_USB_CONFIG *, UINT32, UINTN *);
 typedef EFI_STATUS (EFIAPI *USB_HOST_CONFIG)(TIMELM_USB_CONFIG *, UINT32, UINT32, UINT32 *);
@@ -84,6 +86,57 @@ STATIC EFI_STATUS UsbHostCount (EFI_SYSTEM_TABLE *System, UINTN *Count)
   return Status;
 }
 
+// Read protocol metadata only: no driver connection, protocol opens or PCI reads.
+STATIC VOID UsbConfigSnapshot (EFI_SYSTEM_TABLE *System, CONST CHAR8 *Phase)
+{
+  EFI_BOOT_SERVICES *Bs=System->BootServices;
+  EFI_HANDLE *Handles=NULL;
+  UINTN Count=0, I;
+  EFI_STATUS Status;
+  STATIC EFI_GUID PciGuid=EFI_PCI_IO_PROTOCOL_GUID;
+  Text("USB config snapshot phase="); Text(Phase); Text("\r\n");
+  if (!Bs->LocateHandleBuffer || !Bs->HandleProtocol || !Bs->FreePool) return;
+  Status=Bs->LocateHandleBuffer(ByProtocol,&mUsbConfigGuid,NULL,&Count,&Handles);
+  Text("QCOM config locate status="); Hex(Status); Text(" count="); Hex(Count); Text("\r\n");
+  if (!EFI_ERROR(Status) && Handles) {
+    for (I=0; I<Count && I<8; ++I) {
+      TIMELM_USB_CONFIG *Config=NULL;
+      EFI_OPEN_PROTOCOL_INFORMATION_ENTRY *Entries=NULL;
+      UINTN EntryCount=0, J, Drivers=0, Children=0;
+      VOID *Pci=NULL;
+      Status=Bs->HandleProtocol(Handles[I],&mUsbConfigGuid,(VOID **)&Config);
+      Text("  instance="); Hex(I); Text(" status="); Hex(Status);
+      if (!EFI_ERROR(Status) && Config) {
+        Text(" revision="); Hex(Config->Revision);
+        if (Config->Revision==0x10005) {
+          Text(" core="); Hex(Config->CoreNum); Text(" mode="); Hex(Config->ModeType);
+        }
+      }
+      Text("\r\n");
+      Status=Bs->HandleProtocol(Handles[I],&PciGuid,&Pci);
+      Text("    same-handle PCI_IO status="); Hex(Status); Text("\r\n");
+      if (!Bs->OpenProtocolInformation) continue;
+      Status=Bs->OpenProtocolInformation(Handles[I],&mUsbConfigGuid,&Entries,&EntryCount);
+      if (!EFI_ERROR(Status) && Entries) {
+        for (J=0; J<EntryCount && J<32; ++J) {
+          if (Entries[J].Attributes & EFI_OPEN_PROTOCOL_BY_DRIVER) ++Drivers;
+          if (Entries[J].Attributes & EFI_OPEN_PROTOCOL_BY_CHILD_CONTROLLER) ++Children;
+        }
+      }
+      Text("    QCOM opens status="); Hex(Status); Text(" entries="); Hex(EntryCount);
+      Text(" drivers="); Hex(Drivers); Text(" children="); Hex(Children); Text("\r\n");
+      if (EntryCount>32) Text("    Open entries limited to first 32.\r\n");
+      if (Entries) Bs->FreePool(Entries);
+    }
+    if (Count>8) Text("QCOM instances limited to first 8.\r\n");
+  }
+  if (Handles) Bs->FreePool(Handles);
+  Handles=NULL; Count=0;
+  Status=Bs->LocateHandleBuffer(ByProtocol,&PciGuid,NULL,&Count,&Handles);
+  Text("Global PCI_IO locate status="); Hex(Status); Text(" count="); Hex(Count); Text("\r\n");
+  if (Handles) Bs->FreePool(Handles);
+}
+
 STATIC VOID UsbOverrideSnapshot (EFI_SYSTEM_TABLE *System)
 {
   STATIC CONST CHAR16 *Names[]={L"UsbConfigPrimaryPort",L"UsbConfigSecondaryPort",L"EnableSLTLoopback",L"UsbFastbootSecPort"};
@@ -137,11 +190,13 @@ STATIC EFI_STATUS ExercisePrimaryHost (EFI_HANDLE Image, EFI_SYSTEM_TABLE *Syste
   Status=UsbHostCount(System,&Hosts);
   Text("Before request host count status="); Hex(Status); Text(" count="); Hex(Hosts); Text("\r\n");
   if (EFI_ERROR(Status) || Hosts!=0) return EFI_SUCCESS;
+  UsbConfigSnapshot(System,"before-start");
   Text("NEXT: native StartController(core=0,mode=1); temporary test, then cleanup.\r\n");
   Status=Checkpoint(Image);
   if (EFI_ERROR(Status)) { Text("Checkpoint failed; no host request made.\r\n"); return EFI_SUCCESS; }
   Status=Config->StartController(Config,0,1);
   Text("Start xHCI host result="); Hex(Status); Text("\r\n");
+  UsbConfigSnapshot(System,"after-start");
   if (!EFI_ERROR(Status)) {
     (VOID)System->BootServices->Stall(3000000);
     QueryUsb(System);
@@ -151,6 +206,7 @@ STATIC EFI_STATUS ExercisePrimaryHost (EFI_HANDLE Image, EFI_SYSTEM_TABLE *Syste
   Text("Stop transient host result="); Hex(StopStatus); Text("\r\n");
   RestoreStatus=Config->StartController(Config,0,4);
   Text("Restore primary peripheral result="); Hex(RestoreStatus); Text("\r\n");
+  UsbConfigSnapshot(System,"after-cleanup");
   CountStatus=UsbHostCount(System,&Hosts);
   Text("After cleanup host count status="); Hex(CountStatus); Text(" count="); Hex(Hosts); Text("\r\n");
   if ((EFI_ERROR(StopStatus) && StopStatus!=EFI_NOT_STARTED) || EFI_ERROR(RestoreStatus) ||
@@ -164,7 +220,7 @@ STATIC EFI_STATUS ProbePrimaryUsbHost (EFI_HANDLE Image, EFI_SYSTEM_TABLE *Syste
   TIMELM_USB_CONFIG *Config=NULL;
   EFI_STATUS Status;
   BOOLEAN Owner;
-  Text("timelm transient primary USB host probe v2\r\n");
+  Text("timelm transient primary USB host probe v3\r\n");
   UsbOverrideSnapshot(System);
   if (!System->BootServices->LocateHandleBuffer || !System->BootServices->FreePool) return EFI_SUCCESS;
   Status=System->BootServices->LocateProtocol(&mUsbConfigGuid,NULL,(VOID **)&Config);

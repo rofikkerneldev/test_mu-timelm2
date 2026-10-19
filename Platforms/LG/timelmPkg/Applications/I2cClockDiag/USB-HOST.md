@@ -91,5 +91,37 @@ preexisting hosts, checkpoint failure, native errors, absent host after a succes
 return, cleanup failure and residual hosts. The host-enabled once variant also
 runs restore-before-query, shutdown-before-Windows (zero LoadImage/StartImage
 calls), corrupted backup and restore-failure tests. The default getter-only
-once app retains its Windows chainload behavior. A physical host request using
-the corrected dispatcher gate remains pending.
+once app retains its Windows chainload behavior.
+
+## Physical v2 result and v3 observability
+
+The 6ae7a04 v2 run accepted the known dispatcher, reported two cores, host/device
+support mask 0x18, SSUSB1 type 5 and base 0xA600000. StartController(0,1)
+returned EFI_SUCCESS, but both USB2_HC and USB_IO remained absent after the
+three-second wait. StopController(0,1) and peripheral restore returned success;
+the final host count was zero. The shutdown checkpoint was saved and both boot
+entry files subsequently matched the original Windows SHA256.
+
+The user clarified that OTG was absent during that run. The next boot with
+OTG attached reached Windows because the one-shot launcher had already restored
+the original entry files. Therefore v2 does not establish behavior with an
+attached OTG peripheral; a repeat requires staging the launcher again.
+
+Version 3 retains the same request, guards, teardown and firmware-only ending.
+It adds read-only snapshots before start, immediately after start, and after
+cleanup: QCOM protocol instance revisions/core/mode, same-handle PCI_IO presence,
+and counts of BY_DRIVER/BY_CHILD_CONTROLLER open records. It also records the
+global PCI_IO handle count, which is not a USB-specific count. These snapshots
+do not open/connect protocols or call PCI configuration accessors. Traversal is
+bounded to eight QCOM instances and 32 open records per instance; unsupported
+revisions are logged without accessing the private core/mode fields.
+
+These observations can distinguish a retained peripheral descriptor from a
+host descriptor with no emulation driver or no published host controller. They
+do not by themselves prove Type-C role, electrical VBUS or a working mouse.
+The Qualcomm reference's static configuration can override requested mode;
+that is a possible explanation to investigate, not a conclusion from v2.
+
+For the next physical trial, attach OTG and the mouse before choosing the
+Windows boot entry. Wait for shutdown, then return to mass storage for logs.
+The launcher runs once, including when no peripheral was attached.

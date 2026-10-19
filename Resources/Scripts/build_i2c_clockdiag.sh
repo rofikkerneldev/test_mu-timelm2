@@ -84,7 +84,7 @@ assert struct.unpack_from('<II', data, pe+24+112+8) == (0, 0)
 metadata.update(sha256=hashlib.sha256(data).hexdigest(), size=len(data),
     purpose='restore Windows entries, transient primary USB host test, teardown and shutdown before Windows',
     windows_reference=json.load(open('Platforms/LG/timelmPkg/Applications/I2cClockDiag/WindowsBootReference.json')),
-    log='timelm-usb-hostprobe.txt', probe_version=2, firmware_only=True, requests_shutdown=True)
+    log='timelm-usb-hostprobe.txt', probe_version=3, firmware_only=True, requests_shutdown=True)
 (out / 'usb-host-probe.json').write_text(json.dumps(metadata, indent=2))
 print(json.dumps(metadata))
 PY

@@ -89,10 +89,64 @@ STATIC VOID TestOwner(VOID)
   mConfig.StartController=(USB_CONTROLLER)(Image+0x14f0); assert(!UsbOwnerMatches(&mConfig,Image,0x17000));
   free(Image);
 }
+
+STATIC int mTopology, mTopologyReads;
+STATIC EFI_STATUS EFIAPI TopologyLocate(EFI_LOCATE_SEARCH_TYPE Type, EFI_GUID *Guid,
+ VOID *Key, UINTN *Count, EFI_HANDLE **Handles)
+{
+  UINTN I;
+  (VOID)Type; (VOID)Key;
+  *Count=memcmp(Guid,&mUsbConfigGuid,sizeof(*Guid))==0 && mTopology==2 ? 10 : 1;
+  *Handles=malloc(*Count * sizeof(**Handles)); assert(*Handles); ++mAlloc;
+  for (I=0; I<*Count; ++I) (*Handles)[I]=(EFI_HANDLE)1;
+  return mTopology==3 ? EFI_DEVICE_ERROR : EFI_SUCCESS;
+}
+STATIC EFI_STATUS EFIAPI TopologyHandle(EFI_HANDLE H, EFI_GUID *Guid, VOID **P)
+{
+  (VOID)H; *P=NULL;
+  if (memcmp(Guid,&mUsbConfigGuid,sizeof(*Guid))) return EFI_NOT_FOUND;
+  ++mTopologyReads;
+  if (mTopology==4) return EFI_DEVICE_ERROR;
+  *P=&mConfig; return EFI_SUCCESS;
+}
+STATIC EFI_STATUS EFIAPI TopologyOpens(EFI_HANDLE H, EFI_GUID *Guid,
+ EFI_OPEN_PROTOCOL_INFORMATION_ENTRY **Entries, UINTN *Count)
+{
+  UINTN I;
+  (VOID)H; assert(!memcmp(Guid,&mUsbConfigGuid,sizeof(*Guid)));
+  *Count=mTopology==2 ? 40 : 1;
+  *Entries=calloc(*Count,sizeof(**Entries)); assert(*Entries); ++mAlloc;
+  for (I=0; I<*Count; ++I)
+    (*Entries)[I].Attributes=EFI_OPEN_PROTOCOL_BY_DRIVER | EFI_OPEN_PROTOCOL_BY_CHILD_CONTROLLER;
+  return mTopology==4 ? EFI_DEVICE_ERROR : EFI_SUCCESS;
+}
+STATIC VOID TestTopology(VOID)
+{
+  for (mTopology=0; mTopology<5; ++mTopology) {
+    Setup(); mTopologyReads=0;
+    mBs.LocateHandleBuffer=TopologyLocate; mBs.HandleProtocol=TopologyHandle;
+    mBs.OpenProtocolInformation=TopologyOpens;
+    if (mTopology==1) mConfig.Revision=0x10004;
+    UsbConfigSnapshot(&mTable,"test");
+    assert(mAlloc==mFreed && !mStarts && !mStops && !mRestores);
+    assert(mTopologyReads==(mTopology==3 ? 0 : mTopology==2 ? 8 : 1));
+    assert(mLogLength<sizeof(mLog)); mLog[mLogLength]=0;
+    assert(strstr(mLog,"USB config snapshot phase=test"));
+    if (mTopology==0) assert(strstr(mLog,"core=0x0000000000000000 mode=0x0000000000000004"));
+    if (mTopology==1) assert(!strstr(mLog," core="));
+    if (mTopology==2) {
+      assert(strstr(mLog,"drivers=0x0000000000000020 children=0x0000000000000020"));
+      assert(strstr(mLog,"QCOM instances limited to first 8"));
+    }
+  }
+  Setup(); mBs.OpenProtocolInformation=NULL;
+  mBs.LocateHandleBuffer=TopologyLocate; mBs.HandleProtocol=TopologyHandle;
+  UsbConfigSnapshot(&mTable,"no-open-info"); assert(mAlloc==mFreed && !mStarts);
+}
 int main(void)
 {
   EFI_STATUS Result;
-  Setup(); TestOwner();
+  Setup(); TestOwner(); TestTopology();
   Setup(); assert(ExercisePrimaryHost((EFI_HANDLE)1,&mTable,&mConfig,FALSE,Checkpoint)==EFI_SUCCESS); assert(!mStarts && !mCheckpoint);
   Setup(); mConfig.Revision=0x10004;
   assert(ExercisePrimaryHost((EFI_HANDLE)1,&mTable,&mConfig,TRUE,Checkpoint)==EFI_SUCCESS); assert(!mStarts);
