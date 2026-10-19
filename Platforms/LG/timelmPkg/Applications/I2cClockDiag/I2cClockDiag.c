@@ -127,6 +127,14 @@ STATIC EFI_STATUS SaveLog (EFI_HANDLE Image)
 
 #ifdef TIMELM_USB_HOST_PROBE
 #include "UsbHostProbe.h"
+STATIC VOID StopBeforeWindows (EFI_SYSTEM_TABLE *System, EFI_STATUS Status)
+{
+  Text("USB firmware test ends here. Windows will not be started. Reboot into Recovery for logs.\r\n");
+  if (System->RuntimeServices && System->RuntimeServices->ResetSystem)
+    System->RuntimeServices->ResetSystem(EfiResetShutdown,Status,0,NULL);
+  // If shutdown is unavailable, stay in firmware until a manual reboot.
+  for (;;) (VOID)System->BootServices->Stall(1000000);
+}
 #endif
 
 #ifdef TIMELM_ONESHOT
@@ -147,6 +155,9 @@ EFI_STATUS EFIAPI I2cClockDiagEntry (EFI_HANDLE Image, EFI_SYSTEM_TABLE *System)
   (VOID)SaveLog (Image); // checkpoint before any firmware clock query
   if (EFI_ERROR (Result)) {
     Text ("Restore failed: no clock query or chainload attempted. Use Recovery backups.\r\n");
+#ifdef TIMELM_USB_HOST_PROBE
+    StopBeforeWindows(System,Result);
+#endif
     return Result;
   }
 #endif
@@ -156,11 +167,10 @@ EFI_STATUS EFIAPI I2cClockDiagEntry (EFI_HANDLE Image, EFI_SYSTEM_TABLE *System)
   Result=ProbePrimaryUsbHost(Image,System);
   if (EFI_ERROR(Result)) {
     Text("Host cleanup failed. Windows chainload blocked. Reboot into Recovery.\r\n");
-    (VOID)SaveLog(Image);
-    // Returning to BDS could launch another Windows option with host DMA live.
-    // Original EFI entries are already restored; a manual reboot clears this test.
-    for (;;) (VOID)System->BootServices->Stall(1000000);
   }
+  Text("Saving firmware-only USB result, then requesting shutdown before Windows.\r\n");
+  LogStatus=SaveLog(Image);
+  StopBeforeWindows(System,EFI_ERROR(Result) ? Result : LogStatus);
 #endif
   LogStatus = SaveLog (Image);
   Text ("Append diagnostic log on application's filesystem: ");

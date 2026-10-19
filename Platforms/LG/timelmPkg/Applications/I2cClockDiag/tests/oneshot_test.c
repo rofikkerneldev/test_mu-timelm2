@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <setjmp.h>
 #undef NULL // Mu headers define their own firmware NULL spelling.
 #define TIMELM_ONESHOT
 #define TIMELM_WINDOWS_SIZE 64u
@@ -10,8 +11,12 @@
 #include "../I2cClockDiag.c"
 #ifdef TIMELM_USB_HOST_PROBE
 #define EXPECTED_QUERIES 2
+#define EXPECTED_STARTS 0
+#define EXPECTED_POWEROFFS 1
 #else
 #define EXPECTED_QUERIES 1
+#define EXPECTED_STARTS 1
+#define EXPECTED_POWEROFFS 0
 #endif
 
 typedef struct FILE_MOCK {
@@ -23,6 +28,7 @@ typedef struct FILE_MOCK {
 } FILE_MOCK;
 STATIC FILE_MOCK mFiles[5];
 STATIC EFI_BOOT_SERVICES mBs;
+STATIC EFI_RUNTIME_SERVICES mRt;
 STATIC EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL mConsole;
 STATIC EFI_SYSTEM_TABLE mTable;
 STATIC EFI_LOADED_IMAGE_PROTOCOL mParent, mChild;
@@ -32,6 +38,20 @@ STATIC EFI_DEVICE_PATH_PROTOCOL mVolumePath[2];
 STATIC UINT8 mOriginal[64];
 STATIC int mWrites, mQueries, mLoads, mStarts, mFailWrite, mShortWrite, mBadReadback;
 STATIC int mUsbQueries;
+STATIC int mPoweroffs;
+STATIC jmp_buf mFirmwareEnd;
+STATIC EFI_STATUS mShutdownStatus;
+STATIC VOID EFIAPI Reset(EFI_RESET_TYPE Type, EFI_STATUS Status, UINTN Size, VOID *Data)
+{
+  assert(Type==EfiResetShutdown && Size==0 && Data==NULL);
+  assert(!mLoads && !mStarts);
+  ++mPoweroffs; mShutdownStatus=Status; longjmp(mFirmwareEnd,1);
+}
+STATIC EFI_STATUS RunEntry(VOID)
+{
+  if (setjmp(mFirmwareEnd)) return mShutdownStatus;
+  return I2cClockDiagEntry((EFI_HANDLE)1,&mTable);
+}
 
 STATIC int SameGuid (CONST EFI_GUID *A, CONST EFI_GUID *B) { return memcmp(A, B, sizeof(*A)) == 0; }
 STATIC int SameName (CONST CHAR16 *A, CONST CHAR16 *B)
@@ -160,6 +180,8 @@ STATIC VOID Setup (VOID)
   memset(&mChild, 0, sizeof(mChild));
   mWrites = mQueries = mLoads = mStarts = mFailWrite = mShortWrite = mBadReadback = 0;
   mUsbQueries = 0;
+  mPoweroffs = 0; mShutdownStatus=EFI_SUCCESS;
+  memset(&mRt,0,sizeof(mRt)); mRt.ResetSystem=Reset;
   for (I = 0; I < 64; ++I) mOriginal[I] = (UINT8)I;
   for (I = 0; I < 5; ++I) {
     mFiles[I].Api.Close = Close; mFiles[I].Api.Read = Read; mFiles[I].Api.Write = Write;
@@ -174,6 +196,7 @@ STATIC VOID Setup (VOID)
   mParent.DeviceHandle = (EFI_HANDLE)3;
   mParent.LoadOptions = (VOID *)L"options"; mParent.LoadOptionsSize = 16;
   mConsole.OutputString = Print; mTable.ConOut = &mConsole; mTable.BootServices = &mBs;
+  mTable.RuntimeServices=&mRt;
   mBs.HandleProtocol = Handle; mBs.LocateProtocol = Locate;
   mBs.LocateHandleBuffer = LocateHandles;
   mBs.AllocatePool = Allocate; mBs.FreePool = Free; mBs.CopyMem = Copy;
@@ -185,26 +208,28 @@ STATIC VOID Setup (VOID)
 }
 int main(void)
 {
-  Setup(); assert(I2cClockDiagEntry((EFI_HANDLE)1, &mTable) == EFI_SUCCESS);
-  assert(mWrites == 2 && mQueries == EXPECTED_QUERIES && mLoads == 1 && mStarts == 1);
+  Setup(); assert(RunEntry() == EFI_SUCCESS);
+  assert(mWrites == 2 && mQueries == EXPECTED_QUERIES && mLoads == EXPECTED_STARTS && mStarts == EXPECTED_STARTS);
+  assert(mPoweroffs == EXPECTED_POWEROFFS);
   assert(mUsbQueries == 2);
   assert(mFiles[0].Size == 64 && mFiles[1].Size == 64);
   Setup(); mFiles[3].Data[0] ^= 1;
-  assert(EFI_ERROR(I2cClockDiagEntry((EFI_HANDLE)1, &mTable)));
+  assert(EFI_ERROR(RunEntry()));
   assert(!mWrites && !mQueries && !mUsbQueries && !mLoads);
   Setup(); mFailWrite = 1;
-  assert(I2cClockDiagEntry((EFI_HANDLE)1, &mTable) == EFI_WRITE_PROTECTED);
+  assert(RunEntry() == EFI_WRITE_PROTECTED);
   assert(!mQueries && !mUsbQueries && !mLoads);
   Setup(); mShortWrite = 1;
-  assert(I2cClockDiagEntry((EFI_HANDLE)1, &mTable) == EFI_VOLUME_FULL);
+  assert(RunEntry() == EFI_VOLUME_FULL);
   assert(!mQueries && !mUsbQueries && !mLoads);
   Setup(); mBadReadback = 1;
-  assert(I2cClockDiagEntry((EFI_HANDLE)1, &mTable) == EFI_COMPROMISED_DATA);
+  assert(RunEntry() == EFI_COMPROMISED_DATA);
   assert(!mQueries && !mUsbQueries && !mLoads);
   Setup(); memcpy(mFiles[0].Data, mOriginal, 64); mFiles[0].Size = 64;
   memcpy(mFiles[1].Data, mOriginal, 64); mFiles[1].Size = 64;
-  assert(I2cClockDiagEntry((EFI_HANDLE)1, &mTable) == EFI_SUCCESS);
-  assert(!mWrites && mQueries == EXPECTED_QUERIES && mStarts == 1);
-  puts("One-shot UEFI: restore-before-query, integrity/failure paths and chainload passed");
+  assert(RunEntry() == EFI_SUCCESS);
+  assert(!mWrites && mQueries == EXPECTED_QUERIES && mStarts == EXPECTED_STARTS);
+  assert(mPoweroffs == EXPECTED_POWEROFFS);
+  puts("One-shot UEFI: restore ordering, failures, default chainload / USB firmware-only shutdown passed");
   return 0;
 }

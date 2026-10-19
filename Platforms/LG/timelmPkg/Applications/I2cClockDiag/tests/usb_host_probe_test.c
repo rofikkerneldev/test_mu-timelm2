@@ -100,6 +100,13 @@ int main(void)
   assert(ExercisePrimaryHost((EFI_HANDLE)1,&mTable,&mConfig,TRUE,Checkpoint)==EFI_SUCCESS); assert(!mStarts);
   Setup(); mConfig.ModeType=1;
   assert(ExercisePrimaryHost((EFI_HANDLE)1,&mTable,&mConfig,TRUE,Checkpoint)==EFI_SUCCESS); assert(!mStarts);
+  Setup(); mConfig.CoreNum=2; mConfig.ModeType=0x10000;
+  assert(ExercisePrimaryHost((EFI_HANDLE)1,&mTable,&mConfig,TRUE,Checkpoint)==EFI_SUCCESS);
+  assert(mStarts==1 && mStops==1 && mRestores==1 && !mHostOn);
+  Setup(); mConfig.CoreNum=2;
+  assert(ExercisePrimaryHost((EFI_HANDLE)1,&mTable,&mConfig,TRUE,Checkpoint)==EFI_SUCCESS); assert(!mStarts);
+  Setup(); mConfig.ModeType=0x10000;
+  assert(ExercisePrimaryHost((EFI_HANDLE)1,&mTable,&mConfig,TRUE,Checkpoint)==EFI_SUCCESS); assert(!mStarts);
   Setup(); mHostOn=1;
   assert(ExercisePrimaryHost((EFI_HANDLE)1,&mTable,&mConfig,TRUE,Checkpoint)==EFI_SUCCESS); assert(!mStarts && mAlloc==mFreed);
   for (mScenario=0; mScenario<18; ++mScenario) {

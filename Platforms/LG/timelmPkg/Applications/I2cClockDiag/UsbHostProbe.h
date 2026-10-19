@@ -98,14 +98,15 @@ STATIC VOID UsbOverrideSnapshot (EFI_SYSTEM_TABLE *System)
   }
 }
 
-// Return an error only when cleanup cannot be established. Ordinary skips and
-// a failed host attempt with verified cleanup may continue to Windows.
+// Return an error only when cleanup cannot be established. The caller ends
+// every host-probe run in firmware, including skips and cleaned-up failures.
 STATIC EFI_STATUS ExercisePrimaryHost (EFI_HANDLE Image, EFI_SYSTEM_TABLE *System,
   TIMELM_USB_CONFIG *Config, BOOLEAN VerifiedOwner, EFI_STATUS (*Checkpoint)(EFI_HANDLE))
 {
   UINT8 Cores=0;
   UINT32 Supported=0, Type=0;
   UINTN Base=0, Hosts=0;
+  BOOLEAN Dispatcher;
   EFI_STATUS Status, StopStatus, RestoreStatus, CountStatus;
   if (!VerifiedOwner || !Config || Config->Revision!=0x10005 ||
       !Config->GetCoreCount || !Config->GetSupportedMode || !Config->GetUsbHostConfig ||
@@ -114,12 +115,16 @@ STATIC EFI_STATUS ExercisePrimaryHost (EFI_HANDLE Image, EFI_SYSTEM_TABLE *Syste
     Text("Host probe skipped: firmware ABI/owner/callback gate.\r\n"); return EFI_SUCCESS;
   }
   Text("USB config template core="); Hex(Config->CoreNum); Text(" mode="); Hex(Config->ModeType); Text("\r\n");
-  if (Config->CoreNum!=0 || Config->ModeType!=4) {
-    Text("Host probe skipped: expected primary peripheral template.\r\n"); return EFI_SUCCESS;
+  // UsbConfigInit publishes a dispatcher with core=MAX_NUM (2), mode=INVALID.
+  // Start/Stop take the target core explicitly; this is not a request for core 2.
+  Dispatcher=(Config->CoreNum==2 && Config->ModeType==0x10000);
+  if (!Dispatcher && (Config->CoreNum!=0 || Config->ModeType!=4)) {
+    Text("Host probe skipped: neither known dispatcher nor primary peripheral descriptor.\r\n"); return EFI_SUCCESS;
   }
+  Text(Dispatcher ? "Known global dispatcher; all requests still target core 0.\r\n" : "Primary peripheral descriptor.\r\n");
   Status=Config->GetCoreCount(Config,&Cores);
   Text("GetCoreCount status="); Hex(Status); Text(" count="); Hex(Cores); Text("\r\n");
-  if (EFI_ERROR(Status) || Cores<1 || Cores>2) return EFI_SUCCESS;
+  if (EFI_ERROR(Status) || Cores<1 || Cores>2 || (Dispatcher && Cores!=2)) return EFI_SUCCESS;
   Status=Config->GetSupportedMode(Config,0,&Supported);
   Text("Primary supported mode status="); Hex(Status); Text(" mask="); Hex(Supported); Text("\r\n");
   if (EFI_ERROR(Status) || (!(Supported & 8) && Supported!=1 && Supported!=0x20)) return EFI_SUCCESS;
@@ -150,7 +155,7 @@ STATIC EFI_STATUS ExercisePrimaryHost (EFI_HANDLE Image, EFI_SYSTEM_TABLE *Syste
   Text("After cleanup host count status="); Hex(CountStatus); Text(" count="); Hex(Hosts); Text("\r\n");
   if ((EFI_ERROR(StopStatus) && StopStatus!=EFI_NOT_STARTED) || EFI_ERROR(RestoreStatus) ||
       EFI_ERROR(CountStatus) || Hosts!=0) return EFI_DEVICE_ERROR;
-  Text("Temporary host teardown verified; no Windows host handoff attempted.\r\n");
+  Text("Temporary host teardown verified; firmware test ends before Windows.\r\n");
   return EFI_SUCCESS;
 }
 
@@ -159,7 +164,7 @@ STATIC EFI_STATUS ProbePrimaryUsbHost (EFI_HANDLE Image, EFI_SYSTEM_TABLE *Syste
   TIMELM_USB_CONFIG *Config=NULL;
   EFI_STATUS Status;
   BOOLEAN Owner;
-  Text("timelm transient primary USB host probe v1\r\n");
+  Text("timelm transient primary USB host probe v2\r\n");
   UsbOverrideSnapshot(System);
   if (!System->BootServices->LocateHandleBuffer || !System->BootServices->FreePool) return EFI_SUCCESS;
   Status=System->BootServices->LocateProtocol(&mUsbConfigGuid,NULL,(VOID **)&Config);

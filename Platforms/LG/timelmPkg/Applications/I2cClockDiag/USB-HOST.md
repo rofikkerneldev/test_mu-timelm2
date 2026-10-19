@@ -11,7 +11,10 @@ The purpose is to distinguish a missing host-start request from failure in the
 stock USB driver, Type-C/power configuration, PHY or driver binding. A successful
 native function return alone does not prove that the host or mouse exists; the
 USB2_HC/USB_IO snapshots and VID/PID are the required evidence. This probe does
-not add Windows USB ACPI resources or establish an OS handoff.
+not add Windows USB ACPI resources or establish an OS handoff. Version 2 saves
+its result and requests platform shutdown before Windows is started, including
+skipped and failed tests. If shutdown is unavailable, it waits in firmware for
+a manual reboot. This avoids interrupting Windows OOBE on every test.
 
 ## ABI and owner verification
 
@@ -50,20 +53,31 @@ with the captured vendor GUID and logs their status; it never writes them.
 ## Request and cleanup
 
 Before requesting host, the app requires revision 0x10005, the known owner,
-core-0/peripheral template, 1..2 cores, advertised host support, SSUSB1 type 5,
+either a core-0/peripheral descriptor or the exact global dispatcher tuple
+(core=2, mode=0x10000), 1..2 cores, advertised host support, SSUSB1 type 5,
 reported base 0xA600000, and no existing USB2_HC handles. It saves and flushes a
 checkpoint before the request; a checkpoint error skips the request.
+
+The first physical run at 33a8a1a matched the revision/owner but skipped the
+request because the descriptor was the global dispatcher. The earlier check
+incorrectly assumed LocateProtocol must return a primary/peripheral instance.
+The reference UsbConfigInit implementation explicitly creates the dispatcher
+at index USB_CORE_MAX_NUM_SM_8250, with USB_INVALID_MODE, for clients to request
+controllers when no valid controller handle exists. Version 2 accepts only that
+additional tuple and requires GetCoreCount=2 for it. All getters and mutations
+still receive the explicit target core 0; core 2 is never started or stopped.
 
 It calls StartController(core=0, mode=1), waits 3 seconds on success, and queries
 the existing USB protocols. Regardless of start status, it then calls native
 StopController(core=0, mode=1) and StartController(core=0, mode=4) for cleanup.
-It only permits Windows chainload when stop succeeded or reports NOT_STARTED,
+It considers cleanup verified when stop succeeded or reports NOT_STARTED,
 peripheral restore succeeded, and the final host enumeration succeeds with zero
-USB2_HC handles. No direct MMIO, explicit VBUS force-enable, reset, generic
+USB2_HC handles. No direct MMIO, explicit VBUS force-enable, USB controller reset, generic
 ConnectAll, private structure modification or firmware-variable write is used.
 
-If cleanup fails, the app saves the log and waits for a manual reboot instead
-of returning to BDS or chainloading Windows with potentially active host DMA.
+The app saves the log and requests platform shutdown after the test, regardless
+of cleanup status. It never returns to BDS or chainloads Windows. If the platform
+shutdown function returns, it waits for a manual reboot instead.
 Both Windows entry files have already been restored, so the test is not rerun
 on the next boot. Native firmware calls can still hang or fail on hardware;
 the restore/checkpoint ordering makes a subsequent manual Recovery boot usable.
@@ -75,5 +89,7 @@ The app intentionally does not remove overrides or assume they are safe to chang
 Host tests cover owner/code mismatch, overflow bounds, ABI/core/base/mode gates,
 preexisting hosts, checkpoint failure, native errors, absent host after a success
 return, cleanup failure and residual hosts. The host-enabled once variant also
-runs the restore-before-query and chainload tests. A physical transient host
-run remains pending.
+runs restore-before-query, shutdown-before-Windows (zero LoadImage/StartImage
+calls), corrupted backup and restore-failure tests. The default getter-only
+once app retains its Windows chainload behavior. A physical host request using
+the corrected dispatcher gate remains pending.
