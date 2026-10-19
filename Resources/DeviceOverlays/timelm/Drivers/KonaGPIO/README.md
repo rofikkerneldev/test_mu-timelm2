@@ -17,7 +17,9 @@ Register encodings were checked against Qualcomm TLMM behavior in
 The implementation and tests are MIT licensed like the pinned Windows driver;
 Linux source is not linked into the package.
 
-Host register tests pass with ASan/UBSan. They establish field encodings and
+ARM64 WDK compilation and host register tests pass in
+[Actions run 39200526706](https://github.com/rofikkerneldev/test_mu-timelm/actions/runs/39200526706).
+Host tests use ASan/UBSan. They establish field encodings and
 preservation, not interrupt delivery on Windows. This package has not been
 installed on the phone. The touch SPB host and ACPI contract are still required.
 Existing firmware overlay manifests and the booting DSDT are unchanged.

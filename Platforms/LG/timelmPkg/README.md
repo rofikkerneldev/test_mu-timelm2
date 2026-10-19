@@ -6,7 +6,7 @@ layout is the platform reference; resources and drivers use the Kona path.
 
 ## Observed status
 
-Update 2026-10-19: Windows 11 ARM64 build 26300.9457 reaches OOBE with the
+Update 2026-10-19: Windows 11 26H2 ARM64 build 26300.9457 reaches OOBE with the
 rebuilt Kona GPIO/SPMI/PMIC packages. Recovery inspection confirms that Windows
 records an active 1080x2460 display. Touch remains unavailable: the current
 ACPI namespace has no I2C controller or touchscreen. See

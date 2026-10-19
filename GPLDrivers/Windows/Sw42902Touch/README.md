@@ -2,9 +2,11 @@
 
 This is a source candidate for the LG V60 timelm internal B3W68TIM touchscreen.
 It is **not a working touchscreen package yet**. The packet decoder passes host
-tests. The KMDF driver has not been built with WDK or tested on the phone.
-The final ASan/UBSan decoder tests passed after moving WSL to D:. See the
-timelm bring-up report for the exact validation limits.
+tests. The ARM64 KMDF package built successfully with WDK in
+[Actions run 39199989979](https://github.com/rofikkerneldev/test_mu-timelm/actions/runs/39199989979)
+at `ad14ab4cdb9d1f7fa6769bf891789851b1dede17`; PE machine type is ARM64.
+ASan/UBSan decoder tests also passed. It has not been tested on the phone.
+The installed target reports Windows 11 26H2 ARM64 build 26300.9457.
 Do not install it as a root-enumerated device: it requires real ACPI I2C and
 GPIO interrupt resources and a functioning Windows SPB controller driver.
 
@@ -58,9 +60,10 @@ Recovery captured on 2026-10-19 identifies:
 | Firmware | v0.74, product `B3W68TIM` |
 
 The DT interrupt cells contain level-low plus oneshot flags (`0x2008`), while
-the LG driver's separate `irqflags=2` selects falling edge. Confirm the actual
-interrupt mode before defining the Windows GpioInt resource; do not copy these
-Linux flag values into ACPI. Use TLMM-local pin numbers, not Linux's dynamic
+the LG driver's separate `irqflags=2` selects falling edge. Live Recovery
+`/proc/interrupts` confirms GPIO 39 is registered as Edge. The Windows GpioInt
+must use Edge/ActiveLow; do not copy Linux flag values into ACPI.
+Use TLMM-local pin numbers, not Linux's dynamic
 global GPIO numbers 1138/1139/1167/1168.
 
 Current firmware exposes only UFS, GPIO, SPMI, PMIC and CPUs. Neither a touch
@@ -68,6 +71,11 @@ device nor an I2C host exists in the installed ACPI namespace. The current
 WOA-Kona driver set contains GPIO/SPMI/PMIC only, not an SPB I2C host.
 The installed OS does include `qci2c_i.inf`, but it targets QCOMFFEA/SC8380;
 that is not evidence of a usable Kona driver. Do not spoof that hardware ID.
+The separately investigated `qci2c8250` BSP package matches QCOM2511, while the
+alioth ACPI I2C devices use QCOM2510. Its INF has no instance 14 configuration,
+and its binary's internal name is qci2c8180. That package is an unverified
+reference, not a demonstrated solution for this controller. See the
+[bus integration findings](../../../Platforms/LG/timelmPkg/TOUCH-I2C-CONTRACT.md).
 
 Before enabling this candidate:
 
@@ -105,5 +113,6 @@ gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
 /tmp/sw42902-test
 ```
 
-These tests establish wire decoding and bounds safety; they do not establish
-WDK buildability, I2C operation, GPIO interrupts or working touch on Windows.
+These tests establish wire decoding and bounds safety. WDK compilation is
+separately verified by Actions. Neither check establishes I2C operation,
+GPIO interrupts or working touch on Windows.
