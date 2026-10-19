@@ -1,9 +1,18 @@
-# Standalone I2C clock query app
+# Standalone I2C clock and USB host query app
 
 This ARM64 UEFI application asks the existing EFI_CLOCK_PROTOCOL for IDs,
 enabled/on status and configured frequency of the touch engine/wrapper clocks.
 It does not read MMIO directly, enable clocks, change rates, select pins, reset hardware
 or issue I2C transfers. It is not included in the normal firmware image.
+
+The USB snapshot enumerates existing USB2_HC/USB_IO handles, queries host state,
+capabilities and root-hub port status, and reads cached device/interface
+descriptors. No controller connection, role switch, reset, port power request,
+change-bit acknowledgement or USB transfer is submitted. Enumeration is bounded
+to 4 controllers, 16 ports per controller and 16 interfaces. An absent protocol
+does not identify whether role selection, PHY/power or binding failed; the port
+power bit is not a measurement of connector VBUS. The getter contracts are in
+the [UEFI USB specification](https://uefi.org/specs/UEFI/2.11/17_Protocols_USB_Support.html).
 
 Build with the pinned Mu_Basecore headers and clang/lld:
 
@@ -29,7 +38,9 @@ The app displays console output and appends the same report to
 launched. Previous captures are preserved. It does not change boot files,
 partition metadata, Windows registry or hardware state. If launched from FV
 or a read-only filesystem, the log operation reports an error and the console
-output is still available. This app has not yet been run on the phone.
+output is still available. The original clock-only once launcher has completed
+on a V60; the added USB snapshot requires a separate physical run with OTG
+connected before firmware starts.
 
 An absent clock protocol, unsupported older ABI or unknown clock name is useful
 diagnostic output; it does not justify calling an unverified ABI or touching
@@ -55,8 +66,11 @@ queries or chainload. On success, it saves a checkpoint, queries clocks, saves
 the log and starts the restored canonical Windows Boot Manager with its original
 load options. A missing clock protocol is logged and still permits Windows boot.
 The backup files remain available for Recovery rollback. Restoring boot files
-is filesystem I/O, with normal power-interruption limits; the restore behavior
-has host tests, not a completed V60 boot test yet.
+is filesystem I/O, with normal power-interruption limits. The clock-only version
+restored both entries to their original SHA256 and reached Windows on the V60.
+Host tests verify restore ordering before both clock and USB queries. USB tests
+cover absent/null protocols, query failures, handle cleanup and bounded traversal
+with all mutation/transfer callbacks left NULL.
 
 WindowsBootReference.json contains only observed size/CRC32/SHA256, not Windows
 binary data. CRC32 is used as a runtime corruption check; installation must

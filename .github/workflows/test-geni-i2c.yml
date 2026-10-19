@@ -8,6 +8,8 @@ on:
       - 'Platforms/LG/timelmPkg/Experimental/TouchI2c.asl'
       - 'Platforms/LG/timelmPkg/Applications/I2cClockDiag/**'
       - 'Resources/Scripts/build_i2c_clockdiag.sh'
+      - 'Resources/Scripts/Collect-TimelmDiagnostics.ps1'
+      - 'Resources/Scripts/Collect-TimelmLogs.cmd'
       - '.github/workflows/test-geni-i2c.yml'
   pull_request:
     paths:
@@ -16,6 +18,8 @@ on:
       - 'Platforms/LG/timelmPkg/Experimental/TouchI2c.asl'
       - 'Platforms/LG/timelmPkg/Applications/I2cClockDiag/**'
       - 'Resources/Scripts/build_i2c_clockdiag.sh'
+      - 'Resources/Scripts/Collect-TimelmDiagnostics.ps1'
+      - 'Resources/Scripts/Collect-TimelmLogs.cmd'
       - '.github/workflows/test-geni-i2c.yml'
 permissions:
   contents: read
@@ -25,6 +29,9 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+      - name: Validate Windows PowerShell collector without querying the runner
+        shell: powershell
+        run: ./Resources/Scripts/Collect-TimelmDiagnostics.ps1 -ValidateOnly
       - shell: pwsh
         run: ./Resources/Scripts/build_geni_i2c.ps1
       - uses: actions/upload-artifact@v4
@@ -67,6 +74,14 @@ jobs:
             Platforms/LG/timelmPkg/Applications/I2cClockDiag/tests/oneshot_test.c \
             -o /tmp/oneshot-test
           /tmp/oneshot-test
+      - name: Test USB snapshot queries and failure paths
+        run: |
+          gcc -std=c11 -fshort-wchar -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+            -I Mu_Basecore/MdePkg/Include -I Mu_Basecore/MdePkg/Include/X64 \
+            -I Silicon/Qualcomm/QcomPkg/Include \
+            Platforms/LG/timelmPkg/Applications/I2cClockDiag/tests/usb_snapshot_test.c \
+            -o /tmp/usb-snapshot-test
+          /tmp/usb-snapshot-test
       - uses: actions/upload-artifact@v4
         with:
           name: timelm-I2cClockDiag-ARM64-UEFI

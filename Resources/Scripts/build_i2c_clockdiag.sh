@@ -52,7 +52,7 @@ assert struct.unpack_from('<II', data, pe+24+112+8) == (0, 0)
 metadata = {'sha256': hashlib.sha256(data).hexdigest(), 'size': len(data),
     'architecture': 'ARM64', 'subsystem': 'EFI application', 'imports': [],
     'commit': subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip(),
-    'purpose': 'read-only clock protocol query; no direct MMIO'}
+    'purpose': 'clock and USB host protocol queries; no direct MMIO or USB state changes'}
 (out / 'source.json').write_text(json.dumps(metadata, indent=2))
 print(json.dumps(metadata))
 data = (out / 'I2cClockOnce.efi').read_bytes()
@@ -62,7 +62,7 @@ assert struct.unpack_from('<H', data, pe+4)[0] == 0xaa64
 assert struct.unpack_from('<H', data, pe+24+68)[0] == 10
 assert struct.unpack_from('<II', data, pe+24+112+8) == (0, 0)
 metadata.update(sha256=hashlib.sha256(data).hexdigest(), size=len(data),
-    purpose='restore both verified Windows entries, query clocks, chainload Windows',
+    purpose='restore both verified Windows entries, query clocks and USB, chainload Windows',
     windows_reference=json.load(open('Platforms/LG/timelmPkg/Applications/I2cClockDiag/WindowsBootReference.json')))
 (out / 'oneshot.json').write_text(json.dumps(metadata, indent=2))
 print(json.dumps(metadata))

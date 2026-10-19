@@ -12,7 +12,7 @@
 typedef struct FILE_MOCK {
   EFI_FILE_PROTOCOL Api;
   CONST CHAR16 *Name;
-  UINT8 Data[16384];
+  UINT8 Data[65536];
   UINTN Size, Position;
   int Index;
 } FILE_MOCK;
@@ -26,6 +26,7 @@ STATIC EFI_FILE_PROTOCOL mRoot;
 STATIC EFI_DEVICE_PATH_PROTOCOL mVolumePath[2];
 STATIC UINT8 mOriginal[64];
 STATIC int mWrites, mQueries, mLoads, mStarts, mFailWrite, mShortWrite, mBadReadback;
+STATIC int mUsbQueries;
 
 STATIC int SameGuid (CONST EFI_GUID *A, CONST EFI_GUID *B) { return memcmp(A, B, sizeof(*A)) == 0; }
 STATIC int SameName (CONST CHAR16 *A, CONST CHAR16 *B)
@@ -107,6 +108,14 @@ STATIC EFI_STATUS EFIAPI Locate (EFI_GUID *Guid, VOID *Registration, VOID **Inte
   assert(memcmp(mFiles[1].Data, mOriginal, 64) == 0);
   ++mQueries; return EFI_NOT_FOUND;
 }
+STATIC EFI_STATUS EFIAPI LocateHandles (EFI_LOCATE_SEARCH_TYPE Type, EFI_GUID *Guid,
+                                       VOID *Key, UINTN *Count, EFI_HANDLE **Handles)
+{
+  (VOID)Type; (VOID)Guid; (VOID)Key;
+  assert(memcmp(mFiles[0].Data, mOriginal, 64) == 0);
+  assert(memcmp(mFiles[1].Data, mOriginal, 64) == 0);
+  ++mUsbQueries; *Count = 0; *Handles = NULL; return EFI_NOT_FOUND;
+}
 STATIC EFI_STATUS EFIAPI Allocate (EFI_MEMORY_TYPE Type, UINTN Size, VOID **Buffer)
 { (VOID)Type; *Buffer = malloc(Size); return *Buffer ? EFI_SUCCESS : EFI_OUT_OF_RESOURCES; }
 STATIC EFI_STATUS EFIAPI Free (VOID *Buffer) { free(Buffer); return EFI_SUCCESS; }
@@ -145,6 +154,7 @@ STATIC VOID Setup (VOID)
   memset(&mTable, 0, sizeof(mTable)); memset(&mParent, 0, sizeof(mParent));
   memset(&mChild, 0, sizeof(mChild));
   mWrites = mQueries = mLoads = mStarts = mFailWrite = mShortWrite = mBadReadback = 0;
+  mUsbQueries = 0;
   for (I = 0; I < 64; ++I) mOriginal[I] = (UINT8)I;
   for (I = 0; I < 5; ++I) {
     mFiles[I].Api.Close = Close; mFiles[I].Api.Read = Read; mFiles[I].Api.Write = Write;
@@ -160,6 +170,7 @@ STATIC VOID Setup (VOID)
   mParent.LoadOptions = (VOID *)L"options"; mParent.LoadOptionsSize = 16;
   mConsole.OutputString = Print; mTable.ConOut = &mConsole; mTable.BootServices = &mBs;
   mBs.HandleProtocol = Handle; mBs.LocateProtocol = Locate;
+  mBs.LocateHandleBuffer = LocateHandles;
   mBs.AllocatePool = Allocate; mBs.FreePool = Free; mBs.CopyMem = Copy;
   mBs.CalculateCrc32 = Crc; mBs.LoadImage = Load; mBs.StartImage = Start; mBs.UnloadImage = Unload;
   mVolumePath[0].Type = MEDIA_DEVICE_PATH; mVolumePath[0].SubType = MEDIA_HARDDRIVE_DP;
@@ -171,19 +182,20 @@ int main(void)
 {
   Setup(); assert(I2cClockDiagEntry((EFI_HANDLE)1, &mTable) == EFI_SUCCESS);
   assert(mWrites == 2 && mQueries == 1 && mLoads == 1 && mStarts == 1);
+  assert(mUsbQueries == 2);
   assert(mFiles[0].Size == 64 && mFiles[1].Size == 64);
   Setup(); mFiles[3].Data[0] ^= 1;
   assert(EFI_ERROR(I2cClockDiagEntry((EFI_HANDLE)1, &mTable)));
-  assert(!mWrites && !mQueries && !mLoads);
+  assert(!mWrites && !mQueries && !mUsbQueries && !mLoads);
   Setup(); mFailWrite = 1;
   assert(I2cClockDiagEntry((EFI_HANDLE)1, &mTable) == EFI_WRITE_PROTECTED);
-  assert(!mQueries && !mLoads);
+  assert(!mQueries && !mUsbQueries && !mLoads);
   Setup(); mShortWrite = 1;
   assert(I2cClockDiagEntry((EFI_HANDLE)1, &mTable) == EFI_VOLUME_FULL);
-  assert(!mQueries && !mLoads);
+  assert(!mQueries && !mUsbQueries && !mLoads);
   Setup(); mBadReadback = 1;
   assert(I2cClockDiagEntry((EFI_HANDLE)1, &mTable) == EFI_COMPROMISED_DATA);
-  assert(!mQueries && !mLoads);
+  assert(!mQueries && !mUsbQueries && !mLoads);
   Setup(); memcpy(mFiles[0].Data, mOriginal, 64); mFiles[0].Size = 64;
   memcpy(mFiles[1].Data, mOriginal, 64); mFiles[1].Size = 64;
   assert(I2cClockDiagEntry((EFI_HANDLE)1, &mTable) == EFI_SUCCESS);

@@ -10,7 +10,7 @@ STATIC EFI_SYSTEM_TABLE *mSystem;
 STATIC EFI_GUID mClockGuid = EFI_CLOCK_PROTOCOL_GUID;
 STATIC EFI_GUID mLoadedImageGuid = EFI_LOADED_IMAGE_PROTOCOL_GUID;
 STATIC EFI_GUID mFileSystemGuid = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
-STATIC CHAR8 mLog[8192];
+STATIC CHAR8 mLog[16384];
 STATIC UINTN mLogLength;
 STATIC CONST CHAR8 *mNames[] = {
   "gcc_qupv3_wrap1_s5_clk",
@@ -118,6 +118,8 @@ STATIC EFI_STATUS SaveLog (EFI_HANDLE Image)
   return Status;
 }
 
+#include "UsbSnapshot.h"
+
 #ifdef TIMELM_ONESHOT
 #include "OneShot.h"
 #endif
@@ -140,6 +142,7 @@ EFI_STATUS EFIAPI I2cClockDiagEntry (EFI_HANDLE Image, EFI_SYSTEM_TABLE *System)
   }
 #endif
   Result = QueryClocks (System);
+  QueryUsb (System);
   LogStatus = SaveLog (Image);
   Text ("Append timelm-i2c-clockdiag.txt on application's filesystem: ");
   Hex (LogStatus); Text ("\r\n");
