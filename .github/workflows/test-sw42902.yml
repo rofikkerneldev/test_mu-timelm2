@@ -1,17 +1,43 @@
-name: Test SW42902 packet decoder
+name: Build timelm touch and GPIO candidates
 on:
   workflow_dispatch:
   push:
     paths:
       - 'GPLDrivers/Windows/Sw42902Touch/**'
+      - 'Resources/DeviceOverlays/timelm/Drivers/KonaGPIO/**'
+      - 'Resources/Scripts/build_kona_drivers.ps1'
+      - 'Resources/Scripts/build_sw42902_touch.ps1'
       - '.github/workflows/test-sw42902.yml'
   pull_request:
     paths:
       - 'GPLDrivers/Windows/Sw42902Touch/**'
+      - 'Resources/DeviceOverlays/timelm/Drivers/KonaGPIO/**'
+      - 'Resources/Scripts/build_kona_drivers.ps1'
+      - 'Resources/Scripts/build_sw42902_touch.ps1'
       - '.github/workflows/test-sw42902.yml'
 permissions:
   contents: read
 jobs:
+  arm64-gpio:
+    runs-on: windows-2022
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: WOA-Kona/Drivers
+          ref: 3dcdec0bd59e3e77be92629b2ed9e095ae6e19e8
+          path: kona-source
+      - name: Build Kona packages with timelm GPIO fixes
+        shell: pwsh
+        run: ./Resources/Scripts/build_kona_drivers.ps1 -Source ./kona-source -Destination ./kona-packages -TimelmGpioFixes
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: timelm-Kona-GPIO-edge-experimental
+          path: kona-packages/
+          if-no-files-found: warn
+          retention-days: 14
   arm64-driver:
     runs-on: windows-2022
     timeout-minutes: 25
@@ -37,3 +63,8 @@ jobs:
           gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
             GPLDrivers/Windows/Sw42902Touch/tests/protocol_test.c -o /tmp/sw42902-test
           /tmp/sw42902-test
+      - name: Check GPIO pull, edge and mask register values
+        run: |
+          gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+            Resources/DeviceOverlays/timelm/Drivers/KonaGPIO/register_test.c -o /tmp/timelm-gpio-test
+          /tmp/timelm-gpio-test

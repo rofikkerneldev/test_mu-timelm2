@@ -1,0 +1,115 @@
+diff --git a/src/GPIO/Driver.c b/src/GPIO/Driver.c
+index 0a99820..1e9015c 100644
+--- a/src/GPIO/Driver.c
++++ b/src/GPIO/Driver.c
+@@ -1,4 +1,5 @@
+ #include "driver.h"
++#include "PinConfig.h"
+ #include "driver.tmh"
+ #include <gpioclx.h>
+ 
+@@ -347,16 +348,13 @@ GPIOConfigurePin(
+ 
+     switch (PullConfiguration) {
+     case GPIO_PIN_PULL_CONFIGURATION_NONE:
+-        ctlReg &= PULL_MASK;
+-        ctlReg |= NO_PULL;
++        ctlReg = KonaGpioPullValue(ctlReg, NO_PULL);
+         break;
+     case GPIO_PIN_PULL_CONFIGURATION_PULLUP:
+-        ctlReg &= PULL_MASK;
+-        ctlReg |= PULL_UP;
++        ctlReg = KonaGpioPullValue(ctlReg, PULL_UP);
+         break;
+     case GPIO_PIN_PULL_CONFIGURATION_PULLDOWN:
+-        ctlReg &= PULL_MASK;
+-        ctlReg |= PULL_DOWN;
++        ctlReg = KonaGpioPullValue(ctlReg, PULL_DOWN);
+         break;
+     case GPIO_PIN_PULL_CONFIGURATION_DEFAULT:
+         break;
+@@ -366,6 +364,8 @@ GPIOConfigurePin(
+         break;
+     }
+ 
++    ctlReg &= ~MUX_MASK;
++
+     switch (ConnectMode) {
+     case ConnectModeInput:
+         ctlReg &= ~BIT(OE_BIT);
+@@ -528,14 +528,7 @@ GPIOMaskUnmaskInterrupt(
+ 
+     intrReg = Read32((PULONG)(Context->Base + pinOffset));
+ 
+-    if (Mask) {
+-        intrReg &= ~BIT(INTR_ENABLE_BIT);
+-        intrReg &= ~BIT(INTR_RAW_STATUS_BIT);
+-    }
+-    else {
+-        intrReg |= BIT(INTR_ENABLE_BIT);
+-        intrReg |= BIT(INTR_RAW_STATUS_BIT);
+-    }
++    intrReg = KonaGpioMaskValue(intrReg, Mask);
+ 
+     Write32((PULONG)(Context->Base + pinOffset), intrReg);
+ }
+@@ -556,7 +549,8 @@ GPIOEnableInterrupt(
+ 
+     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Entry");
+ 
+-    if (EnableParameters->Polarity != InterruptActiveHigh && EnableParameters->Polarity != InterruptActiveLow) {
++    if ((EnableParameters->Polarity != InterruptActiveHigh && EnableParameters->Polarity != InterruptActiveLow) ||
++        (EnableParameters->InterruptMode != Latched && EnableParameters->InterruptMode != LevelSensitive)) {
+         status = STATUS_NOT_SUPPORTED;
+         goto Exit;
+     }
+@@ -575,17 +569,8 @@ GPIOEnableInterrupt(
+     intrReg &= ~(INTR_TARGET_MASK << INTR_TARGET_BIT);
+     intrReg |= INTR_TARGET_KPSS_VAL << INTR_TARGET_BIT;
+ 
+-    // Update configuration
+-    intrReg &= ~(3 << INTR_DETECTION_BIT);
+-    intrReg &= ~(1 << INTR_POLARITY_BIT);
+-    switch (EnableParameters->Polarity)
+-    {
+-    case InterruptActiveLow:
+-        break;
+-    case InterruptActiveHigh:
+-        intrReg |= BIT(INTR_POLARITY_BIT);
+-        break;
+-    }
++    intrReg = KonaGpioIrqValue(intrReg, EnableParameters->InterruptMode == Latched,
++                                  EnableParameters->Polarity == InterruptActiveHigh);
+ 
+     // Unmask interrupt
+     intrReg |= BIT(INTR_ENABLE_BIT);
+@@ -644,6 +629,10 @@ GPIOReconfigureInterrupt(
+     ULONG intrReg;
+ 
+     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Entry");
++    if ((ReconfigureParameters->Polarity != InterruptActiveHigh && ReconfigureParameters->Polarity != InterruptActiveLow) ||
++        (ReconfigureParameters->InterruptMode != Latched && ReconfigureParameters->InterruptMode != LevelSensitive)) {
++        return STATUS_NOT_SUPPORTED;
++    }
+     gpioContext = (PGPIO_DEVICE_CONTEXT)Context;
+     pinNumber = ReconfigureParameters->PinNumber + ReconfigureParameters->BankId * GPIO_PER_BANK;
+ 
+@@ -652,16 +641,8 @@ GPIOReconfigureInterrupt(
+     intrReg = Read32((PULONG)(gpioContext->Base + pinOffset));
+ 
+     intrReg |= BIT(INTR_RAW_STATUS_BIT);
+-    intrReg &= ~(3 << 2);
+-    intrReg &= ~(1 << 1);
+-    switch (ReconfigureParameters->Polarity)
+-    {
+-    case InterruptActiveLow:
+-        break;
+-    case InterruptActiveHigh:
+-        intrReg |= BIT(1);
+-        break;
+-    }
++    intrReg = KonaGpioIrqValue(intrReg, ReconfigureParameters->InterruptMode == Latched,
++                                  ReconfigureParameters->Polarity == InterruptActiveHigh);
+ 
+     Write32((PULONG)(gpioContext->Base + pinOffset), intrReg);
+ 

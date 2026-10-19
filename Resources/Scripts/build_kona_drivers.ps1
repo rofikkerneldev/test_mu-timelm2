@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory=$true)][string]$Source,
-    [Parameter(Mandatory=$true)][string]$Destination
+    [Parameter(Mandatory=$true)][string]$Destination,
+    [switch]$TimelmGpioFixes
 )
 $ErrorActionPreference = 'Stop'
 $Source = (Resolve-Path -LiteralPath $Source).Path
@@ -9,6 +10,29 @@ $Destination = (Resolve-Path -LiteralPath $Destination).Path
 $expected = '3dcdec0bd59e3e77be92629b2ed9e095ae6e19e8'
 $actual = (& git -C $Source rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $actual -ne $expected) { throw "Unexpected driver source: $actual" }
+$patchMetadata = @()
+if ($TimelmGpioFixes) {
+    $overlay = Join-Path $PSScriptRoot '../DeviceOverlays/timelm/Drivers/KonaGPIO'
+    $patch = (Resolve-Path -LiteralPath (Join-Path $overlay 'timelm-gpio.patch')).Path
+    $helper = (Resolve-Path -LiteralPath (Join-Path $overlay 'PinConfig.h')).Path
+    $targetHelper = Join-Path $Source 'src/GPIO/PinConfig.h'
+    if ((Test-Path -LiteralPath $targetHelper) -and
+        (Get-FileHash -LiteralPath $helper).Hash -ne (Get-FileHash -LiteralPath $targetHelper).Hash) {
+        throw 'Existing PinConfig.h differs from the timelm helper'
+    }
+    & git -C $Source apply --check -- $patch 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        & git -C $Source apply -- $patch
+        if ($LASTEXITCODE -ne 0) { throw 'Failed to apply timelm GPIO patch' }
+    } else {
+        & git -C $Source apply --reverse --check -- $patch 2>$null
+        if ($LASTEXITCODE -ne 0) { throw 'GPIO source is neither clean nor already patched as expected' }
+    }
+    Copy-Item -LiteralPath $helper -Destination $targetHelper
+    $patchMetadata = @($patch, $helper) | ForEach-Object {
+        [ordered]@{name=[IO.Path]::GetFileName($_);sha256=(Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant()}
+    }
+}
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 $msbuild = & $vswhere -latest -products '*' -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\amd64\MSBuild.exe' | Select-Object -First 1
 if (-not $msbuild) { throw 'MSBuild not found' }
@@ -18,9 +42,10 @@ $metadata = [ordered]@{
     commit = $actual
     configuration = 'Debug'
     architecture = 'ARM64'
-    target_os = 'Windows 11 22H2 (22621); hardware validation pending'
+    target_os = 'Windows 11 ARM64; installed timelm OS is 26H2 build 26300.9457; hardware validation pending'
     kmdf = '1.33'
     components = @('GPIO','SPMI','PMIC')
+    patches = $patchMetadata
 }
 $metadata | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $Destination 'source.json')
 foreach ($component in $metadata.components) {
