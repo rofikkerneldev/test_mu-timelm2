@@ -30,9 +30,9 @@ EVT_WDF_DEVICE_RELEASE_HARDWARE GeniRelease;
 EVT_WDF_DEVICE_D0_ENTRY GeniD0Entry;
 EVT_WDF_DEVICE_D0_EXIT GeniD0Exit;
 EVT_SPB_TARGET_CONNECT GeniConnect;
-EVT_SPB_CONTROLLER_IO_READ GeniRead;
-EVT_SPB_CONTROLLER_IO_WRITE GeniWrite;
-EVT_SPB_CONTROLLER_IO_SEQUENCE GeniSequence;
+EVT_SPB_CONTROLLER_READ GeniRead;
+EVT_SPB_CONTROLLER_WRITE GeniWrite;
+EVT_SPB_CONTROLLER_SEQUENCE GeniSequence;
 
 static GI_U32 ReadRegister(void *context, GI_U32 offset)
 {
@@ -52,7 +52,7 @@ static GI_U64 NowUs(void *context)
 static int Cancelled(void *context)
 {
     DEVICE_CONTEXT *device = context;
-    return device->CurrentRequest && WdfRequestIsCanceled(device->CurrentRequest);
+    return device->CurrentRequest && WdfRequestIsCanceled((WDFREQUEST)device->CurrentRequest);
 }
 static void Pause(void *context)
 {
@@ -294,7 +294,7 @@ static void Execute(WDFDEVICE device, SPBREQUEST request, ULONG count)
         information += transfer->Descriptor.TransferLength;
     }
     context->CurrentRequest = NULL;
-    WdfRequestSetInformation(request, information);
+    WdfRequestSetInformation((WDFREQUEST)request, information);
     SpbRequestComplete(request, status);
 }
 void GeniRead(WDFDEVICE device, SPBTARGET target, SPBREQUEST request, size_t length)
