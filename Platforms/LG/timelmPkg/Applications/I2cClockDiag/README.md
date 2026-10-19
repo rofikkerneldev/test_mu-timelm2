@@ -36,3 +36,29 @@ diagnostic output; it does not justify calling an unverified ABI or touching
 GCC registers. An enabled clock now does not prove retention after
 ExitBootServices, nor firmware/pinmux/reset ownership. Those still need proof
 before setting the Windows host's FirmwareHandoffVerified gate.
+
+## Once-only Windows boot launcher
+
+For devices without a file browser/Shell, the build also produces
+`I2cClockOnce.efi`. This variant is intended to temporarily occupy both
+`EFI/Microsoft/Boot/bootmgfw.efi` and `EFI/Boot/bootaa64.efi` on the ESP, with
+immutable original copies next to them named `bootmgfw.timelm-i2c-original.efi`
+and `bootaa64.timelm-i2c-original.efi`. Staging must verify the current original
+images against WindowsBootReference.json, back them up to the PC and ESP, then
+verify both replacement files before unmounting. BCD and partition layout are
+not edited. Do not deploy this variant as a general boot manager replacement.
+
+On execution, it checks both backups against the expected size/CRC32 and checks
+their bytes match. It restores both normal boot entries and reads them back
+before calling any clock protocol function. Restore failure stops before clock
+queries or chainload. On success, it saves a checkpoint, queries clocks, saves
+the log and starts the restored canonical Windows Boot Manager with its original
+load options. A missing clock protocol is logged and still permits Windows boot.
+The backup files remain available for Recovery rollback. Restoring boot files
+is filesystem I/O, with normal power-interruption limits; the restore behavior
+has host tests, not a completed V60 boot test yet.
+
+WindowsBootReference.json contains only observed size/CRC32/SHA256, not Windows
+binary data. CRC32 is used as a runtime corruption check; installation must
+use the stronger SHA256 comparison. This exact-image check intentionally
+requires updating the reference after a Windows Boot Manager update.

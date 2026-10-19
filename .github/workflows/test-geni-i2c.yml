@@ -59,11 +59,21 @@ jobs:
         run: |
           git submodule update --init --depth 1 Mu_Basecore
           bash Resources/Scripts/build_i2c_clockdiag.sh
+      - name: Test restore-before-query and Windows chainload behavior
+        run: |
+          gcc -std=c11 -fshort-wchar -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+            -I Mu_Basecore/MdePkg/Include -I Mu_Basecore/MdePkg/Include/X64 \
+            -I Silicon/Qualcomm/QcomPkg/Include \
+            Platforms/LG/timelmPkg/Applications/I2cClockDiag/tests/oneshot_test.c \
+            -o /tmp/oneshot-test
+          /tmp/oneshot-test
       - uses: actions/upload-artifact@v4
         with:
           name: timelm-I2cClockDiag-ARM64-UEFI
           path: |
             Build/I2cClockDiag/I2cClockDiag.efi
             Build/I2cClockDiag/source.json
+            Build/I2cClockDiag/I2cClockOnce.efi
+            Build/I2cClockDiag/oneshot.json
           if-no-files-found: error
           retention-days: 14

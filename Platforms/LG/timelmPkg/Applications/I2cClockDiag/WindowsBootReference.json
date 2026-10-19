@@ -1,0 +1,6 @@
+{
+  "size": 3120648,
+  "crc32": "0x83400b16",
+  "sha256": "fae47d78487e781aa06466775cb461adeb7ff7f887fe2c15295bb2eb4f4954e1",
+  "note": "Observed Windows Boot Manager; staging must refuse any different image. No Windows binary is stored in Git."
+}

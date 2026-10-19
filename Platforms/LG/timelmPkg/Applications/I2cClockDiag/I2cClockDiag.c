@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
-// Standalone UEFI application: clock queries only, no direct MMIO or clock writes.
+// Clock queries only, no direct MMIO or clock writes. Optional once-only boot
+// launcher restores boot files before querying, then starts Windows.
 #include <Uefi.h>
 #include <Protocol/EFIClock.h>
 #include <Protocol/LoadedImage.h>
@@ -117,6 +118,10 @@ STATIC EFI_STATUS SaveLog (EFI_HANDLE Image)
   return Status;
 }
 
+#ifdef TIMELM_ONESHOT
+#include "OneShot.h"
+#endif
+
 EFI_STATUS EFIAPI I2cClockDiagEntry (EFI_HANDLE Image, EFI_SYSTEM_TABLE *System)
 {
   EFI_STATUS Result, LogStatus;
@@ -124,9 +129,29 @@ EFI_STATUS EFIAPI I2cClockDiagEntry (EFI_HANDLE Image, EFI_SYSTEM_TABLE *System)
     return EFI_UNSUPPORTED;
   mSystem = System;
   mLogLength = 0;
+#ifdef TIMELM_ONESHOT
+  Text ("timelm once-only launcher: restore original Windows entries FIRST.\r\n");
+  Result = RestoreWindows (Image);
+  Text ("Restore and readback status: "); Hex (Result); Text ("\r\n");
+  (VOID)SaveLog (Image); // checkpoint before any firmware clock query
+  if (EFI_ERROR (Result)) {
+    Text ("Restore failed: no clock query or chainload attempted. Use Recovery backups.\r\n");
+    return Result;
+  }
+#endif
   Result = QueryClocks (System);
   LogStatus = SaveLog (Image);
   Text ("Append timelm-i2c-clockdiag.txt on application's filesystem: ");
   Hex (LogStatus); Text ("\r\n");
+#ifdef TIMELM_ONESHOT
+  // An unavailable clock protocol must not prevent the restored Windows boot.
+  Text ("Starting restored Windows Boot Manager.\r\n");
+  (VOID)SaveLog (Image);
+  Result = StartWindows (Image);
+  Text ("Windows Boot Manager returned: "); Hex (Result); Text ("\r\n");
+  (VOID)SaveLog (Image);
+  return Result;
+#else
   return EFI_ERROR (Result) ? Result : LogStatus;
+#endif
 }
