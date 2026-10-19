@@ -1,0 +1,45 @@
+; SPDX-License-Identifier: GPL-2.0-only
+[Version]
+Signature="$WINDOWS NT$"
+Class=System
+ClassGuid={4D36E97D-E325-11CE-BFC1-08002BE10318}
+Provider=%Provider%
+DriverVer=10/19/2026,0.1.0.0
+CatalogFile=kona_geni.cat
+PnpLockDown=1
+[Manufacturer]
+%Provider%=Devices,NT$ARCH$.10.0...22000
+[Devices.NT$ARCH$.10.0...22000]
+%Description%=Geni,ACPI\TIML0001
+[Geni.NT]
+CopyFiles=Files
+[Files]
+kona_geni.sys
+[Geni.NT.HW]
+AddReg=Handoff
+[Handoff]
+; Never enable until firmware has an independently validated bus handoff.
+HKR,,FirmwareHandoffVerified,0x00010001,0
+HKR,,SourceClockHz,0x00010001,0
+[Geni.NT.Services]
+AddService=kona_geni,0x00000002,Service
+[Service]
+DisplayName=%Description%
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%13%\kona_geni.sys
+Dependencies=SpbCx
+[Geni.NT.Wdf]
+KmdfService=kona_geni,Wdf
+[Wdf]
+KmdfLibraryVersion=$KMDFVERSION$
+[DestinationDirs]
+Files=13
+[SourceDisksNames]
+1=%Description%,,,
+[SourceDisksFiles]
+kona_geni.sys=1
+[Strings]
+Provider="timelm experimental port"
+Description="timelm GENI I2C FIFO bring-up controller"
