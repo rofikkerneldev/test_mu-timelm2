@@ -38,6 +38,15 @@ clang --target=aarch64-pc-windows-msvc -O2 -ffreestanding -fshort-wchar \
   -o "$output/I2cClockOnce.obj"
 lld-link /machine:arm64 /subsystem:efi_application /entry:I2cClockDiagEntry \
   /nodefaultlib /out:"$output/I2cClockOnce.efi" "$output/I2cClockOnce.obj"
+clang --target=aarch64-pc-windows-msvc -O2 -ffreestanding -fshort-wchar \
+  -fno-stack-protector -fno-builtin -Wall -Wextra -Werror \
+  -I Mu_Basecore/MdePkg/Include -I Mu_Basecore/MdePkg/Include/AArch64 \
+  -I Silicon/Qualcomm/QcomPkg/Include -DTIMELM_ONESHOT -DTIMELM_USB_HOST_PROBE \
+  "-DTIMELM_WINDOWS_SIZE=${reference[0]}u" "-DTIMELM_WINDOWS_CRC32=${reference[1]}u" \
+  -c Platforms/LG/timelmPkg/Applications/I2cClockDiag/I2cClockDiag.c \
+  -o "$output/UsbHostProbeOnce.obj"
+lld-link /machine:arm64 /subsystem:efi_application /entry:I2cClockDiagEntry \
+  /nodefaultlib /out:"$output/UsbHostProbeOnce.efi" "$output/UsbHostProbeOnce.obj"
 python3 - "$output" <<'PY'
 from pathlib import Path
 import hashlib, json, struct, subprocess, sys
@@ -65,5 +74,17 @@ metadata.update(sha256=hashlib.sha256(data).hexdigest(), size=len(data),
     purpose='restore both verified Windows entries, query clocks and USB, chainload Windows',
     windows_reference=json.load(open('Platforms/LG/timelmPkg/Applications/I2cClockDiag/WindowsBootReference.json')))
 (out / 'oneshot.json').write_text(json.dumps(metadata, indent=2))
+print(json.dumps(metadata))
+data = (out / 'UsbHostProbeOnce.efi').read_bytes()
+pe = struct.unpack_from('<I', data, 0x3c)[0]
+assert data[pe:pe+4] == b'PE\0\0'
+assert struct.unpack_from('<H', data, pe+4)[0] == 0xaa64
+assert struct.unpack_from('<H', data, pe+24+68)[0] == 10
+assert struct.unpack_from('<II', data, pe+24+112+8) == (0, 0)
+metadata.update(sha256=hashlib.sha256(data).hexdigest(), size=len(data),
+    purpose='restore Windows entries, transient native primary USB host test, teardown before chainload',
+    windows_reference=json.load(open('Platforms/LG/timelmPkg/Applications/I2cClockDiag/WindowsBootReference.json')),
+    log='timelm-usb-hostprobe.txt')
+(out / 'usb-host-probe.json').write_text(json.dumps(metadata, indent=2))
 print(json.dumps(metadata))
 PY

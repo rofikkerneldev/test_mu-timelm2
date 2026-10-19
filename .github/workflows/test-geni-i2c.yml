@@ -82,6 +82,21 @@ jobs:
             Platforms/LG/timelmPkg/Applications/I2cClockDiag/tests/usb_snapshot_test.c \
             -o /tmp/usb-snapshot-test
           /tmp/usb-snapshot-test
+      - name: Test guarded native host request and teardown
+        run: |
+          gcc -std=c11 -fshort-wchar -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+            -I Mu_Basecore/MdePkg/Include -I Mu_Basecore/MdePkg/Include/X64 \
+            -I Silicon/Qualcomm/QcomPkg/Include \
+            Platforms/LG/timelmPkg/Applications/I2cClockDiag/tests/usb_host_probe_test.c \
+            -o /tmp/usb-host-probe-test
+          /tmp/usb-host-probe-test
+          gcc -std=c11 -fshort-wchar -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+            -DTIMELM_USB_HOST_PROBE \
+            -I Mu_Basecore/MdePkg/Include -I Mu_Basecore/MdePkg/Include/X64 \
+            -I Silicon/Qualcomm/QcomPkg/Include \
+            Platforms/LG/timelmPkg/Applications/I2cClockDiag/tests/oneshot_test.c \
+            -o /tmp/usb-host-oneshot-test
+          /tmp/usb-host-oneshot-test
       - uses: actions/upload-artifact@v4
         with:
           name: timelm-I2cClockDiag-ARM64-UEFI
@@ -90,5 +105,7 @@ jobs:
             Build/I2cClockDiag/source.json
             Build/I2cClockDiag/I2cClockOnce.efi
             Build/I2cClockDiag/oneshot.json
+            Build/I2cClockDiag/UsbHostProbeOnce.efi
+            Build/I2cClockDiag/usb-host-probe.json
           if-no-files-found: error
           retention-days: 14

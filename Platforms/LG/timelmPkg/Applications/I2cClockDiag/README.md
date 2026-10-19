@@ -76,3 +76,13 @@ WindowsBootReference.json contains only observed size/CRC32/SHA256, not Windows
 binary data. CRC32 is used as a runtime corruption check; installation must
 use the stronger SHA256 comparison. This exact-image check intentionally
 requires updating the reference after a Windows Boot Manager update.
+
+## Optional transient host experiment
+
+The build also produces `UsbHostProbeOnce.efi` and `usb-host-probe.json`.
+This separate variant requests and tears down a native primary USB host before
+Windows chainload; it is not a getter-only snapshot. Its exact firmware ABI and
+owner checks, restore/checkpoint ordering, cleanup rules and manual-reboot
+failure behavior are documented in [USB-HOST.md](USB-HOST.md). It writes a
+separate `timelm-usb-hostprobe.txt`. Do not substitute it for the normal snapshot
+app without the staging checks and original EFI backups.

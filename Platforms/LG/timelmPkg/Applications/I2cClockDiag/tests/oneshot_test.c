@@ -8,6 +8,11 @@
 #define TIMELM_WINDOWS_SIZE 64u
 #define TIMELM_WINDOWS_CRC32 0x100ece8cu
 #include "../I2cClockDiag.c"
+#ifdef TIMELM_USB_HOST_PROBE
+#define EXPECTED_QUERIES 2
+#else
+#define EXPECTED_QUERIES 1
+#endif
 
 typedef struct FILE_MOCK {
   EFI_FILE_PROTOCOL Api;
@@ -161,7 +166,7 @@ STATIC VOID Setup (VOID)
     mFiles[I].Api.SetPosition = Position; mFiles[I].Api.GetInfo = GetInfo;
     mFiles[I].Api.SetInfo = SetInfo; mFiles[I].Api.Flush = Close;
     mFiles[I].Index = (int)I;
-    mFiles[I].Name = I < 2 ? mTargets[I] : I < 4 ? mBackups[I - 2] : L"timelm-i2c-clockdiag.txt";
+    mFiles[I].Name = I < 2 ? mTargets[I] : I < 4 ? mBackups[I - 2] : mLogName;
     if (I < 2) { memcpy(mFiles[I].Data, "launcher", 8); mFiles[I].Size = 8; }
     else if (I < 4) { memcpy(mFiles[I].Data, mOriginal, 64); mFiles[I].Size = 64; }
   }
@@ -181,7 +186,7 @@ STATIC VOID Setup (VOID)
 int main(void)
 {
   Setup(); assert(I2cClockDiagEntry((EFI_HANDLE)1, &mTable) == EFI_SUCCESS);
-  assert(mWrites == 2 && mQueries == 1 && mLoads == 1 && mStarts == 1);
+  assert(mWrites == 2 && mQueries == EXPECTED_QUERIES && mLoads == 1 && mStarts == 1);
   assert(mUsbQueries == 2);
   assert(mFiles[0].Size == 64 && mFiles[1].Size == 64);
   Setup(); mFiles[3].Data[0] ^= 1;
@@ -199,7 +204,7 @@ int main(void)
   Setup(); memcpy(mFiles[0].Data, mOriginal, 64); mFiles[0].Size = 64;
   memcpy(mFiles[1].Data, mOriginal, 64); mFiles[1].Size = 64;
   assert(I2cClockDiagEntry((EFI_HANDLE)1, &mTable) == EFI_SUCCESS);
-  assert(!mWrites && mQueries == 1 && mStarts == 1);
+  assert(!mWrites && mQueries == EXPECTED_QUERIES && mStarts == 1);
   puts("One-shot UEFI: restore-before-query, integrity/failure paths and chainload passed");
   return 0;
 }

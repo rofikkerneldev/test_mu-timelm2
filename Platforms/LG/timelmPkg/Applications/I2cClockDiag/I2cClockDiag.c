@@ -10,8 +10,13 @@ STATIC EFI_SYSTEM_TABLE *mSystem;
 STATIC EFI_GUID mClockGuid = EFI_CLOCK_PROTOCOL_GUID;
 STATIC EFI_GUID mLoadedImageGuid = EFI_LOADED_IMAGE_PROTOCOL_GUID;
 STATIC EFI_GUID mFileSystemGuid = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
-STATIC CHAR8 mLog[16384];
+STATIC CHAR8 mLog[65536];
 STATIC UINTN mLogLength;
+#ifdef TIMELM_USB_HOST_PROBE
+STATIC CHAR16 mLogName[]=L"timelm-usb-hostprobe.txt";
+#else
+STATIC CHAR16 mLogName[]=L"timelm-i2c-clockdiag.txt";
+#endif
 STATIC CONST CHAR8 *mNames[] = {
   "gcc_qupv3_wrap1_s5_clk",
   "gcc_qupv3_wrap1_s5_clk_src",
@@ -103,7 +108,7 @@ STATIC EFI_STATUS SaveLog (EFI_HANDLE Image)
   if (FileSystem == NULL) return EFI_NOT_FOUND;
   Status = FileSystem->OpenVolume (FileSystem, &Root);
   if (EFI_ERROR (Status)) return Status;
-  Status = Root->Open (Root, &File, L"timelm-i2c-clockdiag.txt",
+  Status = Root->Open (Root, &File, mLogName,
     EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE | EFI_FILE_MODE_CREATE, 0);
   Root->Close (Root);
   if (EFI_ERROR (Status)) return Status;
@@ -119,6 +124,10 @@ STATIC EFI_STATUS SaveLog (EFI_HANDLE Image)
 }
 
 #include "UsbSnapshot.h"
+
+#ifdef TIMELM_USB_HOST_PROBE
+#include "UsbHostProbe.h"
+#endif
 
 #ifdef TIMELM_ONESHOT
 #include "OneShot.h"
@@ -143,8 +152,18 @@ EFI_STATUS EFIAPI I2cClockDiagEntry (EFI_HANDLE Image, EFI_SYSTEM_TABLE *System)
 #endif
   Result = QueryClocks (System);
   QueryUsb (System);
+#ifdef TIMELM_USB_HOST_PROBE
+  Result=ProbePrimaryUsbHost(Image,System);
+  if (EFI_ERROR(Result)) {
+    Text("Host cleanup failed. Windows chainload blocked. Reboot into Recovery.\r\n");
+    (VOID)SaveLog(Image);
+    // Returning to BDS could launch another Windows option with host DMA live.
+    // Original EFI entries are already restored; a manual reboot clears this test.
+    for (;;) (VOID)System->BootServices->Stall(1000000);
+  }
+#endif
   LogStatus = SaveLog (Image);
-  Text ("Append timelm-i2c-clockdiag.txt on application's filesystem: ");
+  Text ("Append diagnostic log on application's filesystem: ");
   Hex (LogStatus); Text ("\r\n");
 #ifdef TIMELM_ONESHOT
   // An unavailable clock protocol must not prevent the restored Windows boot.
