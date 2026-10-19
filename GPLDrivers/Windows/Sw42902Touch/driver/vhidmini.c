@@ -20,6 +20,25 @@ Environment:
 #include "sw42902_protocol.h"
 #include <spb.h>
 
+static VOID TouchDiagnostic(PDEVICE_CONTEXT device, PCWSTR label, ULONG value)
+{
+    WDFKEY key;
+    UNICODE_STRING name;
+    if (!NT_SUCCESS(WdfDeviceOpenRegistryKey(device->Device, PLUGPLAY_REGKEY_DEVICE,
+        KEY_SET_VALUE, WDF_NO_OBJECT_ATTRIBUTES, &key))) return;
+    RtlInitUnicodeString(&name, label);
+    (VOID)WdfRegistryAssignULong(key, &name, value);
+    WdfRegistryClose(key);
+}
+static VOID TouchSnapshot(PDEVICE_CONTEXT device)
+{
+    TouchDiagnostic(device, L"TimelmTouchIrqs", (ULONG)device->IrqCount);
+    TouchDiagnostic(device, L"TimelmTouchDecoded", (ULONG)device->DecodedCount);
+    TouchDiagnostic(device, L"TimelmTouchInvalid", (ULONG)device->InvalidCount);
+    TouchDiagnostic(device, L"TimelmTouchI2cErrors", (ULONG)device->I2cErrorCount);
+    TouchDiagnostic(device, L"TimelmTouchLastI2cStatus", (ULONG)device->LastI2cStatus);
+}
+
 ULONG XMax = SW42902_X_MAX;
 ULONG YMax = SW42902_Y_MAX;
 
@@ -643,6 +662,7 @@ NTSTATUS
     NTSTATUS status = STATUS_SUCCESS;
 
     UNREFERENCED_PARAMETER(FxResourcesRaw);
+    TouchDiagnostic(pDevice, L"TimelmTouchStage", 1);
 
     //
     // Parse the peripheral's resources.
@@ -673,7 +693,7 @@ NTSTATUS
             if ((Class == CM_RESOURCE_CONNECTION_CLASS_SERIAL) &&
                 ((Type == CM_RESOURCE_CONNECTION_TYPE_SERIAL_I2C)))
             {
-                if (fSpbResourceFound == FALSE || fInterruptResourceFound == FALSE)
+                if (fSpbResourceFound == FALSE)
                 {
                     pDevice->PeripheralId.LowPart =
                         pDescriptor->u.Connection.IdLowPart;
@@ -682,6 +702,7 @@ NTSTATUS
 
                     fSpbResourceFound = TRUE;
                 }
+                else return STATUS_DEVICE_CONFIGURATION_ERROR;
             }
 
             break;
@@ -693,6 +714,7 @@ NTSTATUS
                 fInterruptResourceFound = TRUE;
                 interruptIndex = i;
             }
+            else return STATUS_DEVICE_CONFIGURATION_ERROR;
             break;
 
         default:
@@ -709,7 +731,7 @@ NTSTATUS
     // An SPB resource is required.
     //
 
-    if (fSpbResourceFound == FALSE)
+    if (fSpbResourceFound == FALSE || fInterruptResourceFound == FALSE)
     {
         status = STATUS_NOT_FOUND;
     }
@@ -829,7 +851,9 @@ OnD0Entry(
         &pDevice->SpbController);
 
     if (!NT_SUCCESS(status)) return status;
+    TouchDiagnostic(pDevice, L"TimelmTouchStage", 2);
     status = SpbDeviceOpen(pDevice);
+    TouchDiagnostic(pDevice, L"TimelmTouchStartStatus", (ULONG)status);
     if (!NT_SUCCESS(status)) {
         WdfIoTargetClose(pDevice->SpbController);
         WdfObjectDelete(pDevice->SpbController);
@@ -864,6 +888,7 @@ OnD0Exit(
 
     PDEVICE_CONTEXT pDevice = GetDeviceContext(FxDevice);
 
+    TouchSnapshot(pDevice);
     if (pDevice->SpbController != WDF_NO_HANDLE) SpbDeviceClose(pDevice);
 
     if (pDevice->SpbController != WDF_NO_HANDLE)
@@ -1926,10 +1951,21 @@ OnInterruptIsr(WDFINTERRUPT interrupt, ULONG messageId)
     UCHAR report[SW42902_REPORT_SIZE];
     WDFREQUEST request;
     NTSTATUS status;
+    int decoded;
     UNREFERENCED_PARAMETER(messageId);
+    InterlockedIncrement(&device->IrqCount);
     status = SpbDeviceWriteRead(device, command, packet, sizeof(command), sizeof(packet));
-    if (!NT_SUCCESS(status)) return FALSE;
-    if (Sw42902Decode(packet, sizeof(packet), report) != 1) return TRUE;
+    device->LastI2cStatus = status;
+    if (!NT_SUCCESS(status)) {
+        if (InterlockedIncrement(&device->I2cErrorCount) == 1) TouchSnapshot(device);
+        return TRUE;
+    }
+    decoded = Sw42902Decode(packet, sizeof(packet), report);
+    if (decoded != 1) {
+        if (decoded < 0 && InterlockedIncrement(&device->InvalidCount) == 1) TouchSnapshot(device);
+        return TRUE;
+    }
+    if (InterlockedIncrement(&device->DecodedCount) == 1) TouchSnapshot(device);
     WdfWaitLockAcquire(device->ReportLock, NULL);
     status = WdfIoQueueRetrieveNextRequest(device->ManualQueue, &request);
     if (NT_SUCCESS(status)) {
@@ -1971,12 +2007,23 @@ SpbDeviceOpen(PDEVICE_CONTEXT device)
         GENERIC_READ | GENERIC_WRITE);
     status = WdfIoTargetOpen(device->SpbController, &open);
     if (!NT_SUCCESS(status)) return status;
+    TouchDiagnostic(device, L"TimelmTouchStage", 3);
     status = SpbDeviceWriteRead(device, command, product, sizeof(command), sizeof(product));
     if (!NT_SUCCESS(status)) return status;
+    {
+        WDFKEY key;
+        UNICODE_STRING name = RTL_CONSTANT_STRING(L"TimelmTouchProductId");
+        if (NT_SUCCESS(WdfDeviceOpenRegistryKey(device->Device, PLUGPLAY_REGKEY_DEVICE,
+            KEY_SET_VALUE, WDF_NO_OBJECT_ATTRIBUTES, &key))) {
+            (VOID)WdfRegistryAssignValue(key, &name, REG_BINARY, sizeof(product), product);
+            WdfRegistryClose(key);
+        }
+    }
     // This first candidate supports the observed internal B3W68TIM panel only.
     // A different PCB/firmware must be inspected before enabling writes.
     if (RtlCompareMemory(product, "B3W68TIM", sizeof(product)) != sizeof(product))
         return STATUS_DEVICE_HARDWARE_ERROR;
+    TouchDiagnostic(device, L"TimelmTouchStage", 4);
     status = Sw42902WriteRegister(device, 0xFE4, 0); // disable unused SPI
     if (!NT_SUCCESS(status)) return status;
     status = Sw42902WriteRegister(device, 0xC00, 1); // device control
@@ -1992,6 +2039,7 @@ SpbDeviceOpen(PDEVICE_CONTEXT device)
     // LCD U3, normal finger scanning, active pen disabled for first bring-up.
     status = Sw42902WriteRegister(device, 0xC03, 0x8303);
     device->ReportPending = FALSE;
+    if (NT_SUCCESS(status)) TouchDiagnostic(device, L"TimelmTouchStage", 5);
     return status;
 }
 

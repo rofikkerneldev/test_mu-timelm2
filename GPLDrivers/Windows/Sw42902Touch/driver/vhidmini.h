@@ -63,6 +63,8 @@ typedef struct _DEVICE_CONTEXT
     WDFWAITLOCK             ReportLock;
     UCHAR                   LastReport[62];
     BOOLEAN                 ReportPending;
+    volatile LONG           IrqCount, DecodedCount, InvalidCount, I2cErrorCount;
+    NTSTATUS                LastI2cStatus;
 
 } DEVICE_CONTEXT, *PDEVICE_CONTEXT;
 

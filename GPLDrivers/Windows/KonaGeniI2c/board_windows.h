@@ -8,10 +8,12 @@ typedef struct GENI_BOARD {
     PUCHAR GccCore, GccVote;
     PUCHAR Engine;
     WDFIOTARGET Pins[4], Provider;
+    LARGE_INTEGER PinIds[4];
     TIMELM_TOUCH_BUS Bus;
     TOUCH_BOARD State;
     NTSTATUS LastStatus;
     BOOLEAN Native;
+    BOOLEAN InterfaceAcquired;
 } GENI_BOARD;
 NTSTATUS GeniBoardPrepare(GENI_BOARD *board, WDFDEVICE device, WDFCMRESLIST resources);
 NTSTATUS GeniBoardStart(GENI_BOARD *board, PUCHAR engine, ULONG *select);

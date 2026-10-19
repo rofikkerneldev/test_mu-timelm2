@@ -9,6 +9,7 @@
 #include "board_windows.h"
 DEFINE_GUID(GUID_TIMELM_GPIO_PROVIDER,
     0x3d4f477b, 0x4937, 0x407b, 0x93, 0x29, 0xf7, 0xc8, 0x8c, 0x9a, 0x01, 0x88);
+static NTSTATUS OpenPin(GENI_BOARD *b, LARGE_INTEGER id, ULONG index);
 
 VOID GeniRecord(WDFDEVICE device, PCWSTR label, ULONG value)
 {
@@ -53,7 +54,8 @@ static int Pin(void *context, enum TB_PIN pin, int high)
     WDF_REQUEST_SEND_OPTIONS options;
     NTSTATUS status;
     ULONG_PTR transferred = 0;
-    if ((unsigned)pin > TbVdd || !b->Pins[pin]) return 0;
+    if ((unsigned)pin > TbVdd) return 0;
+    if (!b->Pins[pin]) return high ? 0 : 1; /* cleanup skips unopened connections */
     WDF_MEMORY_DESCRIPTOR_INIT_BUFFER(&memory, &value, sizeof(value));
     WDF_REQUEST_SEND_OPTIONS_INIT(&options, WDF_REQUEST_SEND_OPTION_TIMEOUT);
     WDF_REQUEST_SEND_OPTIONS_SET_TIMEOUT(&options, WDF_REL_TIMEOUT_IN_MS(100));
@@ -75,6 +77,7 @@ static int Mux(void *context, int enable)
 static int EngineReady(void *context)
 {
     GENI_BOARD *b = context;
+    ULONG i;
     ULONG firmware = READ_REGISTER_ULONG((PULONG)(b->Engine + GI_FW_REV));
     ULONG fifo = READ_REGISTER_ULONG((PULONG)(b->Engine + GI_IF_DISABLE));
     ULONG state = READ_REGISTER_ULONG((PULONG)(b->Engine + GI_STATUS));
@@ -83,7 +86,16 @@ static int EngineReady(void *context)
     GeniRecord(b->Device, L"TimelmGeniState", state);
     /* Do not power/reset the peripheral or load unverified SE firmware when
      * ownership/protocol/FIFO prerequisites are absent. GPI-only is distinct. */
-    return ((firmware >> 8) & 255u) == 3u && !(fifo & 1u) && !(state & 0x1001u);
+    if (((firmware >> 8) & 255u) != 3u || (fifo & 1u) || (state & 0x1001u)) return 0;
+    /* Opening an output GPIO can change its level. Do it only after the
+     * engine checks, asserting reset before acquiring either supply pin. */
+    b->State.Powered = 1;
+    for (i = 0; i < 4; ++i) {
+        NTSTATUS status = OpenPin(b, b->PinIds[i], i);
+        if (!NT_SUCCESS(status)) { b->LastStatus = status; return 0; }
+        if (i < 3 && !Pin(b, (enum TB_PIN)i, 0)) return 0;
+    }
+    return 1;
 }
 static NTSTATUS Contract(WDFDEVICE device)
 {
@@ -167,10 +179,7 @@ NTSTATUS GeniBoardPrepare(GENI_BOARD *b, WDFDEVICE device, WDFCMRESLIST resource
     b->GccCore = MmMapIoSpaceEx(core, 0x1000, PAGE_READWRITE | PAGE_NOCACHE);
     b->GccVote = MmMapIoSpaceEx(vote, 0x1000, PAGE_READWRITE | PAGE_NOCACHE);
     if (!b->GccCore || !b->GccVote) { status = STATUS_INSUFFICIENT_RESOURCES; goto Fail; }
-    for (i = 0; i < 4; ++i) {
-        status = OpenPin(b, ids[i], i);
-        if (!NT_SUCCESS(status)) goto Fail;
-    }
+    RtlCopyMemory(b->PinIds, ids, sizeof(ids));
     GeniRecord(device, L"TimelmBoardStage", 11);
     status = IoGetDeviceInterfaces(&GUID_TIMELM_GPIO_PROVIDER, NULL, 0, &links);
     if (!NT_SUCCESS(status)) goto Fail;
@@ -186,6 +195,7 @@ NTSTATUS GeniBoardPrepare(GENI_BOARD *b, WDFDEVICE device, WDFCMRESLIST resource
     status = WdfIoTargetQueryForInterface(b->Provider, &GUID_TIMELM_TOUCH_BUS,
         (PINTERFACE)&b->Bus, sizeof(b->Bus), 2, NULL);
     if (!NT_SUCCESS(status)) goto Fail;
+    b->InterfaceAcquired = TRUE;
     if (b->Bus.Interface.Version != 2 || b->Bus.Interface.Size != sizeof(b->Bus) ||
         !b->Bus.SetBus || !b->Bus.Interface.InterfaceDereference) {
         status = STATUS_NOT_SUPPORTED; goto Fail;
@@ -246,10 +256,11 @@ VOID GeniBoardRelease(GENI_BOARD *b)
 {
     ULONG i;
     if (b->State.Clock.Read) (void)GeniBoardStop(b);
-    if (b->Bus.Interface.InterfaceDereference) {
+    if (b->InterfaceAcquired && b->Bus.Interface.InterfaceDereference) {
         b->Bus.Interface.InterfaceDereference(b->Bus.Interface.Context);
         RtlZeroMemory(&b->Bus, sizeof(b->Bus));
     }
+    b->InterfaceAcquired = FALSE;
     if (b->Provider) { WdfIoTargetClose(b->Provider); WdfObjectDelete(b->Provider); b->Provider = NULL; }
     for (i = 0; i < 4; ++i) if (b->Pins[i]) {
         WdfIoTargetClose(b->Pins[i]); WdfObjectDelete(b->Pins[i]); b->Pins[i] = NULL;

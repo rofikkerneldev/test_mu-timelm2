@@ -126,6 +126,27 @@ Capture 'pnp-entities' {
 Capture 'connected-resources' { Native 'connected-resources' 'pnputil.exe' @('/enum-devices','/connected','/deviceids','/drivers','/stack','/resources') }
 Capture 'problem-devices' { Native 'problem-devices' 'pnputil.exe' @('/enum-devices','/problem','/deviceids','/properties') }
 Capture 'driver-packages' { Native 'driver-packages' 'pnputil.exe' @('/enum-drivers','/files') }
+Capture 'touch-driver-diagnostics' {
+    $values = foreach ($id in @('TIML0001','LGSW4290')) {
+        $path = 'HKLM:\SYSTEM\CurrentControlSet\Enum\ACPI\' + $id
+        if (Test-Path -LiteralPath $path) {
+            foreach ($instance in Get-ChildItem -LiteralPath $path) {
+                foreach ($key in @($instance.PSPath, ($instance.PSPath + '\Device Parameters'))) {
+                    if (Test-Path -LiteralPath $key) {
+                        $properties = Get-ItemProperty -LiteralPath $key
+                        foreach ($property in $properties.PSObject.Properties) {
+                            if ($property.Name -like 'Timelm*' -or
+                                $property.Name -in @('NativeBoardInitEnabled','FirmwareHandoffVerified','SourceClockHz')) {
+                                [pscustomobject]@{device=$id;key=$key;name=$property.Name;value=$property.Value}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Write-JsonFile 'touch-driver-diagnostics.json' @($values)
+}
 Capture 'boot-options' { Native 'boot-options' 'bcdedit.exe' @('/enum','all') }
 Capture 'graphics-registry' { Native 'graphics-registry' 'reg.exe' @('query','HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers\Configuration','/s') }
 Capture 'user-dpi' { Native 'user-dpi' 'reg.exe' @('query','HKCU\Control Panel\Desktop','/v','LogPixels') }
