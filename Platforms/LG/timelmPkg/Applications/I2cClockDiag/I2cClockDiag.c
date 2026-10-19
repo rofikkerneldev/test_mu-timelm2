@@ -130,6 +130,8 @@ STATIC EFI_STATUS SaveLog (EFI_HANDLE Image)
 STATIC VOID StopBeforeWindows (EFI_SYSTEM_TABLE *System, EFI_STATUS Status)
 {
   Text("USB firmware test ends here. Windows will not be started. Reboot into Recovery for logs.\r\n");
+  if (System->BootServices->SetWatchdogTimer)
+    (VOID)System->BootServices->SetWatchdogTimer(0,0,0,NULL);
   if (System->RuntimeServices && System->RuntimeServices->ResetSystem)
     System->RuntimeServices->ResetSystem(EfiResetShutdown,Status,0,NULL);
   // If shutdown is unavailable, stay in firmware until a manual reboot.

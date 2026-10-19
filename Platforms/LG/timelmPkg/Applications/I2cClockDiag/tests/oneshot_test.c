@@ -39,13 +39,25 @@ STATIC UINT8 mOriginal[64];
 STATIC int mWrites, mQueries, mLoads, mStarts, mFailWrite, mShortWrite, mBadReadback;
 STATIC int mUsbQueries;
 STATIC int mPoweroffs;
+STATIC int mWatchdogs;
 STATIC jmp_buf mFirmwareEnd;
 STATIC EFI_STATUS mShutdownStatus;
 STATIC VOID EFIAPI Reset(EFI_RESET_TYPE Type, EFI_STATUS Status, UINTN Size, VOID *Data)
 {
   assert(Type==EfiResetShutdown && Size==0 && Data==NULL);
   assert(!mLoads && !mStarts);
+  assert(mWatchdogs==1);
   ++mPoweroffs; mShutdownStatus=Status; longjmp(mFirmwareEnd,1);
+}
+STATIC EFI_STATUS EFIAPI Watchdog(UINTN Timeout, UINT64 Code, UINTN Size, CHAR16 *Data)
+{
+  assert(Timeout==0 && Code==0 && Size==0 && Data==NULL);
+  ++mWatchdogs; return EFI_SUCCESS;
+}
+STATIC EFI_STATUS EFIAPI FirmwareWait(UINTN Us)
+{
+  assert(Us==1000000 && !mLoads && !mStarts && mWatchdogs==1);
+  mShutdownStatus=EFI_UNSUPPORTED; longjmp(mFirmwareEnd,1);
 }
 STATIC EFI_STATUS RunEntry(VOID)
 {
@@ -180,7 +192,7 @@ STATIC VOID Setup (VOID)
   memset(&mChild, 0, sizeof(mChild));
   mWrites = mQueries = mLoads = mStarts = mFailWrite = mShortWrite = mBadReadback = 0;
   mUsbQueries = 0;
-  mPoweroffs = 0; mShutdownStatus=EFI_SUCCESS;
+  mPoweroffs = mWatchdogs = 0; mShutdownStatus=EFI_SUCCESS;
   memset(&mRt,0,sizeof(mRt)); mRt.ResetSystem=Reset;
   for (I = 0; I < 64; ++I) mOriginal[I] = (UINT8)I;
   for (I = 0; I < 5; ++I) {
@@ -198,6 +210,7 @@ STATIC VOID Setup (VOID)
   mConsole.OutputString = Print; mTable.ConOut = &mConsole; mTable.BootServices = &mBs;
   mTable.RuntimeServices=&mRt;
   mBs.HandleProtocol = Handle; mBs.LocateProtocol = Locate;
+  mBs.SetWatchdogTimer=Watchdog; mBs.Stall=FirmwareWait;
   mBs.LocateHandleBuffer = LocateHandles;
   mBs.AllocatePool = Allocate; mBs.FreePool = Free; mBs.CopyMem = Copy;
   mBs.CalculateCrc32 = Crc; mBs.LoadImage = Load; mBs.StartImage = Start; mBs.UnloadImage = Unload;
@@ -216,20 +229,29 @@ int main(void)
   Setup(); mFiles[3].Data[0] ^= 1;
   assert(EFI_ERROR(RunEntry()));
   assert(!mWrites && !mQueries && !mUsbQueries && !mLoads);
+  assert(mPoweroffs == EXPECTED_POWEROFFS);
   Setup(); mFailWrite = 1;
   assert(RunEntry() == EFI_WRITE_PROTECTED);
   assert(!mQueries && !mUsbQueries && !mLoads);
+  assert(mPoweroffs == EXPECTED_POWEROFFS);
   Setup(); mShortWrite = 1;
   assert(RunEntry() == EFI_VOLUME_FULL);
   assert(!mQueries && !mUsbQueries && !mLoads);
+  assert(mPoweroffs == EXPECTED_POWEROFFS);
   Setup(); mBadReadback = 1;
   assert(RunEntry() == EFI_COMPROMISED_DATA);
   assert(!mQueries && !mUsbQueries && !mLoads);
+  assert(mPoweroffs == EXPECTED_POWEROFFS);
   Setup(); memcpy(mFiles[0].Data, mOriginal, 64); mFiles[0].Size = 64;
   memcpy(mFiles[1].Data, mOriginal, 64); mFiles[1].Size = 64;
   assert(RunEntry() == EFI_SUCCESS);
   assert(!mWrites && mQueries == EXPECTED_QUERIES && mStarts == EXPECTED_STARTS);
   assert(mPoweroffs == EXPECTED_POWEROFFS);
+#ifdef TIMELM_USB_HOST_PROBE
+  Setup(); mRt.ResetSystem=NULL;
+  assert(RunEntry()==EFI_UNSUPPORTED);
+  assert(mWatchdogs==1 && !mPoweroffs && !mLoads && !mStarts);
+#endif
   puts("One-shot UEFI: restore ordering, failures, default chainload / USB firmware-only shutdown passed");
   return 0;
 }
