@@ -60,7 +60,11 @@ RX and event rings, >4 GB addresses, reversed completions, invalid/duplicate
 descriptor metadata, partial reads, timeouts, cancellation, active-instance
 refusal, missing command acknowledgement and failed DMA teardown. SMMU tests
 reject unknown/translated/faulting and overlapping conflicting stream matches.
-ASan/UBSan pass locally; ARM64 WDK compilation is checked in CI.
+ASan/UBSan pass locally. ARM64 WDK host/client and GPIO builds, portable tests
+and both disabled ACPI profiles passed at ad2aa09 in
+[Actions run 39239450021](https://github.com/rofikkerneldev/test_mu-timelm/actions/runs/39239450021).
+That run also checks touch scan activation after Windows interrupt readiness.
+It does not establish Windows hardware operation or the phone's DMA mapping.
 
 The implementation uses register formats/sequencing from the GPL-2.0 Linux
 Foundation/Linaro GPI drivers, with attribution retained in geni_gpi.h. The
