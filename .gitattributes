@@ -2,3 +2,4 @@
 # bytes even when a Windows Git client has core.autocrlf=true.
 Resources/DeviceOverlays/timelm/** -text
 Resources/Scripts/build_i2c_clockdiag.sh text eol=lf
+Resources/Scripts/Collect-TimelmRecoveryUsb.sh text eol=lf
