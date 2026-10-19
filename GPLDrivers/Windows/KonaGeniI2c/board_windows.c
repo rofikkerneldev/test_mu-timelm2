@@ -86,9 +86,14 @@ static int EngineReady(void *context)
     GeniRecord(b->Device, L"TimelmGeniState", state);
     /* Do not power/reset the peripheral or load unverified SE firmware when
      * ownership/protocol/FIFO prerequisites are absent. GPI-only is distinct. */
-    if (((firmware >> 8) & 255u) != 3u || (fifo & 1u) || (state & 0x1001u)) {
+    if (((firmware >> 8) & 255u) != 3u || (!b->GpiMode && (fifo & 1u)) || (state & 0x1001u)) {
         b->LastStatus = (fifo & 1u) ? STATUS_NOT_SUPPORTED : STATUS_DEVICE_NOT_READY;
         return 0;
+    }
+    if (b->GpiMode) {
+        if (!b->PrePowerCheck) { b->LastStatus = STATUS_DEVICE_CONFIGURATION_ERROR; return 0; }
+        b->LastStatus = b->PrePowerCheck(b->PrePowerContext);
+        if (!NT_SUCCESS(b->LastStatus)) return 0;
     }
     /* Opening an output GPIO can change its level. Do it only after the
      * engine checks, asserting reset before acquiring either supply pin. */
@@ -100,7 +105,7 @@ static int EngineReady(void *context)
     }
     return 1;
 }
-static NTSTATUS Contract(WDFDEVICE device)
+static NTSTATUS Contract(WDFDEVICE device, BOOLEAN gpi)
 {
     ACPI_EVAL_INPUT_BUFFER input;
     UCHAR bytes[sizeof(ACPI_EVAL_OUTPUT_BUFFER) + sizeof(ULONG)] = {0};
@@ -122,7 +127,8 @@ static NTSTATUS Contract(WDFDEVICE device)
     if (returned < sizeof(ACPI_EVAL_OUTPUT_BUFFER) || returned > sizeof(bytes) ||
         output->Signature != ACPI_EVAL_OUTPUT_BUFFER_SIGNATURE || output->Count != 1 ||
         output->Length > returned || output->Argument[0].Type != ACPI_METHOD_ARGUMENT_INTEGER ||
-        output->Argument[0].Argument != 0x54420101u) return STATUS_DEVICE_CONFIGURATION_ERROR;
+        output->Argument[0].Argument != (gpi ? 0x54420201u : 0x54420101u))
+        return STATUS_DEVICE_CONFIGURATION_ERROR;
     return STATUS_SUCCESS;
 }
 static NTSTATUS OpenPin(GENI_BOARD *b, LARGE_INTEGER id, ULONG index)
@@ -153,7 +159,7 @@ NTSTATUS GeniBoardPrepare(GENI_BOARD *b, WDFDEVICE device, WDFCMRESLIST resource
     b->Device = device;
     b->Native = TRUE;
     GeniRecord(device, L"TimelmBoardStage", 10);
-    status = Contract(device);
+    status = Contract(device,b->GpiMode);
     if (!NT_SUCCESS(status)) goto Fail;
     for (i = 0; i < WdfCmResourceListGetCount(resources); ++i) {
         PCM_PARTIAL_RESOURCE_DESCRIPTOR r = WdfCmResourceListGetDescriptor(resources, i);
@@ -164,6 +170,8 @@ NTSTATUS GeniBoardPrepare(GENI_BOARD *b, WDFDEVICE device, WDFCMRESLIST resource
                 core = r->u.Memory.Start;
             else if (r->u.Memory.Start.QuadPart == 0x152000 && r->u.Memory.Length == 0x1000)
                 vote = r->u.Memory.Start;
+            else if (b->GpiMode && ((r->u.Memory.Start.QuadPart == 0xa00000 && r->u.Memory.Length == 0x70000) ||
+                (r->u.Memory.Start.QuadPart == 0x15000000 && r->u.Memory.Length == 0x1000))) { /* GPI adapter validates/maps these. */ }
             else if (r->u.Memory.Start.QuadPart != 0xa94000 || r->u.Memory.Length != 0x4000) {
                 status = STATUS_DEVICE_CONFIGURATION_ERROR; goto Fail;
             }
@@ -176,7 +184,7 @@ NTSTATUS GeniBoardPrepare(GENI_BOARD *b, WDFDEVICE device, WDFCMRESLIST resource
             ids[pins++].HighPart = r->u.Connection.IdHighPart;
         }
     }
-    if (memories != 3 || !core.QuadPart || !vote.QuadPart || pins != 4) {
+    if (memories != (b->GpiMode ? 5u : 3u) || !core.QuadPart || !vote.QuadPart || pins != 4) {
         status = STATUS_DEVICE_CONFIGURATION_ERROR; goto Fail;
     }
     b->GccCore = MmMapIoSpaceEx(core, 0x1000, PAGE_READWRITE | PAGE_NOCACHE);
@@ -255,10 +263,10 @@ NTSTATUS GeniBoardStop(GENI_BOARD *b)
     GeniRecord(b->Device, L"TimelmBoardStopStatus", (ULONG)status);
     return status;
 }
-VOID GeniBoardRelease(GENI_BOARD *b)
+static VOID Detach(GENI_BOARD *b, BOOLEAN restore)
 {
     ULONG i;
-    if (b->State.Clock.Read) (void)GeniBoardStop(b);
+    if (restore && b->State.Clock.Read) (void)GeniBoardStop(b);
     if (b->InterfaceAcquired && b->Bus.Interface.InterfaceDereference) {
         b->Bus.Interface.InterfaceDereference(b->Bus.Interface.Context);
         RtlZeroMemory(&b->Bus, sizeof(b->Bus));
@@ -272,4 +280,12 @@ VOID GeniBoardRelease(GENI_BOARD *b)
     if (b->GccVote) { MmUnmapIoSpace(b->GccVote, 0x1000); b->GccVote = NULL; }
     RtlZeroMemory(&b->State, sizeof(b->State));
     b->Native = FALSE;
+}
+VOID GeniBoardRelease(GENI_BOARD *b) { Detach(b,TRUE); }
+VOID GeniBoardAbandon(GENI_BOARD *b)
+{
+    /* GPI DMA could not be quiesced. Keep board clocks/power unchanged;
+     * resources detach without claiming a restored hardware state. */
+    GeniRecord(b->Device,L"TimelmBoardRetainedUntilReboot",1);
+    Detach(b,FALSE);
 }

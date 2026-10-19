@@ -57,8 +57,11 @@ and hardware errors before copying any DMA buffer into an SPB response. A timeou
 must quiesce DMA before freeing mappings. A valid HID decoder cannot supply any
 of these requirements.
 
-The current project has no such Windows GPI adapter yet. Do not describe the
-clock/GPIO build or captured Recovery packets as a completed touchscreen fix.
+The project now integrates this source path in geni_gpi.c/gpi_windows.c and the
+SPB Execute/D0/release callbacks. See [GPI implementation and limits](../../../GPLDrivers/Windows/KonaGeniI2c/GPI.md).
+The initial DMA policy supports verified firmware BYPASS only; translated SMMU
+operation still needs Windows IOMMU/domain support. Do not describe source
+integration, clock/GPIO builds or Recovery packets as a completed touchscreen fix.
 
 ## Evidence and references
 

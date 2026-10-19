@@ -7,6 +7,7 @@
 #include <reshub.h>
 #include "geni_fifo.h"
 #include "board_windows.h"
+#include "gpi_windows.h"
 
 typedef struct DEVICE_CONTEXT {
     PUCHAR Registers;
@@ -14,6 +15,8 @@ typedef struct DEVICE_CONTEXT {
     SPBREQUEST CurrentRequest;
     BOOLEAN HandoffVerified, Started;
     GENI_BOARD Board;
+    GPI_WINDOWS Gpi;
+    BOOLEAN UseGpi;
 } DEVICE_CONTEXT;
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DEVICE_CONTEXT, GetDeviceContext)
 
@@ -117,11 +120,12 @@ NTSTATUS GeniPrepare(WDFDEVICE device, WDFCMRESLIST raw, WDFCMRESLIST translated
 {
     DEVICE_CONTEXT *context = GetDeviceContext(device);
     WDFKEY key;
-    ULONG verified = 0, sourceHz = 0, native = 0, i, memoryCount = 0;
+    ULONG verified = 0, sourceHz = 0, native = 0, gpi = 0, i, memoryCount = 0;
     NTSTATUS status;
     UNICODE_STRING handoffName = RTL_CONSTANT_STRING(L"FirmwareHandoffVerified");
     UNICODE_STRING clockName = RTL_CONSTANT_STRING(L"SourceClockHz");
     UNICODE_STRING nativeName = RTL_CONSTANT_STRING(L"NativeBoardInitEnabled");
+    UNICODE_STRING gpiName = RTL_CONSTANT_STRING(L"NativeGpiEnabled");
     PCM_PARTIAL_RESOURCE_DESCRIPTOR memory = NULL;
     UNREFERENCED_PARAMETER(raw);
     GeniRecord(device, L"TimelmHostStage", 1);
@@ -131,9 +135,12 @@ NTSTATUS GeniPrepare(WDFDEVICE device, WDFCMRESLIST raw, WDFCMRESLIST translated
         KEY_READ, WDF_NO_OBJECT_ATTRIBUTES, &key);
     if (!NT_SUCCESS(status)) return status;
     (void)WdfRegistryQueryULong(key, &nativeName, &native);
+    (void)WdfRegistryQueryULong(key, &gpiName, &gpi);
     status = WdfRegistryQueryULong(key, &handoffName, &verified);
     if (NT_SUCCESS(status)) status = WdfRegistryQueryULong(key, &clockName, &sourceHz);
     WdfRegistryClose(key);
+    if (gpi > 1 || (gpi == 1 && native != 1)) return STATUS_DEVICE_CONFIGURATION_ERROR;
+    context->UseGpi = gpi == 1;
     if (native != 1 && (!NT_SUCCESS(status) || verified != 1 || sourceHz != 19200000u)) {
         GeniRecord(device, L"TimelmHostStatus", (ULONG)STATUS_DEVICE_NOT_READY);
         return STATUS_DEVICE_NOT_READY;
@@ -145,15 +152,23 @@ NTSTATUS GeniPrepare(WDFDEVICE device, WDFCMRESLIST raw, WDFCMRESLIST translated
             if (r->u.Memory.Start.QuadPart == 0xa94000) memory = r;
         }
     }
-    if (memoryCount != (native == 1 ? 3u : 1u) || !memory ||
+    if (memoryCount != (gpi == 1 ? 5u : native == 1 ? 3u : 1u) || !memory ||
         memory->u.Memory.Length != 0x4000) return STATUS_DEVICE_CONFIGURATION_ERROR;
     if (native == 1) {
+        context->Board.GpiMode = context->UseGpi;
         status = GeniBoardPrepare(&context->Board, device, translated);
         if (!NT_SUCCESS(status)) return status;
+    }
+    if (context->UseGpi) {
+        status = GpiWindowsPrepare(&context->Gpi,device,raw,translated);
+        if (!NT_SUCCESS(status)) { GeniBoardRelease(&context->Board); return status; }
+        context->Board.PrePowerCheck = GpiWindowsCheckReady;
+        context->Board.PrePowerContext = &context->Gpi;
     }
     context->Registers = MmMapIoSpaceEx(memory->u.Memory.Start, 0x4000,
         PAGE_READWRITE | PAGE_NOCACHE);
     if (!context->Registers) {
+        if (context->UseGpi) (void)GpiWindowsRelease(&context->Gpi);
         if (context->Board.Native) GeniBoardRelease(&context->Board);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
@@ -175,11 +190,17 @@ NTSTATUS GeniRelease(WDFDEVICE device, WDFCMRESLIST resources)
     UNREFERENCED_PARAMETER(resources);
     context->Io.Ready = 0;
     context->HandoffVerified = FALSE;
+    {
+        BOOLEAN safe = !context->UseGpi || GpiWindowsRelease(&context->Gpi);
+        if (context->Board.Native) {
+            if (safe) GeniBoardRelease(&context->Board);
+            else GeniBoardAbandon(&context->Board);
+        }
+    }
     if (context->Registers) {
         MmUnmapIoSpace(context->Registers, 0x4000);
         context->Registers = NULL;
     }
-    if (context->Board.Native) GeniBoardRelease(&context->Board);
     return STATUS_SUCCESS;
 }
 
@@ -199,6 +220,26 @@ NTSTATUS GeniD0Entry(WDFDEVICE device, WDF_POWER_DEVICE_STATE previous)
     GeniRecord(device, L"TimelmHostStage", 3);
     GeniRecord(device, L"TimelmGeniFirmware", ReadRegister(context, GI_FW_REV));
     GeniRecord(device, L"TimelmGeniFifoDisabled", ReadRegister(context, GI_IF_DISABLE));
+    if (context->UseGpi) {
+        status = GpiWindowsStart(&context->Gpi,select);
+        if (NT_SUCCESS(status)) {
+            /* Rings are owned/empty before enabling GENI's GPI event path. */
+            WriteRegister(context,GI_IRQ_GATE,0);
+            WriteRegister(context,GI_IRQ_CLEAR,0xffffffffu);
+            WriteRegister(context,GI_IRQ_ENABLE,ReadRegister(context,GI_IRQ_ENABLE) & ~0x4c000001u);
+            WriteRegister(context,GI_DMA_MODE,1);
+            WriteRegister(context,GI_GSI_EVENT,15);
+            WriteRegister(context,GI_CLK_SEL,select);
+            WriteRegister(context,GI_CLK_CFG,(7u << 4) | 1u);
+            status = GeniBoardConfirmClock(&context->Board);
+        }
+        if (!NT_SUCCESS(status)) {
+            if (NT_SUCCESS(GpiWindowsStop(&context->Gpi))) (void)GeniBoardStop(&context->Board);
+        } else context->Started = TRUE;
+        GeniRecord(device,L"TimelmHostStage",NT_SUCCESS(status) ? 4u : 3u);
+        GeniRecord(device,L"TimelmHostStatus",(ULONG)status);
+        return status;
+    }
     result = GiInitialize(&context->Io);
     if (result == GiOk && context->Board.Native &&
         !NT_SUCCESS(GeniBoardConfirmClock(&context->Board))) {
@@ -217,6 +258,13 @@ NTSTATUS GeniD0Exit(WDFDEVICE device, WDF_POWER_DEVICE_STATE next)
 {
     DEVICE_CONTEXT *context = GetDeviceContext(device);
     UNREFERENCED_PARAMETER(next);
+    if (context->UseGpi) {
+        NTSTATUS status = GpiWindowsStop(&context->Gpi);
+        if (!NT_SUCCESS(status)) return status;
+        WriteRegister(context,GI_GSI_EVENT,0);
+        WriteRegister(context,GI_DMA_MODE,0);
+        return GeniBoardStop(&context->Board);
+    }
     if (context->Io.Ready) {
         if (ReadRegister(context, GI_STATUS) & 1u) (void)GiAbort(&context->Io);
         WriteRegister(context, GI_IRQ_ENABLE, 0);
@@ -318,11 +366,16 @@ static void Execute(WDFDEVICE device, SPBREQUEST request, ULONG count)
     for (i = 0; i < count; ++i) {
         TRANSFER *transfer = &transfers[i];
         BOOLEAN read = transfer->Descriptor.Direction == SpbTransferDirectionFromDevice;
-        enum GI_RESULT result = GiTransfer(&context->Io, transfer->Bytes,
-            (GI_U32)transfer->Descriptor.TransferLength, read, i + 1u < count, deadline);
-        status = ResultStatus(result);
+        if (context->UseGpi) {
+            status = GpiWindowsTransfer(&context->Gpi,request,transfer->Bytes,
+                (ULONG)transfer->Descriptor.TransferLength,read,i+1u<count,deadline);
+        } else {
+            enum GI_RESULT result = GiTransfer(&context->Io, transfer->Bytes,
+                (GI_U32)transfer->Descriptor.TransferLength, read, i + 1u < count, deadline);
+            status = ResultStatus(result);
+        }
         if (!NT_SUCCESS(status)) {
-            if (context->Io.Ready) (void)GiAbort(&context->Io);
+            if (!context->UseGpi && context->Io.Ready) (void)GiAbort(&context->Io);
             break;
         }
         if (read) {

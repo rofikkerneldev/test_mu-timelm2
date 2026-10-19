@@ -5,7 +5,9 @@ is now available as a disabled opt-in and ARM64 WDK builds pass. However,
 controlled Recovery reads identify GPI DMA as the active V60 touch transport.
 **Do not deploy this FIFO prototype as a touchscreen fix.** The
 [GPI transport contract](../../../Platforms/LG/timelmPkg/TOUCH-GPI-CONTRACT.md)
-records the missing Windows transport. The firmware-handoff-only path described
+records the observed hardware. A [native source GPI backend](GPI.md) is now
+integrated as a separate guarded option; hardware validation remains pending.
+The firmware-handoff-only path described
 below remains available separately; its registry gates are still off.
 
 Experimental Windows KMDF/SpbCx controller for the LG V60 touch bus at 0xA94000.

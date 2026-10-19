@@ -14,11 +14,15 @@ typedef struct GENI_BOARD {
     NTSTATUS LastStatus;
     BOOLEAN Native;
     BOOLEAN InterfaceAcquired;
+    BOOLEAN GpiMode;
+    NTSTATUS (*PrePowerCheck)(PVOID Context);
+    PVOID PrePowerContext;
 } GENI_BOARD;
 NTSTATUS GeniBoardPrepare(GENI_BOARD *board, WDFDEVICE device, WDFCMRESLIST resources);
 NTSTATUS GeniBoardStart(GENI_BOARD *board, PUCHAR engine, ULONG *select);
 NTSTATUS GeniBoardConfirmClock(GENI_BOARD *board);
 NTSTATUS GeniBoardStop(GENI_BOARD *board);
 VOID GeniBoardRelease(GENI_BOARD *board);
+VOID GeniBoardAbandon(GENI_BOARD *board);
 VOID GeniRecord(WDFDEVICE device, PCWSTR name, ULONG value);
 #endif

@@ -24,6 +24,12 @@ transport remains required for the observed configuration. Native startup
 explicitly returns STATUS_NOT_SUPPORTED for FIFO-disabled firmware, before
 opening the touch power/reset GPIO connections.
 
+Following that finding, a [source GPI backend](../../../GPLDrivers/Windows/KonaGeniI2c/GPI.md)
+has been integrated with the host. The separate TouchGpiWindows.asl profile and
+NativeGpiEnabled option select it; the old FIFO profile is retained separately.
+DMA mapping checks, ownership, completion validation and teardown are explicit.
+Physical Windows validation and translated SMMU support remain pending.
+
 Recovery has CONFIG_DEBUG_FS and CONFIG_DEVMEM disabled, so no direct GCC/GENI
 register snapshot was obtained. No raw register access was forced.
 
