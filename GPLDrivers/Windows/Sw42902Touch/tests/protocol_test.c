@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "../driver/sw42902_protocol.h"
+#include "recovery_v074.h"
 
 static void le32(uint8_t *p, uint32_t value)
 {
@@ -61,6 +62,11 @@ int main(void)
     packet[0] = 6;
     packet[8] = 1; /* LPWG, not an absolute touch packet. */
     assert(Sw42902Decode(packet, sizeof(packet), report) == 0);
+    /* Real v0.74 wire packet read while the user swiped Recovery. */
+    assert(Sw42902Decode(RecoveryV074, sizeof(RecoveryV074), report) == 1);
+    assert(report[1] == 3 && report[2] == 0 && report[61] == 1);
+    assert(report[3] == 89 && report[4] == 0 && report[5] == 44 && report[6] == 1);
+    assert(Sw42902Decode(RecoveryV074, 47, report) == -1);
     puts("SW42902 protocol tests passed");
     return 0;
 }

@@ -4,6 +4,36 @@ Touch is the current priority. USB host experiments and broad PMIC work are
 set aside. The user reports normal Windows OOBE again. The traced USB v2
 launcher has not been deployed. Keep the original Windows EFI entries.
 
+## Recovery result: GPI is the active transport
+
+Three controlled write/read transactions (header 26 44, eight-byte read) returned
+42 33 57 36 38 54 49 4d: B3W68TIM. GPI1 GPII0 GSIV 311 advanced 225 to 234,
+while GENI GSIV 390 stayed zero. The vendor driver's transfer selection uses
+the GSI path when its read-only FIFO-disable value is nonzero. This strongly
+identifies the current Recovery bus as GSI-only, rather than a working FIFO
+path. It does not establish register state after a separate Mu boot.
+
+A subsequent 60-frame report capture contained three one-finger frames and 57
+empty frames. All passed the actual Windows decoder. Observed coordinates were
+(89,300), (649,578), (501,1526). The first frame is retained as a regression
+fixture. These are Recovery reads, not Windows input validation.
+
+Consequently this FIFO package must not be deployed as the V60 touch solution.
+The native clock/GPIO lifecycle and SW42902 client are reusable work; a GPI
+transport remains required for the observed configuration. Native startup
+explicitly returns STATUS_NOT_SUPPORTED for FIFO-disabled firmware, before
+opening the touch power/reset GPIO connections.
+
+Recovery has CONFIG_DEBUG_FS and CONFIG_DEVMEM disabled, so no direct GCC/GENI
+register snapshot was obtained. No raw register access was forced.
+
+The public Kona BSP contains qcgpi8250 and qci2c8250 at revision
+22221a09e02cb7054792427af60299b1c34d3c3e. The GPI INF uses QCOM2593 and contains
+QUP1 GPII0 GSIV 311, matching the observed interrupt. This is insufficient for
+installation: qci2c still lacks instance 14, its HID differs from alioth, and
+alioth uses QCOM2593 on a sensor-related node. No guessed IDs were added.
+See [the GPI transport contract](TOUCH-GPI-CONTRACT.md) for the remaining work.
+
 The new native path adds board initialization to the GENI SPB prototype; it
 does not claim working touch until the phone produces an identified SW42902
 packet and a Windows HID report. Default registry gates and both ACPI device

@@ -2,7 +2,12 @@
 
 This is a source candidate for the LG V60 timelm internal B3W68TIM touchscreen.
 It is **not a working touchscreen package yet**. The packet decoder passes host
-tests. The ARM64 KMDF package built successfully with WDK in
+tests, including a real B3W68TIM v0.74 one-finger Recovery capture. A 60-frame
+Recovery capture decoded three one-finger and 57 empty reports without malformed
+frames. This validates the wire format, not Windows transport or HID operation.
+The current [native Windows bring-up](../../../Platforms/LG/timelmPkg/TOUCH-WINDOWS-NATIVE.md)
+adds optional clock/GPIO handling, but Recovery uses GPI DMA and the Windows
+GPI transport remains unfinished. The initial ARM64 KMDF package built with WDK in
 [Actions run 39199989979](https://github.com/rofikkerneldev/test_mu-timelm/actions/runs/39199989979)
 at `ad14ab4cdb9d1f7fa6769bf891789851b1dede17`; PE machine type is ARM64.
 ASan/UBSan decoder tests also passed. It has not been tested on the phone.

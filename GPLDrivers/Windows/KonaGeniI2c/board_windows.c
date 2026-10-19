@@ -86,7 +86,10 @@ static int EngineReady(void *context)
     GeniRecord(b->Device, L"TimelmGeniState", state);
     /* Do not power/reset the peripheral or load unverified SE firmware when
      * ownership/protocol/FIFO prerequisites are absent. GPI-only is distinct. */
-    if (((firmware >> 8) & 255u) != 3u || (fifo & 1u) || (state & 0x1001u)) return 0;
+    if (((firmware >> 8) & 255u) != 3u || (fifo & 1u) || (state & 0x1001u)) {
+        b->LastStatus = (fifo & 1u) ? STATUS_NOT_SUPPORTED : STATUS_DEVICE_NOT_READY;
+        return 0;
+    }
     /* Opening an output GPIO can change its level. Do it only after the
      * engine checks, asserting reset before acquiring either supply pin. */
     b->State.Powered = 1;

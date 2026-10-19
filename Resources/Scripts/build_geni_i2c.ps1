@@ -20,7 +20,7 @@ if ([BitConverter]::ToUInt32($bytes,$pe) -ne 0x4550 -or [BitConverter]::ToUInt16
 }
 $commit = (& git -C $repo rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Unable to record source revision' }
-[ordered]@{commit=$commit;configuration=$Configuration;architecture='ARM64';kmdf='1.33';mode='polling prototype';firmware_handoff='not validated; disabled by default';hardware_validation='pending'} |
+[ordered]@{commit=$commit;configuration=$Configuration;architecture='ARM64';kmdf='1.33';mode='polling FIFO prototype';native_board_init='optional Windows GCC/GPIO lifecycle; disabled by default';observed_recovery_transport='GPI DMA; not implemented by this package';firmware_handoff='not validated; disabled by default';hardware_validation='not deployed'} |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $output 'source.json')
 $hashes = foreach ($file in Get-ChildItem -LiteralPath $output -File -Recurse) {
     if ($file.Name -eq 'sha256.json') { continue }

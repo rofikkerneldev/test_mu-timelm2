@@ -27,6 +27,8 @@ jobs:
         run: |
           ./Resources/Scripts/build_geni_i2c.ps1
           ./Resources/Scripts/build_sw42902_touch.ps1
+      - shell: powershell
+        run: ./Resources/Scripts/Collect-TimelmDiagnostics.ps1 -ValidateOnly
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -59,6 +61,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Test clock rollback, power ordering and failed cleanup
         run: |
+          sh -n Resources/Scripts/Collect-TimelmRecoveryTouch.sh
           gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
             GPLDrivers/Windows/KonaGeniI2c/tests/board_test.c \
             GPLDrivers/Windows/KonaGeniI2c/touch_clock.c \
@@ -71,6 +74,8 @@ jobs:
           gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
             GPLDrivers/Windows/Sw42902Touch/tests/protocol_test.c -o /tmp/touch-protocol-test
           /tmp/touch-protocol-test
+          gcc -std=c11 -Wall -Wextra -Werror \
+            GPLDrivers/Windows/Sw42902Touch/tests/decode_capture.c -o /tmp/decode-touch-capture
       - name: Compile disabled native Windows board ACPI
         run: |
           sudo apt-get update -qq

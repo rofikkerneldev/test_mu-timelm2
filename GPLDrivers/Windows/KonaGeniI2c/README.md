@@ -1,5 +1,13 @@
 # timelm GENI I2C SPB prototype
 
+Update: the [native Windows clock/GPIO implementation](../../../Platforms/LG/timelmPkg/TOUCH-WINDOWS-NATIVE.md)
+is now available as a disabled opt-in and ARM64 WDK builds pass. However,
+controlled Recovery reads identify GPI DMA as the active V60 touch transport.
+**Do not deploy this FIFO prototype as a touchscreen fix.** The
+[GPI transport contract](../../../Platforms/LG/timelmPkg/TOUCH-GPI-CONTRACT.md)
+records the missing Windows transport. The firmware-handoff-only path described
+below remains available separately; its registry gates are still off.
+
 Experimental Windows KMDF/SpbCx controller for the LG V60 touch bus at 0xA94000.
 This implements FIFO transfers; it is not a renamed Qualcomm binary. The ID
 TIML0001 belongs only to this prototype and does not claim Qualcomm compatibility.
@@ -30,7 +38,7 @@ and completes with an error instead of returning success for stale data.
 
 ## Firmware handoff is still missing
 
-The driver does not enable GCC clocks, vote RPMh/interconnect power, select
+The original firmware-handoff path does not enable GCC clocks, vote RPMh/interconnect power, select
 TLMM function qup13, load GENI firmware, or power/reset the SW42902. Those are
 mandatory before accessing its MMIO. It cannot inherit those guarantees from
 Recovery because booting the UEFI image changes ownership and power state.
