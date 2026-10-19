@@ -45,9 +45,16 @@ snapshot() {
 }
 uname -a > "$out/kernel.txt"
 cat /proc/cmdline >> "$out/kernel.txt"
-dmesg 2>&1 | tail -n 2000 > "$out/dmesg-before.txt"
+# This V60 Recovery requires the syslog interface; plain dmesg returns empty.
+dmesg -S 2>&1 | tail -n 2000 > "$out/dmesg-before.txt"
 if [ -r /proc/config.gz ] && command -v zcat >/dev/null 2>&1; then
     zcat /proc/config.gz 2>/dev/null | grep -E '^CONFIG_(USB|HID|TYPEC|EXTCON|INPUT_EVDEV|KEYBOARD)' > "$out/kernel-usb-config.txt"
+fi
+if command -v getevent >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
+    # Captures newly attached input devices too. Bound the child independently
+    # so it cannot remain running indefinitely after a USB cable swap.
+    timeout $((samples * 4 + 30)) getevent -lt </dev/null > "$out/input-events.txt" 2>&1 &
+    echo $! > "$out/input-capture-pid.txt"
 fi
 echo ready > "$out/ready.txt"
 i=0
@@ -55,10 +62,10 @@ while [ "$i" -lt "$samples" ]; do
     snapshot "$i"
     if [ $((i % 5)) -eq 0 ]; then
         printf '\n--- dmesg at sample %s ---\n' "$i" >> "$out/dmesg-periodic.txt"
-        dmesg 2>&1 | tail -n 150 >> "$out/dmesg-periodic.txt"
+        dmesg -S 2>&1 | tail -n 150 >> "$out/dmesg-periodic.txt"
     fi
     i=$((i + 1))
     sleep 2
 done
-dmesg 2>&1 | tail -n 2000 > "$out/dmesg-after.txt"
+dmesg -S 2>&1 | tail -n 2000 > "$out/dmesg-after.txt"
 echo complete > "$out/complete.txt"

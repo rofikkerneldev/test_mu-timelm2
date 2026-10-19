@@ -11,8 +11,11 @@ patch list must not be interpreted as a timelm compatibility report.
 An audit of the driver's firmware sections referenced by this platform
 matched the captured LG V60 XBL sections before the later USB experiment.
 The current candidate includes an explicit four-byte fixed-media Inquiry
-change in UsbMsdDxe. That experiment did not fix USB mass-storage transport:
-CBW/Tx failures and host disk-service stalls remain observed limitations.
+change in UsbMsdDxe. Earlier tests still had CBW/Tx failures and host disk-service
+stalls. A later physical session successfully exposed raw LU0 to a Windows PC,
+mounted win as NTFS, and allowed verified ESP file access. That observation does
+not establish that the Inquiry change alone fixed transport, nor does successful
+USB device-mode mass storage establish working UEFI USB host/OTG support.
 
 Raw configuration/panel files include the LG BOE SW43103 references. The
 boot-tested display path uses the inherited framebuffer with SimpleGOP;
