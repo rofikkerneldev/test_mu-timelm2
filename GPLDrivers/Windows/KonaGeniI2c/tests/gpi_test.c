@@ -14,6 +14,7 @@ typedef struct MOCK {
     unsigned Read, Length, Hold, Configs, Clock;
     int Pending, Stuck, BadPointer, BadChannel, BadType, BadStatus, Short, Reverse;
     int BadProducer, SilentCommand, FailStop, HardwareFail;
+    int Duplicate, Nack, GoCount;
 } MOCK;
 static GI_U32 Read(void *context, GI_U32 offset)
 {
@@ -97,12 +98,13 @@ static void Event(MOCK *m, int rx)
     GP_ELEMENT *e = &m->Events[m->EventWrite];
     GI_U32 index = rx ? m->RxRead : (m->TxRead + 63u) & 63u;
     GI_U64 address = (rx ? g->RxDma : g->TxDma) + index*16u;
-    unsigned bytes = rx || !m->Read ? m->Length : 0;
+    unsigned bytes = rx || !m->Read || m->GoCount ? m->Length : 0;
     if (m->BadPointer) address += 16;
     e->Dword[0] = (GI_U32)address; e->Dword[1] = (GI_U32)(address >> 32);
     e->Dword[2] = ((rx || !m->Read ? 2u : 4u) << 24) | (m->Short && bytes ? bytes-1 : bytes);
     e->Dword[3] = ((m->BadChannel ? 2u : (rx ? 1u : 0u)) << 24) |
         ((m->BadType ? 0x30u : 0x22u) << 16) | (m->BadStatus ? 32u : 0u);
+    if (m->Nack) { e->Dword[0] = 0x400; e->Dword[3] = 0x31u << 16; }
     m->EventWrite = (m->EventWrite+1)&255u;
     m->Regs[(GP_EV+16)/4] = (GI_U32)(g->EventDma + m->EventWrite*16u);
     m->Regs[(GP_EV+20)/4] = (GI_U32)(g->EventDma >> 32);
@@ -120,6 +122,7 @@ static void Pause(void *context)
     }
     if (m->Read && m->Reverse) Event(m, 1);
     Event(m, 0);
+    if (m->Duplicate) Event(m, 0);
     if (m->Read && !m->Reverse) Event(m, 1);
     m->Pending = 0;
 }
@@ -157,6 +160,7 @@ int main(void)
         assert(GpTransfer(&g, bytes, length, 0, 1, m.Time+50000) == GpOk);
         assert(m.Hold && memcmp(bytes,m.Wire,length) == 0);
         m.Reverse = length & 1;
+        m.GoCount = length & 1;
         memset(output,0xa5,sizeof(output));
         assert(GpTransfer(&g, output, length, 1, 0, m.Time+50000) == GpOk);
         assert(!m.Hold && memcmp(bytes,output,length) == 0);
@@ -169,6 +173,12 @@ int main(void)
     assert(GpStop(&g) == GpOk);
     Start(&m,&g); m.Stuck = 1; m.CancelAt = m.Time+40;
     assert(GpTransfer(&g,bytes,2,0,0,m.Time+50000) == GpCancelled);
+    assert(GpStop(&g) == GpOk);
+    Start(&m,&g); m.Duplicate = 1;
+    assert(GpTransfer(&g,bytes,2,0,0,m.Time+50000) == GpBadEvent);
+    assert(GpStop(&g) == GpOk);
+    Start(&m,&g); m.Nack = 1;
+    assert(GpTransfer(&g,bytes,2,0,0,m.Time+50000) == GpNack);
     assert(GpStop(&g) == GpOk);
     for (i = 0; i < 6; ++i) {
         Start(&m,&g);

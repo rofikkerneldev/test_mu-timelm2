@@ -222,11 +222,16 @@ enum GP_RESULT GpTransfer(GP_IO *g, GI_U8 *data, GI_U32 length,
             bytes = e->Dword[2] & 0xffffffu;
             status = e->Dword[3] & 0xffffu;
             pointer = ((GI_U64)e->Dword[1] << 32) | e->Dword[0];
-            if (type == 0x31u) { result = (e->Dword[0] & 0x200u) ? GpNack : GpIoError; break; }
+            if (type == 0x31u && channel < 2u) {
+                result = (e->Dword[0] & 0x400u) ? GpNack : GpIoError; break;
+            }
+            if (type == 0x22u && channel < 2u && (status & 0x40u)) { result = GpNack; break; }
             if (type != 0x22u || channel > 1u || status || code == 16u) { result = GpBadEvent; break; }
             if (channel == 0 && !txDone && pointer == txExpected &&
                 (read ? code == 4u : (code == 1u || code == 2u))) {
-                if (bytes != (read ? 0u : length)) { result = GpShort; break; }
+                /* GO EOB confirms descriptor consumption, not a DMA byte
+                 * count. Only RX DMA's exact count authorizes a read copy. */
+                if (!read && bytes != length) { result = GpShort; break; }
                 txDone = 1;
             } else if (channel == 1 && read && !rxDone && pointer == rxExpected &&
                 (code == 1u || code == 2u)) {
