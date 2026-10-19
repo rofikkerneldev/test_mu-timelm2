@@ -18,6 +18,7 @@ Environment:
 
 #include "vhidmini.h"
 #include "sw42902_protocol.h"
+#include "sw42902_init.h"
 #include <spb.h>
 
 static VOID TouchDiagnostic(PDEVICE_CONTEXT device, PCWSTR label, ULONG value)
@@ -509,6 +510,8 @@ Return Value:
     pnpCallbacks.EvtDeviceReleaseHardware = OnReleaseHardware;
     pnpCallbacks.EvtDeviceD0Entry = OnD0Entry;
     pnpCallbacks.EvtDeviceD0Exit = OnD0Exit;
+    pnpCallbacks.EvtDeviceD0EntryPostInterruptsEnabled = OnD0InterruptsReady;
+    pnpCallbacks.EvtDeviceD0ExitPreInterruptsDisabled = OnD0BeforeInterruptsDisabled;
 
 
     //
@@ -1991,6 +1994,41 @@ Sw42902WriteRegister(PDEVICE_CONTEXT device, USHORT address, ULONG value)
     return SpbDeviceWrite(device, bytes, sizeof(bytes));
 }
 
+static int InitWrite(void *context, unsigned address, unsigned value)
+{
+    PDEVICE_CONTEXT device = context;
+    NTSTATUS status = Sw42902WriteRegister(device,(USHORT)address,(ULONG)value);
+    if (!NT_SUCCESS(status) && NT_SUCCESS(device->InitStatus)) device->InitStatus = status;
+    return NT_SUCCESS(status);
+}
+static void InitDelay(void *context, unsigned ms)
+{
+    LARGE_INTEGER delay;
+    UNREFERENCED_PARAMETER(context);
+    delay.QuadPart = -10000LL * ms;
+    (VOID)KeDelayExecutionThread(KernelMode,FALSE,&delay);
+}
+NTSTATUS OnD0InterruptsReady(WDFDEVICE fx, WDF_POWER_DEVICE_STATE previous)
+{
+    PDEVICE_CONTEXT device = GetDeviceContext(fx);
+    NTSTATUS status;
+    UNREFERENCED_PARAMETER(previous);
+    device->InitStatus = STATUS_SUCCESS;
+    status = Sw42902StartScan(device,InitWrite) ? STATUS_SUCCESS : device->InitStatus;
+    TouchDiagnostic(device,L"TimelmTouchStartStatus",(ULONG)status);
+    if (NT_SUCCESS(status)) TouchDiagnostic(device,L"TimelmTouchStage",5);
+    return status;
+}
+NTSTATUS OnD0BeforeInterruptsDisabled(WDFDEVICE fx, WDF_POWER_DEVICE_STATE target)
+{
+    PDEVICE_CONTEXT device = GetDeviceContext(fx);
+    NTSTATUS status = STATUS_SUCCESS;
+    UNREFERENCED_PARAMETER(target);
+    if (device->SpbController) status = Sw42902WriteRegister(device,0xc01,0);
+    TouchDiagnostic(device,L"TimelmTouchStopStatus",(ULONG)status);
+    return status;
+}
+
 NTSTATUS
 SpbDeviceOpen(PDEVICE_CONTEXT device)
 {
@@ -1998,7 +2036,6 @@ SpbDeviceOpen(PDEVICE_CONTEXT device)
     WDF_IO_TARGET_OPEN_PARAMS open;
     UCHAR command[2] = { 0x26, 0x44 }; // CHIP_INFO + tc_product_id1
     UCHAR product[8];
-    LARGE_INTEGER delay;
     NTSTATUS status;
     status = RESOURCE_HUB_CREATE_PATH_FROM_ID(&path,
         device->PeripheralId.LowPart, device->PeripheralId.HighPart);
@@ -2024,22 +2061,10 @@ SpbDeviceOpen(PDEVICE_CONTEXT device)
     if (RtlCompareMemory(product, "B3W68TIM", sizeof(product)) != sizeof(product))
         return STATUS_DEVICE_HARDWARE_ERROR;
     TouchDiagnostic(device, L"TimelmTouchStage", 4);
-    status = Sw42902WriteRegister(device, 0xFE4, 0); // disable unused SPI
-    if (!NT_SUCCESS(status)) return status;
-    status = Sw42902WriteRegister(device, 0xC00, 1); // device control
-    if (!NT_SUCCESS(status)) return status;
-    status = Sw42902WriteRegister(device, 0xC01, 1); // interrupt control
-    if (!NT_SUCCESS(status)) return status;
-    status = Sw42902WriteRegister(device, 0xF30, 0); // disable LPWG TCI
-    if (!NT_SUCCESS(status)) return status;
-    status = Sw42902WriteRegister(device, 0xC03, 4); // stop before mode change
-    if (!NT_SUCCESS(status)) return status;
-    delay.QuadPart = -30 * 10000LL;
-    KeDelayExecutionThread(KernelMode, FALSE, &delay);
-    // LCD U3, normal finger scanning, active pen disabled for first bring-up.
-    status = Sw42902WriteRegister(device, 0xC03, 0x8303);
+    device->InitStatus = STATUS_SUCCESS;
+    status = Sw42902PrepareScan(device,InitWrite,InitDelay) ? STATUS_SUCCESS : device->InitStatus;
     device->ReportPending = FALSE;
-    if (NT_SUCCESS(status)) TouchDiagnostic(device, L"TimelmTouchStage", 5);
+    // U3 scan starts only after Windows has enabled the GPIO interrupt.
     return status;
 }
 

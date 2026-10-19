@@ -45,6 +45,8 @@ EVT_WDF_DEVICE_PREPARE_HARDWARE      OnPrepareHardware;
 EVT_WDF_DEVICE_RELEASE_HARDWARE      OnReleaseHardware;
 EVT_WDF_DEVICE_D0_ENTRY              OnD0Entry;
 EVT_WDF_DEVICE_D0_EXIT               OnD0Exit;
+EVT_WDF_DEVICE_D0_ENTRY_POST_INTERRUPTS_ENABLED OnD0InterruptsReady;
+EVT_WDF_DEVICE_D0_EXIT_PRE_INTERRUPTS_DISABLED OnD0BeforeInterruptsDisabled;
 
 typedef struct _DEVICE_CONTEXT
 {
@@ -65,6 +67,7 @@ typedef struct _DEVICE_CONTEXT
     BOOLEAN                 ReportPending;
     volatile LONG           IrqCount, DecodedCount, InvalidCount, I2cErrorCount;
     NTSTATUS                LastI2cStatus;
+    NTSTATUS                InitStatus;
 
 } DEVICE_CONTEXT, *PDEVICE_CONTEXT;
 

@@ -88,6 +88,9 @@ jobs:
           gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
             GPLDrivers/Windows/Sw42902Touch/tests/protocol_test.c -o /tmp/touch-protocol-test
           /tmp/touch-protocol-test
+          gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+            GPLDrivers/Windows/Sw42902Touch/tests/init_test.c -o /tmp/touch-init-test
+          /tmp/touch-init-test
           gcc -std=c11 -Wall -Wextra -Werror \
             GPLDrivers/Windows/Sw42902Touch/tests/decode_capture.c -o /tmp/decode-touch-capture
       - name: Compile disabled native Windows board ACPI

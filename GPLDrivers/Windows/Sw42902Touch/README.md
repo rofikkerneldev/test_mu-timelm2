@@ -43,6 +43,9 @@ drivers do not implement the Windows display/audio/input driver interfaces.
   upload firmware or alter touch flash.
 - SPB reads use a write/read sequence with a 100 ms timeout. Failed or short
   transfers are not decoded. D0 entry propagates initialization failures.
+- Preparation leaves chip interrupts disabled. Normal scanning starts in
+  D0EntryPostInterruptsEnabled, after the GPIO callback is armed; device
+  interrupts are disabled before framework interrupt teardown.
 - A pending report preserves the latest contact state when no HID read is
   waiting, including the last release frame. Intermediate frames can coalesce.
 - Build project supports ARM64 only and removes the original developer's
