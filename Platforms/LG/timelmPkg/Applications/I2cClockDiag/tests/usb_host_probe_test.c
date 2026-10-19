@@ -143,10 +143,83 @@ STATIC VOID TestTopology(VOID)
   mBs.LocateHandleBuffer=TopologyLocate; mBs.HandleProtocol=TopologyHandle;
   UsbConfigSnapshot(&mTable,"no-open-info"); assert(mAlloc==mFreed && !mStarts);
 }
+
+STATIC int mBusScenario, mConnects;
+STATIC EFI_LOADED_IMAGE_PROTOCOL mBusLoaded;
+STATIC EFI_STATUS EFIAPI BusLocate(EFI_LOCATE_SEARCH_TYPE Type, EFI_GUID *Guid,
+ VOID *Key, UINTN *Count, EFI_HANDLE **Handles)
+{
+  UINTN I;
+  (VOID)Type; (VOID)Key;
+  assert(!memcmp(Guid,&mUsbHostGuid,sizeof(*Guid)) || !memcmp(Guid,&mLoadedImageGuid,sizeof(*Guid)));
+  *Count=mBusScenario==1 && !memcmp(Guid,&mUsbHostGuid,sizeof(*Guid)) ? 2 : 1;
+  *Handles=malloc(*Count * sizeof(**Handles)); assert(*Handles); ++mAlloc;
+  for (I=0; I<*Count; ++I) (*Handles)[I]=(EFI_HANDLE)1;
+  return mBusScenario==15 ? EFI_DEVICE_ERROR : EFI_SUCCESS;
+}
+STATIC EFI_STATUS EFIAPI BusHandle(EFI_HANDLE H, EFI_GUID *Guid, VOID **P)
+{
+  STATIC EFI_GUID PciGuid=EFI_PCI_IO_PROTOCOL_GUID, PathGuid=EFI_DEVICE_PATH_PROTOCOL_GUID;
+  assert(H==(EFI_HANDLE)1); *P=NULL;
+  if (!memcmp(Guid,&mUsbConfigGuid,sizeof(*Guid))) { *P=&mConfig; return EFI_SUCCESS; }
+  if (!memcmp(Guid,&mLoadedImageGuid,sizeof(*Guid))) { *P=&mBusLoaded; return EFI_SUCCESS; }
+  if (!memcmp(Guid,&PciGuid,sizeof(*Guid))) {
+    if (mBusScenario==6) return EFI_UNSUPPORTED;
+  } else {
+    assert(!memcmp(Guid,&PathGuid,sizeof(*Guid)));
+    if (mBusScenario==7) return EFI_UNSUPPORTED;
+  }
+  *P=(VOID *)1; return EFI_SUCCESS;
+}
+STATIC EFI_STATUS EFIAPI BusOpens(EFI_HANDLE H, EFI_GUID *Guid,
+ EFI_OPEN_PROTOCOL_INFORMATION_ENTRY **Entries, UINTN *Count)
+{
+  assert(H==(EFI_HANDLE)1 && !memcmp(Guid,&mUsbHostGuid,sizeof(*Guid)));
+  *Count=mBusScenario==10 ? 33 : 1; *Entries=NULL;
+  if (mBusScenario==11) return EFI_SUCCESS;
+  *Entries=calloc(*Count,sizeof(**Entries)); assert(*Entries); ++mAlloc;
+  (*Entries)[0].Attributes=mBusScenario==9 ? EFI_OPEN_PROTOCOL_BY_DRIVER : EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL;
+  return mBusScenario==8 ? EFI_DEVICE_ERROR : EFI_SUCCESS;
+}
+STATIC EFI_STATUS EFIAPI BusConnect(EFI_HANDLE H, EFI_HANDLE *Drivers,
+ EFI_DEVICE_PATH_PROTOCOL *Path, BOOLEAN Recursive)
+{
+  assert(H==(EFI_HANDLE)1 && Drivers==NULL && Path==NULL && Recursive);
+  ++mConnects; return mBusScenario==14 ? EFI_DEVICE_ERROR : EFI_SUCCESS;
+}
+STATIC VOID TestBusConnect(VOID)
+{
+  UINT8 *Image=calloc(1,0x17000); UINTN I;
+  assert(Image);
+  for (I=0; I<6; ++I) memcpy(Image+mUsbMethodRvas[I],mUsbMethodCode[I],16);
+  for (mBusScenario=0; mBusScenario<16; ++mBusScenario) {
+    Setup(); mConnects=0;
+    mConfig.CoreNum=0; mConfig.ModeType=1;
+    mConfig.GetCoreBaseAddr=(USB_CORE_BASE)(Image+0x141c);
+    mConfig.GetUsbHostConfig=(USB_HOST_CONFIG)(Image+0x14d0);
+    mConfig.StartController=(USB_CONTROLLER)(Image+0x14ec);
+    mConfig.StopController=(USB_CONTROLLER)(Image+0x1534);
+    mConfig.GetCoreCount=(USB_CORE_COUNT)(Image+0x15dc);
+    mConfig.GetSupportedMode=(USB_SUPPORTED)(Image+0x1650);
+    mBusLoaded.ImageBase=Image; mBusLoaded.ImageSize=0x17000;
+    mBs.LocateHandleBuffer=BusLocate; mBs.HandleProtocol=BusHandle;
+    mBs.OpenProtocolInformation=BusOpens; mBs.ConnectController=BusConnect;
+    if (mBusScenario==2) mConfig.Revision=0x10004;
+    if (mBusScenario==3) mConfig.CoreNum=1;
+    if (mBusScenario==4) mConfig.ModeType=4;
+    if (mBusScenario==5) mBusLoaded.ImageSize=0x16000;
+    if (mBusScenario==12) mBs.OpenProtocolInformation=NULL;
+    if (mBusScenario==13) mBs.ConnectController=NULL;
+    ConnectPrimaryUsbBus(&mTable);
+    assert(mConnects==(mBusScenario==0 || mBusScenario==14 ? 1 : 0));
+    assert(mAlloc==mFreed && !mStarts && !mStops && !mRestores);
+  }
+  free(Image);
+}
 int main(void)
 {
   EFI_STATUS Result;
-  Setup(); TestOwner(); TestTopology();
+  Setup(); TestOwner(); TestTopology(); TestBusConnect();
   Setup(); assert(ExercisePrimaryHost((EFI_HANDLE)1,&mTable,&mConfig,FALSE,Checkpoint)==EFI_SUCCESS); assert(!mStarts && !mCheckpoint);
   Setup(); mConfig.Revision=0x10004;
   assert(ExercisePrimaryHost((EFI_HANDLE)1,&mTable,&mConfig,TRUE,Checkpoint)==EFI_SUCCESS); assert(!mStarts);

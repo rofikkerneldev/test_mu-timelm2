@@ -125,3 +125,39 @@ that is a possible explanation to investigate, not a conclusion from v2.
 For the next physical trial, attach OTG and the mouse before choosing the
 Windows boot entry. Wait for shutdown, then return to mass storage for logs.
 The launcher runs once, including when no peripheral was attached.
+
+## Physical v3 result and targeted bus binding in v4
+
+The cc6a440 run with OTG attached created a primary core-0/mode-1 instance,
+PCI_IO on that instance, and one operational USB2_HC with superspeed capability,
+two root ports and 64-bit addressing. Its QCOM protocol had one BY_DRIVER open.
+Both root ports reported zero status/change bits after three seconds and no
+USB_IO interfaces appeared. This establishes the host/emulation transition,
+not a working mouse or proof of connector voltage. In particular the zero port
+power status bit is not an electrical VBUS measurement. Mode 4 did not override
+the host request in this run. Host stop, peripheral restore and shutdown
+completed; both original boot hashes and the BCD hash were verified afterward.
+
+V4 first records the same USB snapshot, then considers a standard
+ConnectController retry on the new host handle. The retry requires exactly one
+USB2_HC, the same-handle known-owner QCOM revision/core-0/mode-1 descriptor,
+PCI_IO and DevicePath, and a successful bounded OpenProtocolInformation query
+with no BY_DRIVER open on USB2_HC. Missing callbacks, unknown owners, multiple
+hosts, absent resources, malformed records or an already bound bus skip it.
+The QCOM BY_DRIVER count is not evidence of a USB2_HC bus-driver open; these are
+different protocol interfaces and V4 checks the host interface separately.
+
+Only that verified handle receives ConnectController(NULL driver list, NULL
+remaining path, recursive TRUE), after the existing restore/checkpoint/start
+gates. No driver is loaded from an external file and no global connection is
+requested. Standard bus binding may perform its normal device enumeration,
+including USB requests through its own driver; this step is not getter-only.
+The app itself adds no port-power, PHY, reset or private VBUS operation.
+After another three-second wait it captures USB state again, then follows the
+same host stop/peripheral restore/shutdown path regardless of connect status.
+
+The timelm source configuration includes UsbBusDxe, UsbKbDxe and USB storage,
+but no UsbMouseDxe. Absence of a mouse UI driver would not by itself explain
+zero USB_IO enumeration. UEFI host discovery and Windows host support remain
+separate: this probe does not add Windows ACPI resources or retain host mode
+across ExitBootServices. V4's physical outcome remains pending.

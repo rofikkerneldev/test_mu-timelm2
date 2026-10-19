@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 // Minimal ABI prefix, not a copy of the vendor implementation. See USB-HOST.md.
 #include <Protocol/PciIo.h>
+#include <Protocol/DevicePath.h>
 
 typedef struct TIMELM_USB_CONFIG TIMELM_USB_CONFIG;
 typedef EFI_STATUS (EFIAPI *USB_CORE_BASE)(TIMELM_USB_CONFIG *, UINT32, UINTN *);
@@ -151,6 +152,54 @@ STATIC VOID UsbOverrideSnapshot (EFI_SYSTEM_TABLE *System)
   }
 }
 
+// Retry only the new primary host's standard bus binding, never ConnectAll.
+// All private request/owner gates in ExercisePrimaryHost must have passed.
+STATIC VOID ConnectPrimaryUsbBus (EFI_SYSTEM_TABLE *System)
+{
+  EFI_BOOT_SERVICES *Bs=System->BootServices;
+  EFI_HANDLE *Handles=NULL;
+  EFI_OPEN_PROTOCOL_INFORMATION_ENTRY *Entries=NULL;
+  TIMELM_USB_CONFIG *Config=NULL;
+  VOID *Pci=NULL, *Path=NULL;
+  UINTN Count=0, EntryCount=0, I, Drivers=0;
+  EFI_STATUS Status;
+  STATIC EFI_GUID PathGuid=EFI_DEVICE_PATH_PROTOCOL_GUID;
+  if (!Bs->ConnectController || !Bs->OpenProtocolInformation) {
+    Text("USB bus connect skipped: standard callbacks unavailable.\r\n"); return;
+  }
+  Status=Bs->LocateHandleBuffer(ByProtocol,&mUsbHostGuid,NULL,&Count,&Handles);
+  Text("USB bus target locate status="); Hex(Status); Text(" count="); Hex(Count); Text("\r\n");
+  if (EFI_ERROR(Status) || !Handles || Count!=1) goto Done;
+  Status=Bs->HandleProtocol(Handles[0],&mUsbConfigGuid,(VOID **)&Config);
+  if (EFI_ERROR(Status) || !Config || Config->Revision!=0x10005 ||
+      Config->CoreNum!=0 || Config->ModeType!=1 || !KnownUsbOwner(System,Config)) {
+    Text("USB bus connect skipped: host is not the known primary QCOM handle.\r\n"); goto Done;
+  }
+  {
+    STATIC EFI_GUID PciGuid=EFI_PCI_IO_PROTOCOL_GUID;
+    Status=Bs->HandleProtocol(Handles[0],&PciGuid,&Pci);
+  }
+  Text("USB bus target PCI_IO status="); Hex(Status); Text("\r\n");
+  if (EFI_ERROR(Status) || !Pci) goto Done;
+  Status=Bs->HandleProtocol(Handles[0],&PathGuid,&Path);
+  Text("USB bus target device path status="); Hex(Status); Text("\r\n");
+  if (EFI_ERROR(Status) || !Path) goto Done;
+  Status=Bs->OpenProtocolInformation(Handles[0],&mUsbHostGuid,&Entries,&EntryCount);
+  if (!EFI_ERROR(Status) && Entries && EntryCount<=32)
+    for (I=0; I<EntryCount; ++I)
+      if (Entries[I].Attributes & EFI_OPEN_PROTOCOL_BY_DRIVER) ++Drivers;
+  Text("USB2_HC opens status="); Hex(Status); Text(" entries="); Hex(EntryCount);
+  Text(" drivers="); Hex(Drivers); Text("\r\n");
+  if (EFI_ERROR(Status) || EntryCount>32 || (EntryCount && !Entries)) goto Done;
+  if (Drivers) { Text("USB bus connect skipped: USB2_HC already has a driver.\r\n"); goto Done; }
+  Text("Connecting only verified primary USB2_HC handle, recursively.\r\n");
+  Status=Bs->ConnectController(Handles[0],NULL,NULL,TRUE);
+  Text("Targeted USB bus ConnectController status="); Hex(Status); Text("\r\n");
+Done:
+  if (Entries) Bs->FreePool(Entries);
+  if (Handles) Bs->FreePool(Handles);
+}
+
 // Return an error only when cleanup cannot be established. The caller ends
 // every host-probe run in firmware, including skips and cleaned-up failures.
 STATIC EFI_STATUS ExercisePrimaryHost (EFI_HANDLE Image, EFI_SYSTEM_TABLE *System,
@@ -199,6 +248,11 @@ STATIC EFI_STATUS ExercisePrimaryHost (EFI_HANDLE Image, EFI_SYSTEM_TABLE *Syste
   UsbConfigSnapshot(System,"after-start");
   if (!EFI_ERROR(Status)) {
     (VOID)System->BootServices->Stall(3000000);
+    Text("USB snapshot before targeted bus binding.\r\n");
+    QueryUsb(System);
+    ConnectPrimaryUsbBus(System);
+    (VOID)System->BootServices->Stall(3000000);
+    Text("USB snapshot after targeted bus binding.\r\n");
     QueryUsb(System);
   }
   // Even a failed start may have changed partial firmware state.
@@ -220,7 +274,7 @@ STATIC EFI_STATUS ProbePrimaryUsbHost (EFI_HANDLE Image, EFI_SYSTEM_TABLE *Syste
   TIMELM_USB_CONFIG *Config=NULL;
   EFI_STATUS Status;
   BOOLEAN Owner;
-  Text("timelm transient primary USB host probe v3\r\n");
+  Text("timelm transient primary USB host probe v4\r\n");
   UsbOverrideSnapshot(System);
   if (!System->BootServices->LocateHandleBuffer || !System->BootServices->FreePool) return EFI_SUCCESS;
   Status=System->BootServices->LocateProtocol(&mUsbConfigGuid,NULL,(VOID **)&Config);
