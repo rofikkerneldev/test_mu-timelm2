@@ -30,6 +30,17 @@ NativeGpiEnabled option select it; the old FIFO profile is retained separately.
 DMA mapping checks, ownership, completion validation and teardown are explicit.
 Physical Windows validation and translated SMMU support remain pending.
 
+The restore-first TouchDmaCheckOnce app from dd693f7 was subsequently executed
+on the phone. Its pre-Windows snapshot returned ID0=4c017e57, ID1=6000004a and
+control=002d0406. Seven valid SMRs matched other devices; none matched stream
+0x56, and the unmatched-stream fault policy was enabled. Thus the current GPI
+BYPASS prerequisite is demonstrably absent on this Mu boot. A lower HID feature
+target does not remove the need to establish a valid, owned DMA mapping. No
+touch package was activated to bypass this refusal, and no SMMU value was changed.
+The app restored both original Windows EFI files; Recovery readback verified
+their original SHA256 and an unchanged BCD. Windows OOBE arrival was not confirmed
+by this log; it records the Windows chainload attempt, not working touch.
+
 Recovery has CONFIG_DEBUG_FS and CONFIG_DEVMEM disabled, so no direct GCC/GENI
 register snapshot was obtained. No raw register access was forced.
 

@@ -65,6 +65,17 @@ integration, clock/GPIO builds or Recovery packets as a completed touchscreen fi
 
 ## Evidence and references
 
+The restore-first TouchDmaCheckOnce app was run on the phone from dd693f7 after
+the basic one-finger client build. The actual pre-Windows mapping is currently
+unsupported by the direct-DMA adapter: control=002d0406 enables unmatched-stream
+faults; no valid SMR matches stream 0x56. The seven valid SMR/S2CR pairs were
+800004a0/00000000, 800000c0/00000001, 800004e0/00000002,
+800000e0/00000003, 84020820/00000004, 80000000/00000005,
+80000020/00000005. No global/context/stream register was written. This is an
+observed DMA prerequisite failure, not a touchscreen HID or PMIC diagnosis.
+The next transport requirement is a real owned stream/domain mapping and its
+Windows lifecycle, rather than forcing the existing BYPASS gate open.
+
 Raw local captures: recovery-touch-controlled-read.txt,
 recovery-touch-swipe-packets.txt and recovery-touch-decoded.jsonl in diagnostics/.
 Recovery config has neither DEBUG_FS nor DEVMEM. The collection script uses
