@@ -6,6 +6,7 @@ on:
       - 'GPLDrivers/Windows/KonaGeniI2c/**'
       - 'Resources/Scripts/build_geni_i2c.ps1'
       - 'Platforms/LG/timelmPkg/Experimental/TouchI2c.asl'
+      - 'Platforms/LG/timelmPkg/Experimental/UsbHost.asl'
       - 'Platforms/LG/timelmPkg/Applications/I2cClockDiag/**'
       - 'Resources/Scripts/build_i2c_clockdiag.sh'
       - 'Resources/Scripts/Collect-TimelmDiagnostics.ps1'
@@ -16,6 +17,7 @@ on:
       - 'GPLDrivers/Windows/KonaGeniI2c/**'
       - 'Resources/Scripts/build_geni_i2c.ps1'
       - 'Platforms/LG/timelmPkg/Experimental/TouchI2c.asl'
+      - 'Platforms/LG/timelmPkg/Experimental/UsbHost.asl'
       - 'Platforms/LG/timelmPkg/Applications/I2cClockDiag/**'
       - 'Resources/Scripts/build_i2c_clockdiag.sh'
       - 'Resources/Scripts/Collect-TimelmDiagnostics.ps1'
@@ -56,10 +58,17 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y acpica-tools clang lld
           iasl -ve -p /tmp/TouchI2c Platforms/LG/timelmPkg/Experimental/TouchI2c.asl
+          iasl -ve -p /tmp/UsbHost Platforms/LG/timelmPkg/Experimental/UsbHost.asl
       - uses: actions/upload-artifact@v4
         with:
           name: timelm-touch-SSDT-disabled
           path: /tmp/TouchI2c.aml
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        with:
+          name: timelm-usb-host-SSDT-disabled
+          path: /tmp/UsbHost.aml
           if-no-files-found: error
           retention-days: 14
       - name: Build standalone ARM64 UEFI clock query app
