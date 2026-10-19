@@ -86,3 +86,15 @@ owner checks, restore/checkpoint ordering, cleanup rules and manual-reboot
 behavior are documented in [USB-HOST.md](USB-HOST.md). It writes a
 separate `timelm-usb-hostprobe.txt`. Do not substitute it for the normal snapshot
 app without the staging checks and original EFI backups.
+
+## One-boot Windows USB trial
+
+UsbWindowsOnce.efi is a separate opt-in ARM64 build that restores original boot
+entries, verifies the known minimal V60 ACPI namespace and primary native host,
+installs a transient enabled xHCI SSDT, then starts the restored Windows manager.
+It logs to timelm-usb-windows.txt. Failure or a returned Windows manager removes
+its own table and cleans up host state before shutdown. Successful OS handoff
+does not shut down; it remains subject to native firmware exit callbacks and
+Windows driver initialization. It does not make persistent DSDT/driver changes.
+See [the Windows USB contract](../../USB-WINDOWS-CONTRACT.md) for exact namespace,
+resource and host gates, tests, rollback behavior and physical validation limits.

@@ -154,6 +154,7 @@ STATIC VOID UsbOverrideSnapshot (EFI_SYSTEM_TABLE *System)
 
 // Retry only the new primary host's standard bus binding, never ConnectAll.
 // All private request/owner gates in ExercisePrimaryHost must have passed.
+#ifndef TIMELM_USB_WINDOWS
 STATIC VOID ConnectPrimaryUsbBus (EFI_SYSTEM_TABLE *System)
 {
   EFI_BOOT_SERVICES *Bs=System->BootServices;
@@ -199,62 +200,68 @@ Done:
   if (Entries) Bs->FreePool(Entries);
   if (Handles) Bs->FreePool(Handles);
 }
+#endif
 
-// Return an error only when cleanup cannot be established. The caller ends
-// every host-probe run in firmware, including skips and cleaned-up failures.
-STATIC EFI_STATUS ExercisePrimaryHost (EFI_HANDLE Image, EFI_SYSTEM_TABLE *System,
-  TIMELM_USB_CONFIG *Config, BOOLEAN VerifiedOwner, EFI_STATUS (*Checkpoint)(EFI_HANDLE))
+// A strict start primitive shared by the shutdown diagnostic and Windows trial.
+// Attempted is set BEFORE the native call so even failed starts are cleaned up.
+STATIC EFI_STATUS StartPrimaryUsbHost (EFI_HANDLE Image, EFI_SYSTEM_TABLE *System,
+  TIMELM_USB_CONFIG *Config, BOOLEAN VerifiedOwner, EFI_STATUS (*Checkpoint)(EFI_HANDLE),
+  BOOLEAN *Attempted)
 {
   UINT8 Cores=0;
   UINT32 Supported=0, Type=0;
   UINTN Base=0, Hosts=0;
   BOOLEAN Dispatcher;
-  EFI_STATUS Status, StopStatus, RestoreStatus, CountStatus;
+  EFI_STATUS Status;
+  *Attempted=FALSE;
   if (!VerifiedOwner || !Config || Config->Revision!=0x10005 ||
       !Config->GetCoreCount || !Config->GetSupportedMode || !Config->GetUsbHostConfig ||
       !Config->GetCoreBaseAddr || !Config->StartController || !Config->StopController ||
       !System->BootServices->Stall || !Checkpoint) {
-    Text("Host probe skipped: firmware ABI/owner/callback gate.\r\n"); return EFI_SUCCESS;
+    Text("Host probe skipped: firmware ABI/owner/callback gate.\r\n"); return EFI_UNSUPPORTED;
   }
   Text("USB config template core="); Hex(Config->CoreNum); Text(" mode="); Hex(Config->ModeType); Text("\r\n");
   // UsbConfigInit publishes a dispatcher with core=MAX_NUM (2), mode=INVALID.
   // Start/Stop take the target core explicitly; this is not a request for core 2.
   Dispatcher=(Config->CoreNum==2 && Config->ModeType==0x10000);
   if (!Dispatcher && (Config->CoreNum!=0 || Config->ModeType!=4)) {
-    Text("Host probe skipped: neither known dispatcher nor primary peripheral descriptor.\r\n"); return EFI_SUCCESS;
+    Text("Host probe skipped: neither known dispatcher nor primary peripheral descriptor.\r\n"); return EFI_UNSUPPORTED;
   }
   Text(Dispatcher ? "Known global dispatcher; all requests still target core 0.\r\n" : "Primary peripheral descriptor.\r\n");
   Status=Config->GetCoreCount(Config,&Cores);
   Text("GetCoreCount status="); Hex(Status); Text(" count="); Hex(Cores); Text("\r\n");
-  if (EFI_ERROR(Status) || Cores<1 || Cores>2 || (Dispatcher && Cores!=2)) return EFI_SUCCESS;
+  if (EFI_ERROR(Status)) return Status;
+  if (Cores<1 || Cores>2 || (Dispatcher && Cores!=2)) return EFI_UNSUPPORTED;
   Status=Config->GetSupportedMode(Config,0,&Supported);
   Text("Primary supported mode status="); Hex(Status); Text(" mask="); Hex(Supported); Text("\r\n");
-  if (EFI_ERROR(Status) || (!(Supported & 8) && Supported!=1 && Supported!=0x20)) return EFI_SUCCESS;
+  if (EFI_ERROR(Status)) return Status;
+  if (!(Supported & 8) && Supported!=1 && Supported!=0x20) return EFI_UNSUPPORTED;
   Status=Config->GetUsbHostConfig(Config,1,0,&Type);
   Text("Primary host config status="); Hex(Status); Text(" core type="); Hex(Type); Text("\r\n");
-  if (EFI_ERROR(Status) || Type!=5) return EFI_SUCCESS;
+  if (EFI_ERROR(Status)) return Status;
+  if (Type!=5) return EFI_UNSUPPORTED;
   Status=Config->GetCoreBaseAddr(Config,Type,&Base);
   Text("Core base query status="); Hex(Status); Text(" base="); Hex(Base); Text("\r\n");
-  if (EFI_ERROR(Status) || Base!=0x0a600000) return EFI_SUCCESS;
+  if (EFI_ERROR(Status)) return Status;
+  if (Base!=0x0a600000) return EFI_UNSUPPORTED;
   Status=UsbHostCount(System,&Hosts);
   Text("Before request host count status="); Hex(Status); Text(" count="); Hex(Hosts); Text("\r\n");
-  if (EFI_ERROR(Status) || Hosts!=0) return EFI_SUCCESS;
+  if (EFI_ERROR(Status)) return Status;
+  if (Hosts!=0) return EFI_ALREADY_STARTED;
   UsbConfigSnapshot(System,"before-start");
-  Text("NEXT: native StartController(core=0,mode=1); temporary test, then cleanup.\r\n");
+  Text("NEXT: native StartController(core=0,mode=1).\r\n");
   Status=Checkpoint(Image);
-  if (EFI_ERROR(Status)) { Text("Checkpoint failed; no host request made.\r\n"); return EFI_SUCCESS; }
+  if (EFI_ERROR(Status)) { Text("Checkpoint failed; no host request made.\r\n"); return Status; }
+  *Attempted=TRUE;
   Status=Config->StartController(Config,0,1);
   Text("Start xHCI host result="); Hex(Status); Text("\r\n");
-  UsbConfigSnapshot(System,"after-start");
-  if (!EFI_ERROR(Status)) {
-    (VOID)System->BootServices->Stall(3000000);
-    Text("USB snapshot before targeted bus binding.\r\n");
-    QueryUsb(System);
-    ConnectPrimaryUsbBus(System);
-    (VOID)System->BootServices->Stall(3000000);
-    Text("USB snapshot after targeted bus binding.\r\n");
-    QueryUsb(System);
-  }
+  return Status;
+}
+
+STATIC EFI_STATUS CleanupPrimaryUsbHost (EFI_SYSTEM_TABLE *System, TIMELM_USB_CONFIG *Config)
+{
+  UINTN Hosts=0;
+  EFI_STATUS StopStatus, RestoreStatus, CountStatus;
   // Even a failed start may have changed partial firmware state.
   StopStatus=Config->StopController(Config,0,1);
   Text("Stop transient host result="); Hex(StopStatus); Text("\r\n");
@@ -265,8 +272,29 @@ STATIC EFI_STATUS ExercisePrimaryHost (EFI_HANDLE Image, EFI_SYSTEM_TABLE *Syste
   Text("After cleanup host count status="); Hex(CountStatus); Text(" count="); Hex(Hosts); Text("\r\n");
   if ((EFI_ERROR(StopStatus) && StopStatus!=EFI_NOT_STARTED) || EFI_ERROR(RestoreStatus) ||
       EFI_ERROR(CountStatus) || Hosts!=0) return EFI_DEVICE_ERROR;
-  Text("Temporary host teardown verified; firmware test ends before Windows.\r\n");
+  Text("Temporary host teardown verified.\r\n");
   return EFI_SUCCESS;
+}
+
+#ifndef TIMELM_USB_WINDOWS
+// The shutdown-only diagnostic treats a skipped request as an observation.
+STATIC EFI_STATUS ExercisePrimaryHost (EFI_HANDLE Image, EFI_SYSTEM_TABLE *System,
+  TIMELM_USB_CONFIG *Config, BOOLEAN VerifiedOwner, EFI_STATUS (*Checkpoint)(EFI_HANDLE))
+{
+  BOOLEAN Attempted=FALSE;
+  EFI_STATUS Status=StartPrimaryUsbHost(Image,System,Config,VerifiedOwner,Checkpoint,&Attempted);
+  if (!Attempted) return EFI_SUCCESS;
+  UsbConfigSnapshot(System,"after-start");
+  if (!EFI_ERROR(Status)) {
+    (VOID)System->BootServices->Stall(3000000);
+    Text("USB snapshot before targeted bus binding.\r\n");
+    QueryUsb(System);
+    ConnectPrimaryUsbBus(System);
+    (VOID)System->BootServices->Stall(3000000);
+    Text("USB snapshot after targeted bus binding.\r\n");
+    QueryUsb(System);
+  }
+  return CleanupPrimaryUsbHost(System,Config);
 }
 
 STATIC EFI_STATUS ProbePrimaryUsbHost (EFI_HANDLE Image, EFI_SYSTEM_TABLE *System)
@@ -286,3 +314,4 @@ STATIC EFI_STATUS ProbePrimaryUsbHost (EFI_HANDLE Image, EFI_SYSTEM_TABLE *Syste
   Text("Known LG driver owner/code match="); Hex(Owner); Text("\r\n");
   return ExercisePrimaryHost(Image,System,Config,Owner,SaveLog);
 }
+#endif

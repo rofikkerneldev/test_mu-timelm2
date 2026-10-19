@@ -5,6 +5,9 @@
 #include <Protocol/EFIClock.h>
 #include <Protocol/LoadedImage.h>
 #include <Protocol/SimpleFileSystem.h>
+#if defined(TIMELM_USB_WINDOWS) && (!defined(TIMELM_ONESHOT) || !defined(TIMELM_USB_HOST_PROBE))
+#error Windows USB trial requires the restore-first and known-owner host variants
+#endif
 
 STATIC EFI_SYSTEM_TABLE *mSystem;
 STATIC EFI_GUID mClockGuid = EFI_CLOCK_PROTOCOL_GUID;
@@ -12,7 +15,9 @@ STATIC EFI_GUID mLoadedImageGuid = EFI_LOADED_IMAGE_PROTOCOL_GUID;
 STATIC EFI_GUID mFileSystemGuid = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
 STATIC CHAR8 mLog[65536];
 STATIC UINTN mLogLength;
-#ifdef TIMELM_USB_HOST_PROBE
+#ifdef TIMELM_USB_WINDOWS
+STATIC CHAR16 mLogName[]=L"timelm-usb-windows.txt";
+#elif defined(TIMELM_USB_HOST_PROBE)
 STATIC CHAR16 mLogName[]=L"timelm-usb-hostprobe.txt";
 #else
 STATIC CHAR16 mLogName[]=L"timelm-i2c-clockdiag.txt";
@@ -142,6 +147,9 @@ STATIC VOID StopBeforeWindows (EFI_SYSTEM_TABLE *System, EFI_STATUS Status)
 #ifdef TIMELM_ONESHOT
 #include "OneShot.h"
 #endif
+#ifdef TIMELM_USB_WINDOWS
+#include "UsbWindows.h"
+#endif
 
 EFI_STATUS EFIAPI I2cClockDiagEntry (EFI_HANDLE Image, EFI_SYSTEM_TABLE *System)
 {
@@ -165,7 +173,11 @@ EFI_STATUS EFIAPI I2cClockDiagEntry (EFI_HANDLE Image, EFI_SYSTEM_TABLE *System)
 #endif
   Result = QueryClocks (System);
   QueryUsb (System);
-#ifdef TIMELM_USB_HOST_PROBE
+#ifdef TIMELM_USB_WINDOWS
+  Result=RunUsbWindowsTrial(Image,System);
+  (VOID)SaveLog(Image);
+  StopBeforeWindows(System,Result);
+#elif defined(TIMELM_USB_HOST_PROBE)
   Result=ProbePrimaryUsbHost(Image,System);
   if (EFI_ERROR(Result)) {
     Text("Host cleanup failed. Windows chainload blocked. Reboot into Recovery.\r\n");

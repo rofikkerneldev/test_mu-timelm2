@@ -9,6 +9,7 @@ on:
       - 'Platforms/LG/timelmPkg/Experimental/UsbHost.asl'
       - 'Platforms/LG/timelmPkg/Applications/I2cClockDiag/**'
       - 'Resources/Scripts/build_i2c_clockdiag.sh'
+      - 'Resources/Scripts/generate_usb_windows_acpi.py'
       - 'Resources/Scripts/Collect-TimelmDiagnostics.ps1'
       - 'Resources/Scripts/Collect-TimelmLogs.cmd'
       - '.github/workflows/test-geni-i2c.yml'
@@ -20,6 +21,7 @@ on:
       - 'Platforms/LG/timelmPkg/Experimental/UsbHost.asl'
       - 'Platforms/LG/timelmPkg/Applications/I2cClockDiag/**'
       - 'Resources/Scripts/build_i2c_clockdiag.sh'
+      - 'Resources/Scripts/generate_usb_windows_acpi.py'
       - 'Resources/Scripts/Collect-TimelmDiagnostics.ps1'
       - 'Resources/Scripts/Collect-TimelmLogs.cmd'
       - '.github/workflows/test-geni-i2c.yml'
@@ -106,6 +108,14 @@ jobs:
             Platforms/LG/timelmPkg/Applications/I2cClockDiag/tests/oneshot_test.c \
             -o /tmp/usb-host-oneshot-test
           /tmp/usb-host-oneshot-test
+      - name: Test transient Windows USB handoff and failure rollback
+        run: |
+          gcc -std=c11 -fshort-wchar -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+            -I Mu_Basecore/MdePkg/Include -I Mu_Basecore/MdePkg/Include/X64 \
+            -I Silicon/Qualcomm/QcomPkg/Include -I Build/I2cClockDiag \
+            Platforms/LG/timelmPkg/Applications/I2cClockDiag/tests/usb_windows_test.c \
+            -o /tmp/usb-windows-test
+          /tmp/usb-windows-test
       - uses: actions/upload-artifact@v4
         with:
           name: timelm-I2cClockDiag-ARM64-UEFI
@@ -116,5 +126,9 @@ jobs:
             Build/I2cClockDiag/oneshot.json
             Build/I2cClockDiag/UsbHostProbeOnce.efi
             Build/I2cClockDiag/usb-host-probe.json
+            Build/I2cClockDiag/UsbWindowsOnce.efi
+            Build/I2cClockDiag/usb-windows.json
+            Build/I2cClockDiag/usb-windows-acpi.json
+            Build/I2cClockDiag/UsbHostEnabled.aml
           if-no-files-found: error
           retention-days: 14
