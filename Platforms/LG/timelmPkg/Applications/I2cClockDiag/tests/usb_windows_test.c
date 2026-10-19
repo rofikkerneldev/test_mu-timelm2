@@ -12,6 +12,7 @@ STATIC TIMELM_USB_CONFIG mProto, mLive;
 STATIC UINT8 mDsdt[sizeof(mTimelmDsdt)], mSsdt[sizeof(mUsbHostSsdt)];
 STATIC int mCase, mNativeStarts, mNativeStops, mNativeRestores, mActive;
 STATIC int mInstalled, mInstalls, mUninstalls, mCheckpoints;
+STATIC int mStageFlushes, mUnloads;
 STATIC jmp_buf mHandoff;
 
 STATIC EFI_STATUS EFIAPI WinCores(TIMELM_USB_CONFIG *C, UINT8 *Count)
@@ -106,6 +107,8 @@ STATIC EFI_STATUS EFIAPI WinLoad(BOOLEAN Policy, EFI_HANDLE Parent, EFI_DEVICE_P
  VOID *Buffer, UINTN Size, EFI_HANDLE *Image)
 {
   assert(mInstalled && mActive && mCheckpoints==2 && !mNativeStops);
+  assert(strstr((char *)mFiles[4].Data,"Windows stage: BEFORE LoadImage"));
+  assert(!strstr((char *)mFiles[4].Data,"Windows stage: AFTER LoadImage"));
   if (mCase==23) return EFI_LOAD_ERROR;
   return Load(Policy,Parent,Path,Buffer,Size,Image);
 }
@@ -113,8 +116,19 @@ STATIC EFI_STATUS EFIAPI WinStart(EFI_HANDLE Image, UINTN *Size, CHAR16 **Data)
 {
   EFI_STATUS Status=Start(Image,Size,Data);
   assert(mInstalled && mActive && !mNativeStops);
+  assert(strstr((char *)mFiles[4].Data,"Windows stage: AFTER LoadImage status="));
+  assert(strstr((char *)mFiles[4].Data,"Windows stage: BEFORE StartImage"));
   if (mCase==30) longjmp(mHandoff,1);
   return mCase==24 ? EFI_LOAD_ERROR : Status;
+}
+STATIC EFI_STATUS EFIAPI WinUnload(EFI_HANDLE Image)
+{ ++mUnloads; return Unload(Image); }
+STATIC EFI_STATUS EFIAPI WinLogFlush(EFI_FILE_PROTOCOL *File)
+{
+  assert(File==&mFiles[4].Api); ++mStageFlushes;
+  if ((mCase==35 && mStageFlushes==3) || (mCase==36 && mStageFlushes==4) ||
+      (mCase==37 && mStageFlushes==5)) return EFI_DEVICE_ERROR;
+  return EFI_SUCCESS;
 }
 STATIC VOID FixChecksum(VOID)
 {
@@ -128,8 +142,11 @@ STATIC VOID WinSetup(VOID)
   Setup(); mSystem=&mTable; mLogLength=0;
   assert(RestoreWindows((EFI_HANDLE)1)==EFI_SUCCESS);
   mNativeStarts=mNativeStops=mNativeRestores=mActive=mInstalled=mInstalls=mUninstalls=mCheckpoints=0;
+  mStageFlushes=mUnloads=0;
+  mFiles[4].Api.Flush=WinLogFlush;
   mBs.HandleProtocol=WinHandle; mBs.LocateHandleBuffer=WinLocate;
   mBs.Stall=WinStall; mBs.LoadImage=WinLoad; mBs.StartImage=WinStart;
+  mBs.UnloadImage=WinUnload;
   memset(&mProto,0,sizeof(mProto)); memset(&mHc,0,sizeof(mHc));
   mProto.Revision=0x10005; mProto.CoreNum=2; mProto.ModeType=0x10000;
   mProto.GetCoreCount=WinCores; mProto.GetSupportedMode=WinSupported; mProto.GetUsbHostConfig=WinHost;
@@ -151,7 +168,7 @@ STATIC VOID WinSetup(VOID)
 int main(void)
 {
   EFI_STATUS Status;
-  for (mCase=0; mCase<=34; ++mCase) {
+  for (mCase=0; mCase<=37; ++mCase) {
     WinSetup();
     if (mCase==30 && setjmp(mHandoff)) {
       assert(mStarts==1 && mInstalled && mActive && !mNativeStops && !mUninstalls);
@@ -165,6 +182,8 @@ int main(void)
     if (mInstalls && mCase!=20) assert(mUninstalls==1);
     if (mCase!=25) assert(!mInstalled);
     if (mCase!=28) assert(!mActive);
+    if (mCase==35) assert(!mLoads && !mStarts && !mUnloads);
+    if (mCase==36 || mCase==37) assert(mLoads==1 && !mStarts && mUnloads==1);
   }
   // Entry-point restore failures never reach clock/USB/ACPI discovery.
   Setup(); mFiles[3].Data[0]^=1;

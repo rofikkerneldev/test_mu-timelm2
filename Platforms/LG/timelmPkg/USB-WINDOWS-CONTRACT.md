@@ -100,3 +100,26 @@ failure it saves the ESP log and powers off. Return to mass storage to collect
 the ESP log and Windows Kernel-PnP/System/setupapi logs. If input works, shut
 Windows down normally before changing modes. Physical OS USB validation is
 pending; the known-working boot image and immutable EFI backups are retained.
+
+## First Windows trial and stage tracing
+
+The 5c9ee81 v1 physical capture passed the exact minimal-namespace check,
+native host gates, operational/capability checks, ACPI installation and exact
+SSDT readback. Its final saved line precedes the call to StartWindows. The user
+reports UEFI text followed by apparent poweroff, with no Windows logo observed.
+No returned-Windows, table-removal or native-cleanup messages were saved. Thus
+this was not demonstrated to be the trial's intentional gate-failure shutdown.
+The capture does not locate the non-return within LoadImage, StartImage or
+firmware/OS handoff, nor establish that Windows initialized its USB driver.
+
+Both original boot entries/backups were verified afterward, BCD stayed at its
+pre-test hash, and NTFS remained NOT Dirty. System/Kernel-PnP EVTX, setupapi,
+Panther and Startup Repair logs were byte-identical to the prior capture; no
+new crash dump was found. Those facts provide no new Windows failure code.
+
+V2 adds flushed ESP checkpoints immediately before/after LoadImage, after child
+LoadedImage discovery, and before/after StartImage. A failed required checkpoint
+blocks the next boot-manager call and triggers normal trial rollback. These
+markers distinguish loading the manager from entering it. A final BEFORE
+StartImage marker alone still does not prove ExitBootServices was reached.
+Host role, resources, ACPI payload and native exit behavior are unchanged.

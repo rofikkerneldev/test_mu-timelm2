@@ -161,17 +161,46 @@ STATIC EFI_STATUS StartWindows (EFI_HANDLE Image)
   End = (EFI_DEVICE_PATH_PROTOCOL *)((UINT8 *)FileNode + FileLength);
   End->Type = END_DEVICE_PATH_TYPE; End->SubType = END_ENTIRE_DEVICE_PATH_SUBTYPE;
   End->Length[0] = sizeof (*End); End->Length[1] = 0;
+#ifdef TIMELM_USB_WINDOWS
+  Text("Windows stage: BEFORE LoadImage (original bootmgfw.efi).\r\n");
+  Status=SaveLog(Image);
+  if (EFI_ERROR(Status)) { mSystem->BootServices->FreePool(Path); return Status; }
+#endif
   Status = mSystem->BootServices->LoadImage (FALSE, Image, Path, NULL, 0, &Next);
   mSystem->BootServices->FreePool (Path);
+#ifdef TIMELM_USB_WINDOWS
+  {
+    EFI_STATUS StageLog;
+    Text("Windows stage: AFTER LoadImage status="); Hex(Status); Text("\r\n");
+    StageLog=SaveLog(Image);
+    if (EFI_ERROR(StageLog)) {
+      if (Next!=NULL) mSystem->BootServices->UnloadImage(Next);
+      return StageLog;
+    }
+  }
+#endif
   if (EFI_ERROR (Status)) {
     if (Next != NULL) mSystem->BootServices->UnloadImage (Next);
     return Status;
   }
   Status = mSystem->BootServices->HandleProtocol (Next, &mLoadedImageGuid, (VOID **)&Child);
+#ifdef TIMELM_USB_WINDOWS
+  Text("Windows stage: child LoadedImage status="); Hex(Status); Text("\r\n");
+#endif
   if (!EFI_ERROR (Status) && Child != NULL) {
     Child->LoadOptions = Parent->LoadOptions;
     Child->LoadOptionsSize = Parent->LoadOptionsSize;
+#ifdef TIMELM_USB_WINDOWS
+    Text("Windows stage: BEFORE StartImage (original Windows Boot Manager).\r\n");
+    Status=SaveLog(Image);
+    if (!EFI_ERROR(Status)) {
+#endif
     Status = mSystem->BootServices->StartImage (Next, &ExitSize, &ExitData);
+#ifdef TIMELM_USB_WINDOWS
+    Text("Windows stage: AFTER StartImage status="); Hex(Status); Text("\r\n");
+    } else Text("Windows stage: checkpoint failed; StartImage skipped.\r\n");
+    (VOID)SaveLog(Image);
+#endif
   } else if (!EFI_ERROR (Status)) Status = EFI_NOT_FOUND;
   // Windows normally does not return; only cleanup on returned failure/exit.
   if (ExitData != NULL) mSystem->BootServices->FreePool (ExitData);

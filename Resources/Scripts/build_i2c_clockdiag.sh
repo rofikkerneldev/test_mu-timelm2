@@ -108,7 +108,7 @@ assert struct.unpack_from('<II', data, pe+24+112+8) == (0, 0)
 acpi=json.loads((out/'usb-windows-acpi.json').read_text())
 metadata.update(sha256=hashlib.sha256(data).hexdigest(), size=len(data),
     purpose='restore Windows entries, verify native host and namespace, install one-boot xHCI SSDT, start Windows',
-    log='timelm-usb-windows.txt', probe_version=1, firmware_only=False,
+    log='timelm-usb-windows.txt', probe_version=2, firmware_only=False,
     requests_shutdown=False, windows_trial=True, persistent_acpi=False, acpi=acpi)
 (out/'usb-windows.json').write_text(json.dumps(metadata,indent=2))
 print(json.dumps(metadata))

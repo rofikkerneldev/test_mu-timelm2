@@ -163,7 +163,7 @@ STATIC EFI_STATUS RunUsbWindowsTrial(EFI_HANDLE Image, EFI_SYSTEM_TABLE *System)
   TIMELM_USB_CONFIG *Config=NULL;
   EFI_BOOT_SERVICES *Bs=System->BootServices;
   EFI_STATUS Status;
-  Text("timelm one-boot Windows USB ACPI trial v1\r\n");
+  Text("timelm one-boot Windows USB ACPI trial v2\r\n");
   if (!Bs->LocateProtocol || !Bs->LocateHandleBuffer || !Bs->HandleProtocol ||
       !Bs->FreePool || !Bs->Stall || !Bs->SetWatchdogTimer) return EFI_UNSUPPORTED;
   Status=Bs->SetWatchdogTimer(0,0,0,NULL);
