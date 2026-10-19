@@ -180,6 +180,9 @@ int main(void)
     Start(&m,&g); m.Nack = 1;
     assert(GpTransfer(&g,bytes,2,0,0,m.Time+50000) == GpNack);
     assert(GpStop(&g) == GpOk);
+    Start(&m,&g); m.HardwareFail = 1;
+    assert(GpTransfer(&g,bytes,2,0,0,m.Time+50000) == GpIoError && m.Doorbells == 0);
+    assert(GpStop(&g) == GpOk);
     for (i = 0; i < 6; ++i) {
         Start(&m,&g);
         m.BadPointer = i == 0; m.BadType = i == 1; m.BadChannel = i == 2;

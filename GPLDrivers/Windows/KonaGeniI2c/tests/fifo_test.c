@@ -8,6 +8,7 @@ typedef struct MOCK {
     GI_U32 Regs[0x1000 / 4], Queue[64], Head, Used;
     GI_U8 Source[256], Wire[256];
     GI_U32 Offset, Length, Commands[8], CommandCount, AbortCount;
+    GI_U32 WriteCount;
     GI_U64 Time, CancelAt;
     int Read, Stuck, Nack, Short, Overflow;
 } MOCK;
@@ -36,6 +37,7 @@ static GI_U32 Read(void *context, GI_U32 reg)
 static void Write(void *context, GI_U32 reg, GI_U32 value)
 {
     MOCK *m = context;
+    ++m->WriteCount;
     if (reg == GI_IRQ_CLEAR) { m->Regs[GI_IRQ_STATUS / 4] &= ~value; return; }
     m->Regs[reg / 4] = value;
     if (reg == GI_CMD) {
@@ -95,6 +97,14 @@ int main(void)
     GI_IO io;
     GI_U8 bytes[256], output[258];
     GI_U32 length, i;
+    io = Setup(&m); io.ClockSelect = 5; m.Regs[GI_IF_DISABLE/4] = 1;
+    assert(GiConfigureGpi(&io) == GiOk); /* GPI accepts FIFO-disabled firmware */
+    assert(m.Regs[GI_DMA_MODE/4] == 1 && m.Regs[GI_GSI_EVENT/4] == 15);
+    assert(m.Regs[GI_CLK_SEL/4] == 5 && m.Regs[GI_IRQ_GATE/4] == 0);
+    io = Setup(&m); m.Regs[GI_FW_REV/4] = 1u << 8;
+    assert(GiConfigureGpi(&io) == GiNotReady && m.WriteCount == 0);
+    io = Setup(&m); m.Regs[GI_STATUS/4] = 1;
+    assert(GiConfigureGpi(&io) == GiNotReady && m.WriteCount == 0);
     for (i = 0; i < sizeof(bytes); ++i) bytes[i] = (GI_U8)(i * 37u + 5u);
     /* Exercise FIFO refill/drain and every 1..256-byte tail alignment. */
     for (length = 1; length <= 256; ++length) {

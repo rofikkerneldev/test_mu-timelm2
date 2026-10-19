@@ -1,6 +1,28 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #include "geni_fifo.h"
 
+enum GI_RESULT GiConfigureGpi(GI_IO *io)
+{
+    if (io->ClockSelect > 7u) return GiInvalid;
+    if (((io->Read(io->Context, GI_FW_REV) >> 8) & 255u) != 3u ||
+        (io->Read(io->Context, GI_STATUS) & 0x1001u)) return GiNotReady;
+    /* Called only after board preparation and exclusive GPI ring ownership.
+     * Suppress event/IRQ output while clearing stale SE/DMA status. */
+    io->Write(io->Context, GI_GSI_EVENT, 0);
+    io->Write(io->Context, GI_IRQ_GATE, 0);
+    io->Write(io->Context, GI_IRQ_CLEAR, 0xffffffffu);
+    io->Write(io->Context, 0x648u, 0xffffffffu); /* secondary IRQ clear */
+    io->Write(io->Context, 0xc44u, 0xffffffffu); /* SE DMA TX IRQ clear */
+    io->Write(io->Context, 0xd44u, 0xffffffffu); /* SE DMA RX IRQ clear */
+    io->Write(io->Context, GI_IRQ_ENABLE,
+        io->Read(io->Context, GI_IRQ_ENABLE) & ~0x4c000001u);
+    io->Write(io->Context, GI_DMA_MODE, 1);
+    io->Write(io->Context, GI_CLK_SEL, io->ClockSelect);
+    io->Write(io->Context, GI_CLK_CFG, (7u << 4) | 1u);
+    io->Write(io->Context, GI_GSI_EVENT, 15);
+    return GiOk;
+}
+
 enum GI_RESULT GiInitialize(GI_IO *io)
 {
     GI_U32 tx, rx;

@@ -60,6 +60,7 @@ typedef struct GI_IO {
 } GI_IO;
 
 enum GI_RESULT GiInitialize(GI_IO *io);
+enum GI_RESULT GiConfigureGpi(GI_IO *io);
 enum GI_RESULT GiTransfer(GI_IO *io, GI_U8 *buffer, GI_U32 length,
                          int read, int hold, GI_U64 deadline);
 enum GI_RESULT GiAbort(GI_IO *io);

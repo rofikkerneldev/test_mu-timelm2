@@ -166,6 +166,7 @@ enum GP_RESULT GpTransfer(GP_IO *g, GI_U8 *data, GI_U32 length,
         (hold != 0 && hold != 1)) return GpInvalid;
     if (g->Cancelled(g->Context)) return GpCancelled;
     if (g->NowUs(g->Context) >= deadline) return GpTimeout;
+    if (g->HardwareError(g->Context)) { g->Ready = 0; return GpIoError; }
     /* No pending event may be silently attributed to the next request. */
     if ((g->Read(g->Context, GP_EV + 0x10u) != (GI_U32)(g->EventDma + g->EventRead*16u)) ||
         (g->Read(g->Context, GP_EV + 0x14u) != (GI_U32)(g->EventDma >> 32))) return GpBadEvent;
@@ -246,6 +247,7 @@ enum GP_RESULT GpTransfer(GP_IO *g, GI_U8 *data, GI_U32 length,
             (GI_U32)(g->EventDma + ((g->EventRead + GP_EVENT_COUNT-1u) & (GP_EVENT_COUNT-1u))*16u));
         g->Write(g->Context, GP_IEOB_CLEAR, 1);
         if (txDone && rxDone) {
+            if (g->HardwareError(g->Context)) { result = GpIoError; break; }
             g->Barrier(g->Context);
             if (read) for (i = 0; i < length; ++i) data[i] = g->RxBytes[i];
             return GpOk;

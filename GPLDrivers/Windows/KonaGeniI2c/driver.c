@@ -13,7 +13,7 @@ typedef struct DEVICE_CONTEXT {
     PUCHAR Registers;
     GI_IO Io;
     SPBREQUEST CurrentRequest;
-    BOOLEAN HandoffVerified, Started;
+    BOOLEAN ResourcesReady, Started;
     GENI_BOARD Board;
     GPI_WINDOWS Gpi;
     BOOLEAN UseGpi;
@@ -113,7 +113,14 @@ NTSTATUS GeniAdd(WDFDRIVER driver, PWDFDEVICE_INIT init)
     spb.EvtSpbIoWrite = GeniWrite;
     spb.EvtSpbIoSequence = GeniSequence;
     /* Separate lock/unlock requests are unsupported. Atomic sequences only. */
-    return SpbDeviceInitialize(device, &spb);
+    status = SpbDeviceInitialize(device, &spb);
+    if (NT_SUCCESS(status)) {
+        WDF_DEVICE_POWER_POLICY_IDLE_SETTINGS idle;
+        WDF_DEVICE_POWER_POLICY_IDLE_SETTINGS_INIT(&idle,IdleCannotWakeFromS0);
+        idle.Enabled = WdfFalse; /* no resume lifecycle yet */
+        status = WdfDeviceAssignS0IdleSettings(device,&idle);
+    }
+    return status;
 }
 
 NTSTATUS GeniPrepare(WDFDEVICE device, WDFCMRESLIST raw, WDFCMRESLIST translated)
@@ -127,7 +134,6 @@ NTSTATUS GeniPrepare(WDFDEVICE device, WDFCMRESLIST raw, WDFCMRESLIST translated
     UNICODE_STRING nativeName = RTL_CONSTANT_STRING(L"NativeBoardInitEnabled");
     UNICODE_STRING gpiName = RTL_CONSTANT_STRING(L"NativeGpiEnabled");
     PCM_PARTIAL_RESOURCE_DESCRIPTOR memory = NULL;
-    UNREFERENCED_PARAMETER(raw);
     GeniRecord(device, L"TimelmHostStage", 1);
     /* Native board init is a separate opt-in from inherited firmware state.
      * Both paths are disabled in the default INF and require real ACPI. */
@@ -172,7 +178,7 @@ NTSTATUS GeniPrepare(WDFDEVICE device, WDFCMRESLIST raw, WDFCMRESLIST translated
         if (context->Board.Native) GeniBoardRelease(&context->Board);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
-    context->HandoffVerified = TRUE;
+    context->ResourcesReady = TRUE;
     context->Io.Context = context;
     context->Io.Read = ReadRegister;
     context->Io.Write = WriteRegister;
@@ -189,7 +195,7 @@ NTSTATUS GeniRelease(WDFDEVICE device, WDFCMRESLIST resources)
     DEVICE_CONTEXT *context = GetDeviceContext(device);
     UNREFERENCED_PARAMETER(resources);
     context->Io.Ready = 0;
-    context->HandoffVerified = FALSE;
+    context->ResourcesReady = FALSE;
     {
         BOOLEAN safe = !context->UseGpi || GpiWindowsRelease(&context->Gpi);
         if (context->Board.Native) {
@@ -211,7 +217,7 @@ NTSTATUS GeniD0Entry(WDFDEVICE device, WDF_POWER_DEVICE_STATE previous)
     NTSTATUS status;
     ULONG select = 0;
     UNREFERENCED_PARAMETER(previous);
-    if (!context->HandoffVerified || context->Started) return STATUS_DEVICE_NOT_READY;
+    if (!context->ResourcesReady || context->Started) return STATUS_DEVICE_NOT_READY;
     if (context->Board.Native) {
         status = GeniBoardStart(&context->Board, context->Registers, &select);
         if (!NT_SUCCESS(status)) return status;
@@ -224,14 +230,8 @@ NTSTATUS GeniD0Entry(WDFDEVICE device, WDF_POWER_DEVICE_STATE previous)
         status = GpiWindowsStart(&context->Gpi,select);
         if (NT_SUCCESS(status)) {
             /* Rings are owned/empty before enabling GENI's GPI event path. */
-            WriteRegister(context,GI_IRQ_GATE,0);
-            WriteRegister(context,GI_IRQ_CLEAR,0xffffffffu);
-            WriteRegister(context,GI_IRQ_ENABLE,ReadRegister(context,GI_IRQ_ENABLE) & ~0x4c000001u);
-            WriteRegister(context,GI_DMA_MODE,1);
-            WriteRegister(context,GI_GSI_EVENT,15);
-            WriteRegister(context,GI_CLK_SEL,select);
-            WriteRegister(context,GI_CLK_CFG,(7u << 4) | 1u);
-            status = GeniBoardConfirmClock(&context->Board);
+            status = ResultStatus(GiConfigureGpi(&context->Io));
+            if (NT_SUCCESS(status)) status = GeniBoardConfirmClock(&context->Board);
         }
         if (!NT_SUCCESS(status)) {
             if (NT_SUCCESS(GpiWindowsStop(&context->Gpi))) (void)GeniBoardStop(&context->Board);
