@@ -43,12 +43,26 @@ driver is an SPB client, so it cannot replace the missing host.
 
 ## Concrete next integration
 
-Choose a demonstrably compatible Kona GENI SPB host or implement a FIFO host.
-Resolve its power/clock/pinmux ABI and initialize the engine in I2C mode before
-exposing it. Start with one controller and the internal touch only. Add the
-peripheral LGSW4290 with I2cSerialBusV2 0x28, GpioInt Edge/ActiveLow pin 39,
-and dependencies on that host and the actual GPIO provider. Implement verified
-reset/power ownership rather than relying on Recovery's retained state.
+A new source prototype is under `GPLDrivers/Windows/KonaGeniI2c`: a bounded
+FIFO SPB host for this one engine/address. ARM64 WDK compilation and FIFO
+ASan/UBSan tests pass in [run 39201708719](https://github.com/rofikkerneldev/test_mu-timelm/actions/runs/39201708719).
+It is a polling prototype, not a production interrupt-driven host. It supplies
+neither a clock/power provider nor a GENI firmware loader. Startup is gated
+before MMIO access and the gate is off in the INF.
+
+`Experimental/TouchI2c.asl` now declares TIML0001 and LGSW4290 with the observed
+MMIO/interrupt, I2cSerialBusV2 0x28 at 100 kHz and GpioInt Edge/ActiveLow pin 39.
+It compiles with no errors/warnings but both devices have _STA=0 and the table
+is not included in the booting image. Reset/supply ownership remains required.
+
+The standalone `Applications/I2cClockDiag` app queries the existing firmware
+clock protocol without changing clocks or directly reading MMIO, and appends its report
+to a file. It is intended to determine whether the clock provider and engine
+clock names are actually available in the booting UEFI. Its snapshot alone
+does not establish clock retention across ExitBootServices, pinmux, firmware
+ownership, or reset/power handling. Those are the remaining handoff work before
+activating the host and touchscreen. Do not toggle the registry/ACPI gates just
+to get past a start failure.
 
 The first hardware check must enumerate the host, read the B3W68TIM product ID,
 and show interrupt increments. Only then test HID coordinates, ten contacts,

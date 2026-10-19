@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
-// Standalone UEFI application: clock queries only, no MMIO or clock writes.
+// Standalone UEFI application: clock queries only, no direct MMIO or clock writes.
 #include <Uefi.h>
 #include <Protocol/EFIClock.h>
 #include <Protocol/LoadedImage.h>
@@ -52,7 +52,7 @@ STATIC EFI_STATUS QueryClocks (EFI_SYSTEM_TABLE *System)
   EFI_CLOCK_PROTOCOL *Clock = NULL;
   EFI_STATUS Status;
   UINTN Index;
-  Text ("timelm I2C clock query v1\r\nNo MMIO reads, enable, disable, rate change or reset.\r\n");
+  Text ("timelm I2C clock query v1\r\nNo direct MMIO, enable, disable, rate change or reset.\r\n");
   Status = System->BootServices->LocateProtocol (&mClockGuid, NULL, (VOID **)&Clock);
   Text ("Locate EFI_CLOCK_PROTOCOL: "); Hex (Status); Text ("\r\n");
   if (EFI_ERROR (Status)) return Status;

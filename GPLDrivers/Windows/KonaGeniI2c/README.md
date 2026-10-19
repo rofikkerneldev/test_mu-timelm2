@@ -12,7 +12,9 @@ Host ASan/UBSan tests pass for every transfer length 1..256, FIFO boundaries,
 write/read repeated-start command encoding, NACK, short completion, overflow,
 cancellation, timeout and refusal to reuse a failed controller. These tests
 model hardware behavior; they do not prove that behavior on the V60.
-WDK compilation and phone testing are separate checks.
+ARM64 WDK compilation also passes in
+[run 39201708719](https://github.com/rofikkerneldev/test_mu-timelm/actions/runs/39201708719).
+The phone has not run this host. The disabled SSDT compiles with no warnings.
 
 The fixed bus profile is 7-bit address 0x28, 100 kHz from a verified 19.2 MHz
 source, at most two transfers per atomic request, 256 bytes per transfer,

@@ -32,7 +32,7 @@ assert struct.unpack_from('<II', data, pe+24+112+8) == (0, 0)
 metadata = {'sha256': hashlib.sha256(data).hexdigest(), 'size': len(data),
     'architecture': 'ARM64', 'subsystem': 'EFI application', 'imports': [],
     'commit': subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip(),
-    'purpose': 'read-only clock protocol query; no MMIO'}
+    'purpose': 'read-only clock protocol query; no direct MMIO'}
 (out / 'source.json').write_text(json.dumps(metadata, indent=2))
 print(json.dumps(metadata))
 PY

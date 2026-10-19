@@ -2,7 +2,7 @@
 
 This ARM64 UEFI application asks the existing EFI_CLOCK_PROTOCOL for IDs,
 enabled/on status and configured frequency of the touch engine/wrapper clocks.
-It does not read MMIO, enable clocks, change rates, select pins, reset hardware
+It does not read MMIO directly, enable clocks, change rates, select pins, reset hardware
 or issue I2C transfers. It is not included in the normal firmware image.
 
 Build with the pinned Mu_Basecore headers and clang/lld:
