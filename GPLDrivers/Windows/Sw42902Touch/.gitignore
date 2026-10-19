@@ -1,0 +1,4 @@
+driver/kmdf/out/
+driver/kmdf/obj/
+*.pdb
+*.exe

@@ -1,0 +1,39 @@
+name: Test SW42902 packet decoder
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'GPLDrivers/Windows/Sw42902Touch/**'
+      - '.github/workflows/test-sw42902.yml'
+  pull_request:
+    paths:
+      - 'GPLDrivers/Windows/Sw42902Touch/**'
+      - '.github/workflows/test-sw42902.yml'
+permissions:
+  contents: read
+jobs:
+  arm64-driver:
+    runs-on: windows-2022
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build experimental ARM64 KMDF package
+        shell: pwsh
+        run: ./Resources/Scripts/build_sw42902_touch.ps1
+      - name: Upload package and compiler output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: timelm-SW42902-ARM64-experimental
+          path: GPLDrivers/Windows/Sw42902Touch/driver/kmdf/out/
+          if-no-files-found: warn
+          retention-days: 14
+  protocol:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Decode normal and malformed SW42902 packets
+        run: |
+          gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+            GPLDrivers/Windows/Sw42902Touch/tests/protocol_test.c -o /tmp/sw42902-test
+          /tmp/sw42902-test

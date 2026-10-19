@@ -6,6 +6,14 @@ layout is the platform reference; resources and drivers use the Kona path.
 
 ## Observed status
 
+Update 2026-10-19: Windows 11 ARM64 build 26300.9457 reaches OOBE with the
+rebuilt Kona GPIO/SPMI/PMIC packages. Recovery inspection confirms that Windows
+records an active 1080x2460 display. Touch remains unavailable: the current
+ACPI namespace has no I2C controller or touchscreen. See
+[current findings](BRINGUP-2026-10-19.md) and the experimental
+[SW42902 source candidate](../../../GPLDrivers/Windows/Sw42902Touch/README.md).
+The historical observations below describe the earlier 22621 bring-up.
+
 - DEBUG Android boot images have been flashed to both boot slots and booted.
 - UEFI menu navigation, the inherited display framebuffer/SimpleGOP and
   internal Windows Boot Manager have been observed working.
