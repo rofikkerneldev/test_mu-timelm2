@@ -10,6 +10,8 @@ on:
       - 'Resources/Scripts/build_sw42902_touch.ps1'
       - 'Resources/Scripts/Collect-TimelmDiagnostics.ps1'
       - 'Resources/Scripts/Collect-TimelmRecoveryTouch.sh'
+      - 'Resources/Scripts/build_touch_dma_check.sh'
+      - 'Platforms/LG/timelmPkg/Applications/TouchDmaCheck/**'
       - 'Platforms/LG/timelmPkg/Experimental/TouchWindows.asl'
       - 'Platforms/LG/timelmPkg/Experimental/TouchGpiWindows.asl'
       - '.github/workflows/timelm-touch-windows.yml'
@@ -22,6 +24,8 @@ on:
       - 'Resources/Scripts/build_sw42902_touch.ps1'
       - 'Resources/Scripts/Collect-TimelmDiagnostics.ps1'
       - 'Resources/Scripts/Collect-TimelmRecoveryTouch.sh'
+      - 'Resources/Scripts/build_touch_dma_check.sh'
+      - 'Platforms/LG/timelmPkg/Applications/TouchDmaCheck/**'
       - 'Platforms/LG/timelmPkg/Experimental/TouchWindows.asl'
       - 'Platforms/LG/timelmPkg/Experimental/TouchGpiWindows.asl'
       - '.github/workflows/timelm-touch-windows.yml'
@@ -91,18 +95,36 @@ jobs:
           gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
             GPLDrivers/Windows/Sw42902Touch/tests/init_test.c -o /tmp/touch-init-test
           /tmp/touch-init-test
+          gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+            GPLDrivers/Windows/Sw42902Touch/tests/basic_test.c \
+            GPLDrivers/Windows/Sw42902Touch/driver/sw42902_basic.c -o /tmp/touch-basic-test
+          /tmp/touch-basic-test
+          gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+            Platforms/LG/timelmPkg/Applications/TouchDmaCheck/snapshot_test.c -o /tmp/touch-dma-check-test
+          /tmp/touch-dma-check-test
           gcc -std=c11 -Wall -Wextra -Werror \
             GPLDrivers/Windows/Sw42902Touch/tests/decode_capture.c -o /tmp/decode-touch-capture
       - name: Compile disabled native Windows board ACPI
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y acpica-tools
+          sudo apt-get install -y acpica-tools clang lld
           iasl -ve -p /tmp/TouchWindows Platforms/LG/timelmPkg/Experimental/TouchWindows.asl
           iasl -ve -p /tmp/TouchGpiWindows Platforms/LG/timelmPkg/Experimental/TouchGpiWindows.asl
+      - name: Build read-only DMA prerequisite check with restored Windows chainload
+        run: |
+          git submodule update --init --depth 1 Mu_Basecore
+          bash Resources/Scripts/build_touch_dma_check.sh
       - uses: actions/upload-artifact@v4
         with:
           name: timelm-native-touch-acpi-disabled
           path: |
             /tmp/TouchWindows.aml
             /tmp/TouchGpiWindows.aml
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: timelm-touch-dma-check
+          path: |
+            Build/TouchDmaCheck/TouchDmaCheckOnce.efi
+            Build/TouchDmaCheck/touch-dma-check.json
           if-no-files-found: error

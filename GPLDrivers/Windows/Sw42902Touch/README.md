@@ -1,5 +1,11 @@
 # Experimental SW42902 Windows peripheral driver
 
+The first hardware acceptance target is one-finger tap and swipe at 1080x2460.
+The current HID feature reports a maximum of one contact. The wire decoder still
+validates all ten hardware records, but the basic path tracks one physical finger
+with a stable HID ID of zero and suppresses additional fingers until they lift.
+Pen, multitouch, advanced gestures and suspend/resume are outside this first test.
+
 This is a source candidate for the LG V60 timelm internal B3W68TIM touchscreen.
 It is **not a working touchscreen package yet**. The packet decoder passes host
 tests, including a real B3W68TIM v0.74 one-finger Recovery capture. A 60-frame
@@ -46,8 +52,15 @@ drivers do not implement the Windows display/audio/input driver interfaces.
 - Preparation leaves chip interrupts disabled. Normal scanning starts in
   D0EntryPostInterruptsEnabled, after the GPIO callback is armed; device
   interrupts are disabled before framework interrupt teardown.
-- A pending report preserves the latest contact state when no HID read is
-  waiting, including the last release frame. Intermediate frames can coalesce.
+- The basic path sets the descriptor's Confidence bit through press and lift.
+  A missing/palm/UP contact produces an explicit lift at the last press/move
+  coordinates, including when a packet contains no fingers. I2C/malformed-packet
+  failure also releases the tracked contact and requires a fresh touch.
+- A 32-report queue preserves DOWN/UP boundaries when HID reads are delayed.
+  Only subsequent motion within a stroke coalesces; the initial DOWN is kept.
+  Exhausting unread tap boundaries drops old queued input and explicitly
+  releases the last delivered contact before resynchronizing. Overflow counters
+  are recorded. Failed HID copies do not consume reports.
 - Build project supports ARM64 only and removes the original developer's
   absolute paths and WPP configuration.
 
@@ -95,9 +108,11 @@ Before enabling this candidate:
 3. Expose `LGSW4290` with I2cSerialBusV2 address `0x28`, GpioInt pin 39, `_DEP`
    on the real host and GPIO provider, and board-verified reset/power handling.
 4. Build/sign the candidate, verify enumeration/interrupts and probe product ID,
-   then test corner coordinates, ten fingers, all-up, pen proximity and reboot.
+   then test one-finger taps, swipes, all-up and corner coordinates in Windows.
+   Multitouch and pen are not prerequisites for this first acceptance target.
 
-The candidate relies on firmware to power/reset the IC. Suspend/resume,
+The native board adapter controls verified power/reset pins; the legacy handoff
+path relies on firmware. Suspend/resume,
 recovery after I2C failure, active pen, LPWG and dual-screen touch are unfinished.
 No speculative ACPI devices are added to the known booting DSDT.
 
@@ -125,3 +140,10 @@ gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
 These tests establish wire decoding and bounds safety. WDK compilation is
 separately verified by Actions. Neither check establishes I2C operation,
 GPIO interrupts or working touch on Windows.
+
+Basic lifecycle/queue tests additionally exercise a real Recovery frame,
+short taps before HID reads, long swipes under backpressure, corner coordinates,
+physical/HID ID separation, explicit lifts, ignored extra fingers, I2C-error
+release, failed-copy retry, ring wrap and bounded overflow. Their confidence
+and lift behavior follows Microsoft's
+[touchscreen contact lifecycle](https://learn.microsoft.com/en-us/windows-hardware/design/component-guidelines/touchscreen-required-hid-top-level-collections).

@@ -20,6 +20,7 @@ Environment:
 #include "sw42902_protocol.h"
 #include "sw42902_init.h"
 #include <spb.h>
+C_ASSERT(SW_BASIC_REPORT_SIZE == SW42902_REPORT_SIZE);
 
 static VOID TouchDiagnostic(PDEVICE_CONTEXT device, PCWSTR label, ULONG value)
 {
@@ -38,6 +39,8 @@ static VOID TouchSnapshot(PDEVICE_CONTEXT device)
     TouchDiagnostic(device, L"TimelmTouchInvalid", (ULONG)device->InvalidCount);
     TouchDiagnostic(device, L"TimelmTouchI2cErrors", (ULONG)device->I2cErrorCount);
     TouchDiagnostic(device, L"TimelmTouchLastI2cStatus", (ULONG)device->LastI2cStatus);
+    TouchDiagnostic(device, L"TimelmTouchQueueOverflows", device->Basic.Overflows);
+    TouchDiagnostic(device, L"TimelmTouchMovesCoalesced", device->Basic.Coalesced);
 }
 
 ULONG XMax = SW42902_X_MAX;
@@ -383,7 +386,7 @@ HID_REPORT_DESCRIPTOR       G_DefaultReportDescriptor[] = {
 
 };
 
-featureReport54_t features = {0x54,10};
+featureReport54_t features = {0x54,1};
 //
 // This is the default HID descriptor returned by the mini driver
 // in response to IOCTL_HID_GET_DEVICE_DESCRIPTOR. The size
@@ -1265,9 +1268,9 @@ Return Value:
     NTSTATUS status;
     PDEVICE_CONTEXT device = QueueContext->DeviceContext;
     WdfWaitLockAcquire(device->ReportLock, NULL);
-    if (device->ReportPending) {
-        status = RequestCopyFromBuffer(Request, device->LastReport, sizeof(device->LastReport));
-        if (NT_SUCCESS(status)) device->ReportPending = FALSE;
+    if (SwBasicPeek(&device->Basic)) {
+        status = RequestCopyFromBuffer(Request, (PVOID)SwBasicPeek(&device->Basic), SW_BASIC_REPORT_SIZE);
+        if (NT_SUCCESS(status)) SwBasicConsume(&device->Basic);
         *CompleteRequest = TRUE;
     } else {
         status = WdfRequestForwardToIoQueue(Request, device->ManualQueue);
@@ -1944,6 +1947,20 @@ Return Value:
     return status;
 }
 
+/* Caller holds ReportLock. Bound request draining even after bad HID buffers. */
+static VOID DeliverBasicReports(PDEVICE_CONTEXT device)
+{
+    unsigned remaining = SW_BASIC_QUEUE_SIZE;
+    while (SwBasicPeek(&device->Basic) && remaining--) {
+        WDFREQUEST request;
+        NTSTATUS status = WdfIoQueueRetrieveNextRequest(device->ManualQueue, &request);
+        if (!NT_SUCCESS(status)) break;
+        status = RequestCopyFromBuffer(request, (PVOID)SwBasicPeek(&device->Basic), SW_BASIC_REPORT_SIZE);
+        if (NT_SUCCESS(status)) SwBasicConsume(&device->Basic);
+        WdfRequestComplete(request,status);
+    }
+}
+
 /* timelm SW42902 transport: all transactions have bounded timeouts. */
 BOOLEAN
 OnInterruptIsr(WDFINTERRUPT interrupt, ULONG messageId)
@@ -1952,7 +1969,6 @@ OnInterruptIsr(WDFINTERRUPT interrupt, ULONG messageId)
     UCHAR command[2] = { 0x26, 0x00 };
     UCHAR packet[SW42902_PACKET_SIZE];
     UCHAR report[SW42902_REPORT_SIZE];
-    WDFREQUEST request;
     NTSTATUS status;
     int decoded;
     UNREFERENCED_PARAMETER(messageId);
@@ -1960,27 +1976,28 @@ OnInterruptIsr(WDFINTERRUPT interrupt, ULONG messageId)
     status = SpbDeviceWriteRead(device, command, packet, sizeof(command), sizeof(packet));
     device->LastI2cStatus = status;
     if (!NT_SUCCESS(status)) {
+        WdfWaitLockAcquire(device->ReportLock, NULL);
+        (VOID)SwBasicRelease(&device->Basic);
+        DeliverBasicReports(device);
+        WdfWaitLockRelease(device->ReportLock);
         if (InterlockedIncrement(&device->I2cErrorCount) == 1) TouchSnapshot(device);
         return TRUE;
     }
     decoded = Sw42902Decode(packet, sizeof(packet), report);
     if (decoded != 1) {
-        if (decoded < 0 && InterlockedIncrement(&device->InvalidCount) == 1) TouchSnapshot(device);
+        if (decoded < 0) {
+            WdfWaitLockAcquire(device->ReportLock, NULL);
+            (VOID)SwBasicRelease(&device->Basic);
+            DeliverBasicReports(device);
+            WdfWaitLockRelease(device->ReportLock);
+            if (InterlockedIncrement(&device->InvalidCount) == 1) TouchSnapshot(device);
+        }
         return TRUE;
     }
     if (InterlockedIncrement(&device->DecodedCount) == 1) TouchSnapshot(device);
     WdfWaitLockAcquire(device->ReportLock, NULL);
-    status = WdfIoQueueRetrieveNextRequest(device->ManualQueue, &request);
-    if (NT_SUCCESS(status)) {
-        status = RequestCopyFromBuffer(request, report, sizeof(report));
-        WdfRequestComplete(request, status);
-        device->ReportPending = !NT_SUCCESS(status);
-    } else {
-        device->ReportPending = TRUE;
-    }
-    // Retain the latest state if hidclass has not yet supplied a read, including
-    // release frames; otherwise a final UP could be lost indefinitely.
-    RtlCopyMemory(device->LastReport, report, sizeof(report));
+    (VOID)SwBasicInput(&device->Basic,report);
+    DeliverBasicReports(device);
     WdfWaitLockRelease(device->ReportLock);
     return TRUE;
 }
@@ -2063,7 +2080,7 @@ SpbDeviceOpen(PDEVICE_CONTEXT device)
     TouchDiagnostic(device, L"TimelmTouchStage", 4);
     device->InitStatus = STATUS_SUCCESS;
     status = Sw42902PrepareScan(device,InitWrite,InitDelay) ? STATUS_SUCCESS : device->InitStatus;
-    device->ReportPending = FALSE;
+    SwBasicInit(&device->Basic);
     // U3 scan starts only after Windows has enabled the GPIO interrupt.
     return status;
 }

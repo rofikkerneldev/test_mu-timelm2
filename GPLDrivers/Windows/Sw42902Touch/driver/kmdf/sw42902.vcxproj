@@ -39,12 +39,14 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="..\vhidmini.c" />
+    <ClCompile Include="..\sw42902_basic.c" />
     <ClCompile Include="util.c" />
     <Inf Include="vhidmini.inx" />
     <FilesToPackage Include="$(TargetPath)" />
     <ClInclude Include="..\vhidmini.h" />
     <ClInclude Include="..\sw42902_protocol.h" />
     <ClInclude Include="..\sw42902_init.h" />
+    <ClInclude Include="..\sw42902_basic.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

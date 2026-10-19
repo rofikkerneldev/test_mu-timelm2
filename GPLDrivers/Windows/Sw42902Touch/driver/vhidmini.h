@@ -31,6 +31,7 @@ Environment:
 #include <hidport.h>  // located in $(DDK_INC_PATH)/wdm
 
 #include "common.h"
+#include "sw42902_basic.h"
 
 #define RESHUB_USE_HELPER_ROUTINES
 #include "reshub.h"
@@ -63,8 +64,7 @@ typedef struct _DEVICE_CONTEXT
     WDFINTERRUPT            Interrupt;
     WDFIOTARGET             SpbController;
     WDFWAITLOCK             ReportLock;
-    UCHAR                   LastReport[62];
-    BOOLEAN                 ReportPending;
+    SW_BASIC_STATE          Basic;
     volatile LONG           IrqCount, DecodedCount, InvalidCount, I2cErrorCount;
     NTSTATUS                LastI2cStatus;
     NTSTATUS                InitStatus;

@@ -47,6 +47,18 @@ statuses remain disabled. No phone installation has occurred for this change.
 
 ## Windows implementation
 
+First acceptance is deliberately limited to one-finger tap and swipe. The basic
+HID path advertises one contact, sets Confidence, emits explicit lift reports
+and queues press/release boundaries instead of overwriting short taps with the
+latest state. Motion can coalesce; advanced input features do not gate this test.
+Physical Windows operation still requires the same working SPB/DMA transport.
+
+TouchDmaCheckOnce is a separate read-only prerequisite check: restore original
+Windows EFI entries first, record the actual pre-Windows stream 0x56 mapping,
+then chainload Windows. It makes no USB/clock/GPIO/GPI requests and does not
+change ACPI or SMMU state. A positive firmware snapshot alone is not Windows
+DMA acceptance; the Windows adapter rechecks the mapping before startup.
+
 - The native FIFO profile uses TBCF=0x54420101, three MMIO resources and four
   exclusive GPIO connections (Experimental/TouchWindows.asl). The GPI profile
   uses TBCF=0x54420201, five MMIO resources, raw GSIV311 and the same four GPIO

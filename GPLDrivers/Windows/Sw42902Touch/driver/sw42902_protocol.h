@@ -68,7 +68,8 @@ static int Sw42902Decode(const SW42902_U8 *packet, size_t length,
             x > SW42902_X_MAX || y > SW42902_Y_MAX) return -1;
         seen |= 1u << id;
         point = report + 1u + out * 6u;
-        /* G8 HID scaffold defines Tip/InRange and six constant padding bits. */
+        /* Neutral decoded contact state. The basic HID layer supplies the
+         * descriptor's Confidence bit, stable HID ID and explicit lifts. */
         point[0] = (event == 3u) ? 0x00 : 0x03;
         point[1] = (SW42902_U8)id;
         point[2] = (SW42902_U8)x;
