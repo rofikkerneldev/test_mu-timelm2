@@ -34,6 +34,13 @@ INF defines OpMode=1 for GPI and QUPType=1 for wrapper1, but has only instance
 QCOM2510 I2C nodes; alioth's QCOM2593 node is sensor-related. A filename or
 interrupt match does not prove the private interface/resource ABI.
 
+The inspected qcgpi8250.sys has original filename qcgpi8180.sys, version
+1.0.2100.0000, valid embedded signature on this PC, SHA256
+9f931f50b3c0b49b527713d18a71edd098208141b3cff5ce0df162cdbed2b94f.
+The original filename alone does not prove incompatibility; it reinforces the
+need to establish the actual interface/resource contract rather than use the
+renamed file as compatibility evidence.
+
 Before using this route, establish the provider's real ACPI memory/resource
 ordering, driver-to-driver interface and SE14 registration, clock dependencies,
 SCM ownership and DMA/SMMU contract. Preserve signed upstream files; editing an

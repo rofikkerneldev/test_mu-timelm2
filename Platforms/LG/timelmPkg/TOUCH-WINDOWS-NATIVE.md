@@ -99,6 +99,13 @@ TimelmHostStatus, TimelmBoardStage/Status, TimelmClockResult, clock config/DFS,
 GENI firmware/FIFO/status and cleanup result. First hardware acceptance is a
 successful host start, B3W68TIM read, interrupt increments and decoded touch.
 
+The final code at ed3f5504187d9c33526b197b50db1311652a70ff passed all three
+jobs in [Actions run 39235909679](https://github.com/rofikkerneldev/test_mu-timelm/actions/runs/39235909679):
+ARM64 host/client, patched GPIO/SPMI/PMIC packages, and lifecycle/decoder/ACPI
+checks. The decoder test includes the captured v0.74 frame. The Windows 5.1
+collector validation also passed. Package installation remains blocked by the
+unimplemented GPI transport; no experimental package has been installed.
+
 ## Primary references
 
 Board pin and power timing facts come from the captured Recovery DT and the

@@ -3,3 +3,4 @@
 Resources/DeviceOverlays/timelm/** -text
 Resources/Scripts/build_i2c_clockdiag.sh text eol=lf
 Resources/Scripts/Collect-TimelmRecoveryUsb.sh text eol=lf
+Resources/Scripts/Collect-TimelmRecoveryTouch.sh text eol=lf
