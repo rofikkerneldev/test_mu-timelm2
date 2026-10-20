@@ -1,0 +1,460 @@
+--- a/src/SPMI/Device.c
++++ b/src/SPMI/Device.c
+@@ -1,171 +1,81 @@
+ #include "driver.h"
+ #include "device.tmh"
++#include "Transaction.h"
+ 
+ #ifdef ALLOC_PRAGMA
+ #pragma alloc_text (PAGE, SPMICreateDevice)
+ #endif
+ 
+-#define Read32 READ_REGISTER_NOFENCE_ULONG
+-#define Write32 WRITE_REGISTER_NOFENCE_ULONG
+-
+-NTSTATUS
+-SPMIInterfaceWrite(
+-    PVOID Context,
+-    UINT8 Sid,
+-    UINT16 Addr,
+-    UINT8* Data,
+-    UINT8 DataLen
+-)
+-{
+-    NTSTATUS status;
+-    PDEVICE_CONTEXT deviceContext;
+-    UINT32 apid;
+-    ULONG reg;
+-    UINT16 ppid;
+-    UINT8 len;
+-    UINT32 temp = 0;
+-    UINT32 offset;
+-
+-    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Entry");
+-    deviceContext = (PDEVICE_CONTEXT)Context;
+-    reg = 0;
+-
+-    ppid = (Sid << 8) | (Addr >> 8);
+-
+-    if (Sid >= SPMI_MAX_SLAVES || ppid >= SPMI_MAX_PPID) {
+-        status = STATUS_INVALID_PARAMETER;
+-        goto Exit;
+-    }
+-
+-    apid = deviceContext->PpidToApid[ppid];
+-
+-    if (!(apid & SPMI_APID_VALID))
+-    {
+-        status = STATUS_IO_DEVICE_ERROR;
+-        goto Exit;
+-    }
+-
++#define Read32 READ_REGISTER_ULONG
++#define Write32 WRITE_REGISTER_ULONG
++
++static unsigned int SPMIReadStatus(void* Context)
++{
++    return Read32((PULONG)Context);
++}
++static void SPMIDelay(void* Context)
++{
++    UNREFERENCED_PARAMETER(Context);
++    KeStallExecutionProcessor(1);
++}
++static NTSTATUS SPMITransfer(PVOID Context, UINT8 Sid, UINT16 Addr,
++    UINT8* Data, UINT8 DataLen, BOOLEAN IsWrite)
++{
++    PDEVICE_CONTEXT deviceContext = (PDEVICE_CONTEXT)Context;
++    UINT32 apid, command, offset, raw = 0;
++    ULONG_PTR base;
++    ULONG length;
++    KIRQL oldIrql = PASSIVE_LEVEL;
++    NTSTATUS status = STATUS_INVALID_PARAMETER;
++    enum KONA_SPMI_RESULT result;
++    if (!deviceContext || !Data || Sid >= SPMI_MAX_SLAVES ||
++        !KonaSpmiCommand(IsWrite ? 0 : 1, Addr, DataLen, &command))
++        return status;
++    apid = deviceContext->PpidToApid[((UINT16)Sid << 8) | (Addr >> 8)];
++    if (!(apid & SPMI_APID_VALID)) {
++        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER, "No APID for SID %u address 0x%x", Sid, Addr);
++        return STATUS_NOT_FOUND;
++    }
+     apid &= ~SPMI_APID_VALID;
+-
+-    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "[%d:%d] apid: %d", Sid, ppid, apid);
+-
+-    if (DataLen > SPMI_MAX_TRANS_BYTES) {
+-        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER, "SPMI supports transmission up to %d bytes but %d requested", SPMI_MAX_TRANS_BYTES, DataLen);
+-        status = STATUS_INVALID_PARAMETER;
+-        goto Exit;
+-    }
+-
+-    offset = SPMI_CHN_CH_OFFSET(apid);
+-
+-    // Write data
+-    len = DataLen > 4 ? 4 : DataLen;
+-    memcpy(&temp, Data, len);
+-    Write32((PULONG)(deviceContext->Chnls + offset + SPMI_REG_WDATA0), temp);
+-
+-    if (DataLen >= 5) {
+-        memcpy(&temp, Data + 4, len - 4);
+-        Write32((PULONG)(deviceContext->Chnls + offset + SPMI_REG_WDATA1), temp);
+-    }
+-
+-    // Send write request
+-    reg = SPMI_FMT_CMD(SPMI_CMD_EXT_REG_WRITE_LONG, Addr, DataLen);
+-    Write32((PULONG)(deviceContext->Chnls + offset + SPMI_REG_CMD0), reg);
+-
+-    // Wait CMD Done status
+-    reg = 0;
+-    while (!reg) {
+-        reg = Read32((PULONG)(deviceContext->Chnls + offset + SPMI_REG_STATUS));
+-    }
+-
+-    if (reg ^ 0x1)
+-    {
+-        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER, "SPMI write failed");
+-        status = STATUS_IO_DEVICE_ERROR;
+-        goto Exit;
+-    }
+-
+-    status = STATUS_SUCCESS;
+-Exit:
+-    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Exit");
++    if (apid >= SPMI_MAX_PERIPH) return STATUS_INVALID_PARAMETER;
++    offset = IsWrite ? SPMI_CHN_CH_OFFSET(apid) : SPMI_OBS_CH_OFFSET(apid);
++    base = IsWrite ? deviceContext->Chnls : deviceContext->Obsrvr;
++    length = IsWrite ? deviceContext->ChnlsLength : deviceContext->ObsrvrLength;
++    if (!base || length < 0x20 || offset > length - 0x20)
++        return STATUS_INSUFFICIENT_RESOURCES;
++    KeAcquireSpinLock(&deviceContext->TransactionLock, &oldIrql);
++    if (IsWrite) {
++        Write32((PULONG)(base + offset + SPMI_REG_WDATA0), KonaSpmiPack(Data, DataLen));
++        if (DataLen > 4)
++            Write32((PULONG)(base + offset + SPMI_REG_WDATA1), KonaSpmiPack(Data + 4, DataLen - 4));
++    }
++    Write32((PULONG)(base + offset + SPMI_REG_CMD0), command);
++    result = KonaSpmiPoll(SPMIReadStatus, SPMIDelay,
++        (PVOID)(base + offset + SPMI_REG_STATUS), 1000, &raw);
++    switch (result) {
++    case KonaSpmiDone: status = STATUS_SUCCESS; break;
++    case KonaSpmiDenied: status = STATUS_ACCESS_DENIED; break;
++    case KonaSpmiTimeout: status = STATUS_IO_TIMEOUT; break;
++    default: status = STATUS_IO_DEVICE_ERROR; break;
++    }
++    if (NT_SUCCESS(status) && !IsWrite) {
++        KonaSpmiUnpack(Read32((PULONG)(base + offset + SPMI_REG_RDATA0)), Data, DataLen);
++        if (DataLen > 4)
++            KonaSpmiUnpack(Read32((PULONG)(base + offset + SPMI_REG_RDATA1)), Data + 4, DataLen - 4);
++    }
++    KeReleaseSpinLock(&deviceContext->TransactionLock, oldIrql);
++    if (!NT_SUCCESS(status))
++        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER,
++            "SPMI SID %u address 0x%x APID %u raw 0x%x status %!STATUS!", Sid, Addr, apid, raw, status);
+     return status;
+ }
+-
+-NTSTATUS
+-SPMIInterfaceRead(
+-    PVOID Context,
+-    UINT8 Sid,
+-    UINT16 Addr,
+-    UINT8* Data,
+-    UINT8 DataLen
+-    )
+-{
+-    NTSTATUS status;
+-    PDEVICE_CONTEXT deviceContext;
+-    UINT32 apid, offset;
+-    ULONG reg;
+-    UINT16 ppid, len;
+-
+-    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Entry");
+-    deviceContext = (PDEVICE_CONTEXT)Context;
+-    reg = 0;
+-
+-    ppid = (Sid << 8) | (Addr >> 8);
+-
+-    if (Sid >= SPMI_MAX_SLAVES || ppid >= SPMI_MAX_PPID) {
+-        status = STATUS_INVALID_PARAMETER;
+-        goto Exit;
+-    }
+-
+-    apid = deviceContext->PpidToApid[ppid];
+-
+-    if (!(apid & SPMI_APID_VALID))
+-    {
+-        status = STATUS_IO_DEVICE_ERROR;
+-        goto Exit;
+-    }
+-
+-    apid &= ~SPMI_APID_VALID;
+-
+-    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "[%d:%d] apid: %d", Sid, ppid, apid);
+-
+-    if (DataLen > SPMI_MAX_TRANS_BYTES) {
+-        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER, "SPMI supports transmission up to %d bytes but %d requested", SPMI_MAX_TRANS_BYTES, DataLen);
+-        status = STATUS_INVALID_PARAMETER;
+-        goto Exit;
+-    }
+-
+-    offset = SPMI_OBS_CH_OFFSET(apid);
+-
+-    // Request read
+-    reg = SPMI_FMT_CMD(SPMI_CMD_EXT_REG_READ_LONG, Addr, DataLen);
+-    Write32((PULONG)(deviceContext->Obsrvr + offset + SPMI_REG_CMD0), reg);
+-
+-    // Wait CMD Done status
+-    reg = 0;
+-    while (!reg) {
+-        reg = Read32((PULONG)(deviceContext->Obsrvr + offset + SPMI_REG_STATUS));
+-    }
+-
+-    if (reg ^ 0x1)
+-    {
+-        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER, "SPMI Read failed");
+-        status = STATUS_IO_DEVICE_ERROR;
+-        goto Exit;
+-    }
+-
+-    len = DataLen > 4 ? 4 : DataLen;
+-    reg = Read32((PULONG)(deviceContext->Obsrvr + offset + SPMI_REG_RDATA0));
+-    memcpy(Data, &reg, len);
+-
+-    if (DataLen >= 5) {
+-        reg = Read32((PULONG)(deviceContext->Obsrvr + offset + SPMI_REG_RDATA1));
+-        memcpy(Data + 4, &reg, DataLen - 4);
+-    }
+-
+-    status = STATUS_SUCCESS;
+-Exit:
+-    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Exit");
+-    return status;
++NTSTATUS SPMIInterfaceWrite(PVOID Context, UINT8 Sid, UINT16 Addr, UINT8* Data, UINT8 DataLen)
++{
++    return SPMITransfer(Context, Sid, Addr, Data, DataLen, TRUE);
++}
++NTSTATUS SPMIInterfaceRead(PVOID Context, UINT8 Sid, UINT16 Addr, UINT8* Data, UINT8 DataLen)
++{
++    return SPMITransfer(Context, Sid, Addr, Data, DataLen, FALSE);
+ }
+ 
+ VOID
+@@ -177,10 +87,11 @@
+     PAPID_DATA apidData = deviceContext->ApidData;
+     PAPID_DATA prevApidData;
+ 
+-    for (UINT16 i = 0;; i++, apidData++) {
++    for (UINT16 i = 0; i < SPMI_MAX_PERIPH; i++, apidData++) {
+         offset = APID_MAP_OFFSET + SPMI_CH_OFFSET(i);
+ 
+-        if (offset >= deviceContext->CoreLength)
++        if (deviceContext->CoreLength < sizeof(UINT32) || offset > deviceContext->CoreLength - sizeof(UINT32) ||
++            deviceContext->CnfgLength < 0x704 || SPMI_CH_OFFSET(i) > deviceContext->CnfgLength - 0x704)
+             break;
+ 
+         regval = Read32((PULONG)(deviceContext->Core + offset));
+@@ -325,6 +236,9 @@
+         goto Exit;
+     }
+ 
++    KeInitializeSpinLock(&deviceContext->TransactionLock);
++    RtlZeroMemory(deviceContext->PpidToApid, sizeof(deviceContext->PpidToApid));
++    RtlZeroMemory(deviceContext->ApidData, sizeof(deviceContext->ApidData));
+     ReadApidMap(deviceContext);
+ 
+     {
+--- a/src/SPMI/Device.h
++++ b/src/SPMI/Device.h
+@@ -44,6 +44,7 @@
+ 
+ typedef struct _DEVICE_CONTEXT
+ {
++    KSPIN_LOCK TransactionLock;
+     ULONG_PTR Core;
+     ULONG CoreLength;
+     ULONG_PTR Chnls;
+--- a/src/PMIC/Device.c
++++ b/src/PMIC/Device.c
+@@ -5,6 +5,46 @@
+ #ifdef ALLOC_PRAGMA
+ #pragma alloc_text (PAGE, PMICCreateDevice)
+ #endif
++
++// Persist probe results even when PrepareHardware fails. No power register writes.
++static VOID PMICRecordProbe(WDFDEVICE Device, UINT8 Sid, NTSTATUS Status, UINT8 Model)
++{
++    WDFKEY key;
++    UNICODE_STRING name;
++    WCHAR statusName[] = L"TimelmProbeStatusSID00";
++    WCHAR modelName[] = L"TimelmProbeModelSID00";
++    static const WCHAR hex[] = L"0123456789ABCDEF";
++    if (!NT_SUCCESS(WdfDeviceOpenRegistryKey(Device, PLUGPLAY_REGKEY_DEVICE,
++        KEY_SET_VALUE, WDF_NO_OBJECT_ATTRIBUTES, &key))) return;
++    RtlInitUnicodeString(&name, L"TimelmProbeLastSID");
++    (VOID)WdfRegistryAssignULong(key, &name, Sid);
++    RtlInitUnicodeString(&name, L"TimelmProbeLastStatus");
++    (VOID)WdfRegistryAssignULong(key, &name, (ULONG)Status);
++    if (Sid < 16) {
++        statusName[RTL_NUMBER_OF(statusName)-3] = hex[Sid >> 4];
++        statusName[RTL_NUMBER_OF(statusName)-2] = hex[Sid & 15];
++        modelName[RTL_NUMBER_OF(modelName)-3] = hex[Sid >> 4];
++        modelName[RTL_NUMBER_OF(modelName)-2] = hex[Sid & 15];
++        RtlInitUnicodeString(&name, statusName);
++        (VOID)WdfRegistryAssignULong(key, &name, (ULONG)Status);
++        RtlInitUnicodeString(&name, modelName);
++        (VOID)WdfRegistryAssignULong(key, &name, Model);
++    }
++    WdfRegistryClose(key);
++}
++
++static BOOLEAN PMICNextArgument(PACPI_METHOD_ARGUMENT Arg, UINT8* End, PACPI_METHOD_ARGUMENT* Next)
++{
++    ULONG_PTR remaining;
++    ULONG span;
++    if ((ULONG_PTR)Arg > (ULONG_PTR)End) return FALSE;
++    remaining = (ULONG_PTR)End - (ULONG_PTR)Arg;
++    if (remaining < sizeof(ACPI_METHOD_ARGUMENT)) return FALSE;
++    span = FIELD_OFFSET(ACPI_METHOD_ARGUMENT, Data) + max((ULONG)Arg->DataLength, sizeof(ULONG));
++    if (span > remaining) return FALSE;
++    *Next = (PACPI_METHOD_ARGUMENT)((UINT8*)Arg + span);
++    return TRUE;
++}
+ 
+ NTSTATUS
+ ParsePMICConfig(
+@@ -19,13 +59,19 @@
+     PACPI_METHOD_ARGUMENT packageArgument;
+     PACPI_METHOD_ARGUMENT dataArgument;
+     WDFIOTARGET ioTarget;
+-    ULONG sizeReturned = 0;
++    ULONG_PTR sizeReturned = 0;
++    PACPI_METHOD_ARGUMENT nextArgument;
++    UINT8* outputEnd;
++    UINT8* packageEnd;
++    UINT32 count;
+ 
+     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Entry");
+ 
+     RtlZeroMemory(&inputBuffer, sizeof(ACPI_EVAL_INPUT_BUFFER));
+     inputBuffer.Signature = ACPI_EVAL_INPUT_BUFFER_SIGNATURE;
+ 
++    Context->NumberOfPMICs = 0;
++    RtlZeroMemory(Context->PMICList, sizeof(Context->PMICList));
+     inputBuffer.MethodNameAsUlong = (ULONG)'GFCP';
+     WDF_MEMORY_DESCRIPTOR_INIT_BUFFER(&inputDescriptor, (PVOID)&inputBuffer, sizeof(ACPI_EVAL_INPUT_BUFFER));
+ 
+@@ -48,14 +94,17 @@
+         &inputDescriptor,
+         &outputDescriptor,
+         NULL,
+-        (PULONG_PTR)&sizeReturned);
++        &sizeReturned);
+     if (!NT_SUCCESS(status)) {
+         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER, "Failed to read PMIC Config from ACPI");
+         status = STATUS_ACPI_INVALID_DATA;
+         goto Exit;
+     }
+ 
+-    if (outputBuffer->Signature != ACPI_EVAL_OUTPUT_BUFFER_SIGNATURE || outputBuffer->Count == 0)
++    if (sizeReturned < FIELD_OFFSET(ACPI_EVAL_OUTPUT_BUFFER, Argument) + sizeof(ACPI_METHOD_ARGUMENT) ||
++        sizeReturned > 4096 || outputBuffer->Length > sizeReturned ||
++        outputBuffer->Length < FIELD_OFFSET(ACPI_EVAL_OUTPUT_BUFFER, Argument) + sizeof(ACPI_METHOD_ARGUMENT) ||
++        outputBuffer->Signature != ACPI_EVAL_OUTPUT_BUFFER_SIGNATURE || outputBuffer->Count == 0)
+     {
+         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER, "Invalid buffer signature or count");
+         status = STATUS_ACPI_INVALID_DATA;
+@@ -68,35 +117,38 @@
+         goto Exit;
+     }
+ 
+-    Context->NumberOfPMICs = outputBuffer->Argument[0].Argument;
+-    packageArgument = (ACPI_METHOD_ARGUMENT*)ACPI_METHOD_NEXT_ARGUMENT(&(outputBuffer->Argument[0]));
+-
+-    for (UINT32 i = 0; i < Context->NumberOfPMICs; i++) {
+-        if (packageArgument->Type != ACPI_METHOD_ARGUMENT_PACKAGE || packageArgument->DataLength == 0)
+-        {
+-            TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER, "Invalid argument type");
+-            status = STATUS_ACPI_INVALID_DATA;
+-            goto Exit;
+-        }
+-
++    outputEnd = (UINT8*)outputBuffer + outputBuffer->Length;
++    if (!PMICNextArgument(&outputBuffer->Argument[0], outputEnd, &packageArgument)) {
++        status = STATUS_ACPI_INVALID_DATA; goto Exit;
++    }
++    count = outputBuffer->Argument[0].Argument;
++    if (!count || count > MAX_PMIC_NUMBER || outputBuffer->Count != count + 1) {
++        status = STATUS_ACPI_INVALID_DATA; goto Exit;
++    }
++    for (UINT32 i = 0; i < count; ++i) {
++        if (!PMICNextArgument(packageArgument, outputEnd, &nextArgument) ||
++            packageArgument->Type != ACPI_METHOD_ARGUMENT_PACKAGE) {
++            status = STATUS_ACPI_INVALID_DATA; goto Exit;
++        }
++        packageEnd = packageArgument->Data + packageArgument->DataLength;
++        dataArgument = (PACPI_METHOD_ARGUMENT)packageArgument->Data;
+         Context->PMICList[i].Number = i;
+-
+-        dataArgument = (PACPI_METHOD_ARGUMENT)packageArgument->Data;
+-        for (UINT8 j = 0; j < 2; j++) {
+-            if (dataArgument->Type != ACPI_METHOD_ARGUMENT_INTEGER)
+-            {
+-                TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER, "Invalid argument type");
+-                status = STATUS_ACPI_INVALID_DATA;
+-                goto Exit;
++        for (UINT8 j = 0; j < 2; ++j) {
++            PACPI_METHOD_ARGUMENT nextData;
++            if (!PMICNextArgument(dataArgument, packageEnd, &nextData) ||
++                dataArgument->Type != ACPI_METHOD_ARGUMENT_INTEGER || dataArgument->Argument > 16) {
++                status = STATUS_ACPI_INVALID_DATA; goto Exit;
+             }
+-
+             Context->PMICList[i].SlaveID[j] = (UINT8)dataArgument->Argument;
+-
+-            dataArgument = (ACPI_METHOD_ARGUMENT*)ACPI_METHOD_NEXT_ARGUMENT(dataArgument);
+-        }
+-
+-        packageArgument = (ACPI_METHOD_ARGUMENT*)ACPI_METHOD_NEXT_ARGUMENT(packageArgument);
+-    }
++            dataArgument = nextData;
++        }
++        if ((UINT8*)dataArgument != packageEnd ||
++            ((Context->PMICList[i].SlaveID[0] == 16) != (Context->PMICList[i].SlaveID[1] == 16))) {
++            status = STATUS_ACPI_INVALID_DATA; goto Exit;
++        }
++        packageArgument = nextArgument;
++    }
++    Context->NumberOfPMICs = count;
+ 
+     status = STATUS_SUCCESS;
+ Exit:
+@@ -130,12 +182,17 @@
+         if (pmic.SlaveID[0] == 16 && pmic.SlaveID[1] == 16)
+             continue;
+ 
+-        status = deviceContext->SPMIInterface.Read(deviceContext->SPMIInterface.Interface.Context, pmic.SlaveID[0], PMIC_REG_SUBTYPE, (PUINT8)&pmic.Model, sizeof(pmic.Model));
++        UINT8 model = 0;
++        status = deviceContext->SPMIInterface.Read(deviceContext->SPMIInterface.Interface.Context,
++            pmic.SlaveID[0], PMIC_REG_SUBTYPE, &model, sizeof(model));
++        PMICRecordProbe(Device, pmic.SlaveID[0], status, model);
+         if (!NT_SUCCESS(status)) {
+             TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER, "Failed to read pmic subtype %!STATUS!", status);
+             goto Exit;
+         }
+ 
++        pmic.Model = (PMIC_MODEL)model;
++        deviceContext->PMICList[i].Model = pmic.Model;
+         TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "PMIC%d: %!pmic_model!", pmic.Number, pmic.Model);
+ 
+         // Initialize RTC
+@@ -279,7 +336,8 @@
+             goto Exit;
+         }
+ 
+-        ParsePMICConfig(deviceContext);
++        status = ParsePMICConfig(deviceContext);
++        PMICRecordProbe(device, 0xFF, status, 0);
+     }
+ 
+ Exit:

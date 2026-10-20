@@ -56,6 +56,13 @@ STATIC EFI_STATUS SaveLog(EFI_HANDLE Image)
   if (!EFI_ERROR(Status)) mLogLength = 0; // Each checkpoint is appended once.
   return Status;
 }
+STATIC VOID WriteSmmu(TD_U32 Offset, TD_U32 Value)
+{
+  volatile UINT32 *Address = (volatile UINT32 *)(UINTN)(0x15000000u+Offset);
+  __asm__ __volatile__("dsb sy" ::: "memory");
+  *Address = Value;
+  __asm__ __volatile__("dsb sy" ::: "memory");
+}
 STATIC TD_U32 ReadSmmu(void *Context, TD_U32 Offset)
 {
   volatile UINT32 *Address = (volatile UINT32 *)(UINTN)(0x15000000u+Offset);
@@ -92,6 +99,24 @@ EFI_STATUS EFIAPI TouchDmaCheckEntry(EFI_HANDLE Image, EFI_SYSTEM_TABLE *System)
     Text(" conflicting_type="); Hex(mSnapshot.Conflict);
     Text(" unmatched_default_fault="); Hex(mSnapshot.DefaultFault);
     Text(" verified_bypass="); Hex(mSnapshot.Bypass); Text("\r\n");
+    if (!mSnapshot.Matches && Known && mSnapshot.Count > mSnapshot.Valid) {
+      TD_U32 FreeSlot = mSnapshot.Count;
+      for (I = 0; I < mSnapshot.Count; ++I) {
+        if ((ReadSmmu(NULL, 0x800u + 4u * I) & 0x80000000u) == 0) {
+          FreeSlot = I;
+          break;
+        }
+      }
+      if (FreeSlot < mSnapshot.Count) {
+        Text("Configuring SMR slot "); Hex(FreeSlot);
+        Text(" for Stream 0x56 BYPASS (S2CR=0x10000, SMR=0x80000056)...\r\n");
+        WriteSmmu(0xc00u + 4u * FreeSlot, 0x00010000u);
+        WriteSmmu(0x800u + 4u * FreeSlot, 0x80000056u);
+        Known = TouchDmaSnapshot(NULL,ReadSmmu,&mSnapshot);
+        Text("Configured: SID 0x56 matches="); Hex(mSnapshot.Matches);
+        Text(" verified_bypass="); Hex(mSnapshot.Bypass); Text("\r\n");
+      }
+    }
     Text("This is a pre-Windows snapshot. The Windows adapter must recheck before DMA.\r\n");
     (VOID)SaveLog(Image);
   }

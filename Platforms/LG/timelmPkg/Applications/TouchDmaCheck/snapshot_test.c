@@ -33,6 +33,12 @@ int main(void)
   Init(); Registers[0x800/4]=0x80010056; Registers[0xc00/4]=0x10000;
   Registers[0x804/4]=0x80000056;
   assert(TouchDmaSnapshot(0,Read,&S) && S.Matches==2 && S.Conflict && !S.Bypass);
+  Init(); Registers[0]=0x2d0406;
+  Registers[0x800/4]=0x800004a0; Registers[0xc00/4]=0;
+  assert(TouchDmaSnapshot(0,Read,&S) && S.Valid==1 && S.Matches==0 && !S.Bypass);
+  Registers[0xc04/4]=0x10000;
+  Registers[0x804/4]=0x80000056;
+  assert(TouchDmaSnapshot(0,Read,&S) && S.Valid==2 && S.Matches==1 && S.Bypass);
   Init(); Registers[0x20/4]=0xffffffff;
   assert(!TouchDmaSnapshot(0,Read,&S) && Reads==3 && !S.Valid);
   Init(); Registers[0x24/4]=0;
