@@ -125,7 +125,7 @@
 +    offset = IsWrite ? SPMI_CHN_CH_OFFSET(apid) : SPMI_OBS_CH_OFFSET(apid);
 +    base = IsWrite ? deviceContext->Chnls : deviceContext->Obsrvr;
 +    length = IsWrite ? deviceContext->ChnlsLength : deviceContext->ObsrvrLength;
-+    if (!base || length < 0x20 || offset > length - 0x20)
++    if (!base || length < 0x20 || (ULONG)offset > length - 0x20)
 +        return STATUS_INSUFFICIENT_RESOURCES;
 +    KeAcquireSpinLock(&deviceContext->TransactionLock, &oldIrql);
 +    if (IsWrite) {
@@ -249,8 +249,8 @@
          offset = APID_MAP_OFFSET + SPMI_CH_OFFSET(i);
  
 -        if (offset >= deviceContext->CoreLength)
-+        if (deviceContext->CoreLength < sizeof(UINT32) || offset > deviceContext->CoreLength - sizeof(UINT32) ||
-+            deviceContext->CnfgLength < 0x704 || SPMI_CH_OFFSET(i) > deviceContext->CnfgLength - 0x704)
++        if (deviceContext->CoreLength < sizeof(UINT32) || (ULONG)offset > deviceContext->CoreLength - sizeof(UINT32) ||
++            deviceContext->CnfgLength < 0x704 || (ULONG)SPMI_CH_OFFSET(i) > deviceContext->CnfgLength - 0x704)
              break;
  
          regval = Read32((PULONG)(deviceContext->Core + offset));
