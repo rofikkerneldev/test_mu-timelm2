@@ -8,6 +8,7 @@
 #include "geni_fifo.h"
 #include "board_windows.h"
 #include "gpi_windows.h"
+#include "bitbang_windows.h"
 
 typedef struct DEVICE_CONTEXT {
     PUCHAR Registers;
@@ -17,6 +18,8 @@ typedef struct DEVICE_CONTEXT {
     GENI_BOARD Board;
     GPI_WINDOWS Gpi;
     BOOLEAN UseGpi;
+    BOOLEAN UseBitbang;
+    BB_WINDOWS Bitbang;
 } DEVICE_CONTEXT;
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DEVICE_CONTEXT, GetDeviceContext)
 
@@ -38,6 +41,7 @@ EVT_SPB_TARGET_CONNECT GeniConnect;
 EVT_SPB_CONTROLLER_READ GeniRead;
 EVT_SPB_CONTROLLER_WRITE GeniWrite;
 EVT_SPB_CONTROLLER_SEQUENCE GeniSequence;
+NTSTATUS GeniReadOnlyProbe(WDFDEVICE device, WDFCMRESLIST raw, WDFCMRESLIST translated);
 
 static GI_U32 ReadRegister(void *context, GI_U32 offset)
 {
@@ -144,14 +148,21 @@ NTSTATUS GeniPrepare(WDFDEVICE device, WDFCMRESLIST raw, WDFCMRESLIST translated
 {
     DEVICE_CONTEXT *context = GetDeviceContext(device);
     WDFKEY key;
-    ULONG verified = 0, sourceHz = 0, native = 0, gpi = 0, iommu = 0, i, memoryCount = 0;
+    ULONG verified = 0, sourceHz = 0, native = 0, gpi = 0, iommu = 0, probe = 0, bitbang = 0, i, memoryCount = 0;
     NTSTATUS status;
     UNICODE_STRING handoffName = RTL_CONSTANT_STRING(L"FirmwareHandoffVerified");
     UNICODE_STRING clockName = RTL_CONSTANT_STRING(L"SourceClockHz");
     UNICODE_STRING nativeName = RTL_CONSTANT_STRING(L"NativeBoardInitEnabled");
     UNICODE_STRING gpiName = RTL_CONSTANT_STRING(L"NativeGpiEnabled");
     UNICODE_STRING iommuName = RTL_CONSTANT_STRING(L"WindowsIommuEnabled");
+    UNICODE_STRING probeName = RTL_CONSTANT_STRING(L"ReadOnlyHardwareProbeEnabled");
+    UNICODE_STRING bitbangName = RTL_CONSTANT_STRING(L"NativeGpioI2cEnabled");
     PCM_PARTIAL_RESOURCE_DESCRIPTOR memory = NULL;
+    if(context->ResourcesReady || context->Bitbang.Retained || context->Bitbang.Acquired ||
+       context->Gpi.Dma.Retained || context->Gpi.Io.Unsafe) return STATUS_DEVICE_BUSY;
+    context->UseBitbang=FALSE;
+    context->UseGpi=FALSE;
+    context->Gpi.UseIommu=FALSE;
     GeniRecord(device, L"TimelmHostStage", 1);
     /* Native board init is a separate opt-in from inherited firmware state.
      * Both paths are disabled in the default INF and require real ACPI. */
@@ -161,9 +172,25 @@ NTSTATUS GeniPrepare(WDFDEVICE device, WDFCMRESLIST raw, WDFCMRESLIST translated
     (void)WdfRegistryQueryULong(key, &nativeName, &native);
     (void)WdfRegistryQueryULong(key, &gpiName, &gpi);
     (void)WdfRegistryQueryULong(key, &iommuName, &iommu);
+    (void)WdfRegistryQueryULong(key, &probeName, &probe);
+    (void)WdfRegistryQueryULong(key, &bitbangName, &bitbang);
     status = WdfRegistryQueryULong(key, &handoffName, &verified);
     if (NT_SUCCESS(status)) status = WdfRegistryQueryULong(key, &clockName, &sourceHz);
     WdfRegistryClose(key);
+    if (bitbang) {
+        if(bitbang!=1 || probe || native || gpi || iommu || verified || sourceHz)
+            return STATUS_DEVICE_CONFIGURATION_ERROR;
+        context->UseBitbang=TRUE;
+        status=BbWindowsPrepare(&context->Bitbang,device,translated);
+        context->ResourcesReady=NT_SUCCESS(status);
+        GeniRecord(device,L"TimelmHostStatus",(ULONG)status);
+        return status;
+    }
+    if (probe) {
+        if (probe!=1 || native || gpi || iommu || verified || sourceHz)
+            return STATUS_DEVICE_CONFIGURATION_ERROR;
+        return GeniReadOnlyProbe(device,raw,translated);
+    }
     if (gpi > 1 || (gpi == 1 && native != 1)) return STATUS_DEVICE_CONFIGURATION_ERROR;
     if (iommu > 1 || (iommu == 1 && gpi != 1)) return STATUS_DEVICE_CONFIGURATION_ERROR;
     context->UseGpi = gpi == 1;
@@ -218,6 +245,7 @@ NTSTATUS GeniRelease(WDFDEVICE device, WDFCMRESLIST resources)
     UNREFERENCED_PARAMETER(resources);
     context->Io.Ready = 0;
     context->ResourcesReady = FALSE;
+    if(context->UseBitbang) return BbWindowsRelease(&context->Bitbang)?STATUS_SUCCESS:STATUS_DEVICE_BUSY;
     {
         BOOLEAN safe = !context->UseGpi || GpiWindowsRelease(&context->Gpi);
         if (context->Board.Native) {
@@ -240,6 +268,13 @@ NTSTATUS GeniD0Entry(WDFDEVICE device, WDF_POWER_DEVICE_STATE previous)
     ULONG select = 0;
     UNREFERENCED_PARAMETER(previous);
     if (!context->ResourcesReady || context->Started) return STATUS_DEVICE_NOT_READY;
+    if(context->UseBitbang) {
+        status=BbWindowsStart(&context->Bitbang);
+        context->Started=NT_SUCCESS(status);
+        GeniRecord(device,L"TimelmHostStage",NT_SUCCESS(status)?4u:3u);
+        GeniRecord(device,L"TimelmHostStatus",(ULONG)status);
+        return status;
+    }
     if (context->Board.Native) {
         status = GeniBoardStart(&context->Board, context->Registers, &select);
         if (!NT_SUCCESS(status)) return status;
@@ -280,6 +315,7 @@ NTSTATUS GeniD0Exit(WDFDEVICE device, WDF_POWER_DEVICE_STATE next)
 {
     DEVICE_CONTEXT *context = GetDeviceContext(device);
     UNREFERENCED_PARAMETER(next);
+    if(context->UseBitbang) {context->Started=FALSE;return BbWindowsStop(&context->Bitbang);}
     if (context->UseGpi) {
         NTSTATUS status = GpiWindowsStop(&context->Gpi);
         if (!NT_SUCCESS(status)) return status;
@@ -384,6 +420,27 @@ static void Execute(WDFDEVICE device, SPBREQUEST request, ULONG count)
         if (!NT_SUCCESS(status)) break;
     }
     if (!NT_SUCCESS(status)) { SpbRequestComplete(request, status); return; }
+    if(context->UseBitbang) {
+        BB_MESSAGE messages[2];
+        for(i=0;i<count;++i) {
+            messages[i].Bytes=transfers[i].Bytes;
+            messages[i].Length=(GI_U32)transfers[i].Descriptor.TransferLength;
+            messages[i].Read=transfers[i].Descriptor.Direction==SpbTransferDirectionFromDevice;
+        }
+        status=BbWindowsTransfer(&context->Bitbang,(WDFREQUEST)request,messages,count);
+        if(NT_SUCCESS(status)) {
+            for(i=0;i<count;++i) {
+                TRANSFER *t=&transfers[i];ULONG j,offset=0;
+                if(messages[i].Read) for(j=0;j<t->SegmentCount;++j) {
+                    ULONG n=t->Segments[j].Length;
+                    RtlCopyMemory(t->Segments[j].Address,t->Bytes+offset,n);offset+=n;
+                }
+                information+=t->Descriptor.TransferLength;
+            }
+        }
+        WdfRequestSetInformation((WDFREQUEST)request,information);
+        SpbRequestComplete(request,status);return;
+    }
     context->CurrentRequest = request;
     deadline = NowUs(context) + 50000u;
     for (i = 0; i < count; ++i) {

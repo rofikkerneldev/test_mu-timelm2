@@ -44,7 +44,11 @@ STATIC EFI_STATUS SaveLog(EFI_HANDLE Image)
   UINTN Size = mLogLength;
   Status = OpenRoot(Image,&Root,&Device);
   if (EFI_ERROR(Status)) return Status;
+#ifdef TIMELM_TOUCH_GPIO_TRIAL
+  Status = Root->Open(Root,&File,L"\\timelm-touch-gpio.txt",
+#else
   Status = Root->Open(Root,&File,L"\\timelm-touch-enumeration.txt",
+#endif
     EFI_FILE_MODE_READ|EFI_FILE_MODE_WRITE|EFI_FILE_MODE_CREATE,0);
   Root->Close(Root);
   if (EFI_ERROR(Status)) return Status;
@@ -67,13 +71,21 @@ EFI_STATUS EFIAPI TouchEnumerationEntry(EFI_HANDLE Image, EFI_SYSTEM_TABLE *Syst
   if (!System || !System->ConOut || !System->BootServices || !System->RuntimeServices)
     return EFI_UNSUPPORTED;
   mSystem=System;
+#ifdef TIMELM_TOUCH_GPIO_TRIAL
+  Text("timelm GPIO I2C touch trial v1\r\nRestore original Windows FIRST.\r\n");
+#else
   Text("timelm touch enumeration trial v1\r\nRestore original Windows FIRST.\r\n");
+#endif
   Status=RestoreWindows(Image);
   Text("Restore status="); Hex(Status); Text("\r\n");
   if (EFI_ERROR(Status)) { (VOID)SaveLog(Image); return Status; }
   Status=System->BootServices->SetWatchdogTimer(0,0,0,NULL);
   if (EFI_ERROR(Status)) goto Done;
+#ifdef TIMELM_TOUCH_GPIO_TRIAL
+  Text("Install GPIO-only ACPI; Windows owns the explicit GPIO touch trial. No firmware GPIO/MMIO or IORT change.\r\n");
+#else
   Text("Enumeration only. No IORT, SMMU, GPI, clock, GPIO or touch request.\r\n");
+#endif
   Status=SaveLog(Image);
   if (EFI_ERROR(Status)) goto Done;
   Status=System->BootServices->LocateProtocol(&AcpiGuid,NULL,(VOID **)&Acpi);

@@ -20,6 +20,18 @@ int main(void)
     assert((KonaGpioMaskValue(original, 1) & 0x11u) == 0x10u);
     assert((KonaGpioMaskValue(original, 0) & 0x11u) == 0x11u);
     assert((KonaGpioMaskValue(original, 1) & 0x0eu) == 0x0au);
+    for (unsigned int low = 0; low < 0x400u; ++low) {
+        unsigned int value = 0xa5a58000u | low;
+        unsigned int released = KonaGpioOpenDrainValue(value, 1);
+        unsigned int driven = KonaGpioOpenDrainValue(value, 0);
+        assert((released & 0x3ffu) == 0);
+        assert((driven & 0x3ffu) == 0x200u);
+        assert((released & ~0x3ffu) == (value & ~0x3ffu));
+        assert((driven & ~0x3ffu) == (value & ~0x3ffu));
+        assert(KonaGpioRestoreValue(released, value) == value);
+        assert((KonaGpioLowLatchValue(value) & 2u) == 0);
+        assert((KonaGpioLowLatchValue(value) & ~2u) == (value & ~2u));
+    }
     puts("Kona GPIO pull/edge/mask register tests passed");
     return 0;
 }

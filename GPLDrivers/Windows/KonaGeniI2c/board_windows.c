@@ -105,7 +105,7 @@ static int EngineReady(void *context)
     }
     return 1;
 }
-static NTSTATUS Contract(WDFDEVICE device, BOOLEAN gpi, BOOLEAN iommu)
+NTSTATUS GeniBoardCheckContractValue(WDFDEVICE device, ULONG expected)
 {
     ACPI_EVAL_INPUT_BUFFER input;
     UCHAR bytes[sizeof(ACPI_EVAL_OUTPUT_BUFFER) + sizeof(ULONG)] = {0};
@@ -127,9 +127,13 @@ static NTSTATUS Contract(WDFDEVICE device, BOOLEAN gpi, BOOLEAN iommu)
     if (returned < sizeof(ACPI_EVAL_OUTPUT_BUFFER) || returned > sizeof(bytes) ||
         output->Signature != ACPI_EVAL_OUTPUT_BUFFER_SIGNATURE || output->Count != 1 ||
         output->Length > returned || output->Argument[0].Type != ACPI_METHOD_ARGUMENT_INTEGER ||
-        output->Argument[0].Argument != (iommu ? 0x54420301u : gpi ? 0x54420201u : 0x54420101u))
+        output->Argument[0].Argument != expected)
         return STATUS_DEVICE_CONFIGURATION_ERROR;
     return STATUS_SUCCESS;
+}
+NTSTATUS GeniBoardCheckContract(WDFDEVICE device, BOOLEAN gpi, BOOLEAN iommu)
+{
+    return GeniBoardCheckContractValue(device,iommu?0x54420301u:gpi?0x54420201u:0x54420101u);
 }
 static NTSTATUS OpenPin(GENI_BOARD *b, LARGE_INTEGER id, ULONG index)
 {
@@ -159,7 +163,7 @@ NTSTATUS GeniBoardPrepare(GENI_BOARD *b, WDFDEVICE device, WDFCMRESLIST resource
     b->Device = device;
     b->Native = TRUE;
     GeniRecord(device, L"TimelmBoardStage", 10);
-    status = Contract(device,b->GpiMode,b->IommuMode);
+    status = GeniBoardCheckContract(device,b->GpiMode,b->IommuMode);
     if (!NT_SUCCESS(status)) goto Fail;
     for (i = 0; i < WdfCmResourceListGetCount(resources); ++i) {
         PCM_PARTIAL_RESOURCE_DESCRIPTOR r = WdfCmResourceListGetDescriptor(resources, i);

@@ -16,6 +16,8 @@ on:
       - 'Platforms/LG/timelmPkg/Applications/TouchEnumeration/**'
       - 'Platforms/LG/timelmPkg/Applications/I2cClockDiag/OneShot.h'
       - 'Resources/Scripts/build_touch_enumeration.sh'
+      - 'Resources/Scripts/build_touch_gpio_trial.sh'
+      - 'Resources/Scripts/TouchGpio/**'
       - 'Resources/Scripts/generate_touch_enumeration.py'
       - 'Resources/Scripts/TouchEnumeration/**'
       - 'Platforms/LG/timelmPkg/Experimental/TouchWindows.asl'
@@ -38,6 +40,8 @@ on:
       - 'Platforms/LG/timelmPkg/Applications/TouchEnumeration/**'
       - 'Platforms/LG/timelmPkg/Applications/I2cClockDiag/OneShot.h'
       - 'Resources/Scripts/build_touch_enumeration.sh'
+      - 'Resources/Scripts/build_touch_gpio_trial.sh'
+      - 'Resources/Scripts/TouchGpio/**'
       - 'Resources/Scripts/generate_touch_enumeration.py'
       - 'Resources/Scripts/TouchEnumeration/**'
       - 'Platforms/LG/timelmPkg/Experimental/TouchWindows.asl'
@@ -110,6 +114,22 @@ jobs:
             GPLDrivers/Windows/KonaGeniI2c/tests/iommu_test.c \
             GPLDrivers/Windows/KonaGeniI2c/iommu_windows.c -o /tmp/touch-iommu-test
           /tmp/touch-iommu-test
+          gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+            GPLDrivers/Windows/KonaGeniI2c/tests/probe_policy_test.c -o /tmp/touch-probe-policy-test
+          /tmp/touch-probe-policy-test
+          gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+            -IGPLDrivers/Windows/KonaGeniI2c/tests/probe_shim \
+            GPLDrivers/Windows/KonaGeniI2c/tests/probe_windows_test.c -o /tmp/touch-probe-windows-test
+          /tmp/touch-probe-windows-test
+          gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+            GPLDrivers/Windows/KonaGeniI2c/tests/bitbang_test.c \
+            GPLDrivers/Windows/KonaGeniI2c/bitbang_i2c.c -o /tmp/touch-bitbang-test
+          /tmp/touch-bitbang-test
+          gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+            -IGPLDrivers/Windows/KonaGeniI2c/tests/bitbang_shim \
+            GPLDrivers/Windows/KonaGeniI2c/tests/bitbang_windows_test.c -o /tmp/touch-bitbang-windows-test
+          /tmp/touch-bitbang-windows-test
+          python3 Resources/DeviceOverlays/timelm/Drivers/KonaGPIO/test_touch_bus.py
           python3 Resources/Scripts/tests/test_timelm_touch_iort.py
           gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
             GPLDrivers/Windows/Sw42902Touch/tests/protocol_test.c -o /tmp/touch-protocol-test
@@ -143,10 +163,15 @@ jobs:
           git submodule update --init --depth 1 Mu_Basecore
           bash Resources/Scripts/build_touch_dma_check.sh
           bash Resources/Scripts/build_touch_enumeration.sh
+          bash Resources/Scripts/build_touch_gpio_trial.sh
           gcc -std=c11 -fshort-wchar -Wall -Wextra -Werror -fsanitize=address,undefined -g \
             -I Mu_Basecore/MdePkg/Include -I Mu_Basecore/MdePkg/Include/X64 -I Build/TouchEnumeration \
             Platforms/LG/timelmPkg/Applications/TouchEnumeration/trial_test.c -o /tmp/touch-enum-test
           /tmp/touch-enum-test
+          gcc -std=c11 -fshort-wchar -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+            -I Mu_Basecore/MdePkg/Include -I Mu_Basecore/MdePkg/Include/X64 -I Build/TouchGpio \
+            Platforms/LG/timelmPkg/Applications/TouchEnumeration/trial_test.c -o /tmp/touch-gpio-boot-test
+          /tmp/touch-gpio-boot-test
       - uses: actions/upload-artifact@v4
         with:
           name: timelm-native-touch-acpi-disabled
@@ -170,4 +195,13 @@ jobs:
             Build/TouchEnumeration/touch-enumeration.json
             Build/TouchEnumeration/touch-enumeration-acpi.json
             Build/TouchEnumeration/TouchEnumeration.aml
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: timelm-touch-gpio-once
+          path: |
+            Build/TouchGpio/TouchGpioOnce.efi
+            Build/TouchGpio/touch-gpio.json
+            Build/TouchGpio/touch-enumeration-acpi.json
+            Build/TouchGpio/TouchGpio.aml
           if-no-files-found: error

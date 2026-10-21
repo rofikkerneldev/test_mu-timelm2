@@ -27,6 +27,10 @@ HKR,,WindowsIommuEnabled,0x00010001,0
 ; Never enable until firmware has an independently validated bus handoff.
 HKR,,FirmwareHandoffVerified,0x00010001,0
 HKR,,SourceClockHz,0x00010001,0
+; Diagnostic-only, never permits controller startup or DMA.
+HKR,,ReadOnlyHardwareProbeEnabled,0x00010001,0
+; Separate GPIO-only SPB path; never enable with native GENI/GPI options.
+HKR,,NativeGpioI2cEnabled,0x00010001,0
 [Geni.NT.Services]
 AddService=kona_geni,0x00000002,Service
 [Service]

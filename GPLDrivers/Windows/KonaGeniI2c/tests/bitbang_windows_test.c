@@ -1,0 +1,246 @@
+/* SPDX-License-Identifier: GPL-2.0-only
+ * Exercise the production Windows adapter and its failure unwinding. The wire
+ * core has a separate electrical slave-model test; here it is a controlled
+ * identity/transport stub so every WDF and board sequencing failure is tested.
+ */
+#include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ntddk.h>
+#include <wdf.h>
+#define TIMELM_BOARD_WINDOWS_H
+VOID GeniRecord(WDFDEVICE device,PCWSTR name,ULONG value);
+NTSTATUS GeniBoardCheckContractValue(WDFDEVICE device,ULONG value);
+#include "../bitbang_windows.c"
+
+static BB_WINDOWS bus;
+static TEST_RESOURCE_LIST resources;
+static struct TEST_TARGET targets[16];
+static unsigned created,opened,closed,deleted,queried,dereferenced,lists;
+static unsigned failCreate,failOpen,failPin,createCalls,openCalls,pinCalls;
+static int failQuery,badVersion,nullDereference,failDiscovery,badIdentity;
+static int failModeEnable,failModeDisable,failSample,modeActive;
+static int failSetLines,cancelRequest,modeEnables,modeDisables;
+static NTSTATUS contractStatus;
+static GI_U64 clockUs,identityAt;
+static enum BB_RESULT transferResult;
+static unsigned events[128],eventCount,pinLevels[3];
+
+ULONG WdfCmResourceListGetCount(WDFCMRESLIST list) { return list->Count; }
+PCM_PARTIAL_RESOURCE_DESCRIPTOR WdfCmResourceListGetDescriptor(WDFCMRESLIST list,ULONG index)
+{ assert(index<list->Count);return (int)index==list->NullIndex?NULL:&list->Entries[index]; }
+VOID GeniRecord(WDFDEVICE device,PCWSTR name,ULONG value)
+{ (void)device;(void)name;(void)value; }
+NTSTATUS GeniBoardCheckContractValue(WDFDEVICE device,ULONG value)
+{ (void)device;assert(value==0x54420501u);return contractStatus; }
+size_t RtlCompareMemory(const void *left,const void *right,size_t count)
+{ return memcmp(left,right,count)?0:count; }
+VOID RtlInitUnicodeString(UNICODE_STRING *text,PCWSTR buffer)
+{ text->Buffer=(PWSTR)buffer;text->ResourceId=9; }
+NTSTATUS KeDelayExecutionThread(int mode,BOOLEAN alertable,LARGE_INTEGER *interval)
+{ (void)mode;(void)alertable;assert(interval->QuadPart<=0);clockUs+=(GI_U64)(-interval->QuadPart)/10;return STATUS_SUCCESS; }
+ULONGLONG KeQueryInterruptTimePrecise(ULONGLONG *counter)
+{ (void)counter;return clockUs*10; }
+ULONGLONG KeQueryInterruptTime(void) { return clockUs*10; }
+VOID KeStallExecutionProcessor(ULONG microseconds) { clockUs+=microseconds; }
+NTSTATUS IoGetDeviceInterfaces(const GUID *guid,PVOID object,ULONG flags,PWSTR *links)
+{
+    static const wchar_t text[]=L"provider\0";
+    (void)object;(void)flags;
+    assert(guid->Data1==0x3d4f477bu && guid->Data4[2]==0xf7);
+    if(failDiscovery)return STATUS_NO_SUCH_DEVICE;
+    *links=malloc(sizeof(text));assert(*links);memcpy(*links,text,sizeof(text));++lists;
+    return STATUS_SUCCESS;
+}
+VOID ExFreePool(PVOID pointer) { assert(lists);--lists;free(pointer); }
+NTSTATUS WdfIoTargetCreate(WDFDEVICE device,PVOID attributes,WDFIOTARGET *target)
+{
+    (void)device;(void)attributes;
+    if(++createCalls==failCreate)return STATUS_INSUFFICIENT_RESOURCES;
+    assert(created<16);*target=&targets[created++];return STATUS_SUCCESS;
+}
+NTSTATUS WdfIoTargetOpen(WDFIOTARGET target,WDF_IO_TARGET_OPEN_PARAMS *parameters)
+{
+    unsigned i,id=parameters->Path->ResourceId;
+    if(++openCalls==failOpen)return STATUS_IO_DEVICE_ERROR;
+    for(i=0;i<created;++i) assert(!targets[i].Open || targets[i].Id!=id);
+    assert(id==9 || (id>=1 && id<=4));
+    assert(parameters->Access==((id==4 || id==9)?GENERIC_READ:GENERIC_WRITE));
+    target->Id=id;target->Open=1;++opened;return STATUS_SUCCESS;
+}
+VOID WdfIoTargetClose(WDFIOTARGET target)
+{ assert(target->Open && !target->Deleted);target->Open=0;++closed; }
+VOID WdfObjectDelete(WDFIOTARGET target)
+{ assert(!target->Open && !target->Deleted);target->Deleted=1;++deleted; }
+static VOID Dereference(PVOID context)
+{ (void)context;assert(!modeActive);++dereferenced; }
+static NTSTATUS Mode(PVOID context,BOOLEAN enable)
+{
+    (void)context;assert(bus.Pins[3] && bus.Pins[3]->Open);
+    events[eventCount++]=enable?1001:1000;
+    if(enable) {++modeEnables;modeActive=1;return failModeEnable?STATUS_IO_DEVICE_ERROR:STATUS_SUCCESS;}
+    ++modeDisables;if(failModeDisable)return STATUS_IO_DEVICE_ERROR;
+    modeActive=0;return STATUS_SUCCESS;
+}
+static NTSTATUS Set(PVOID context,BOOLEAN scl,BOOLEAN sda)
+{ (void)context;(void)scl;(void)sda;assert(modeActive);return failSetLines?STATUS_IO_DEVICE_ERROR:STATUS_SUCCESS; }
+static NTSTATUS Get(PVOID context,PBOOLEAN scl,PBOOLEAN sda)
+{ (void)context;assert(modeActive);*scl=*sda=TRUE;return failSample?STATUS_IO_DEVICE_ERROR:STATUS_SUCCESS; }
+NTSTATUS WdfIoTargetQueryForInterface(WDFIOTARGET target,const GUID *guid,PINTERFACE result,USHORT size,USHORT version,PVOID data)
+{
+    TIMELM_TOUCH_BUS_V3 *interface=(TIMELM_TOUCH_BUS_V3 *)result;
+    (void)data;assert(target->Id==9 && target->Open);
+    assert(guid->Data1==0xa43b6365u && size==sizeof(*interface) && version==3);
+    ++queried;if(failQuery)return STATUS_NOT_SUPPORTED;
+    memset(interface,0,sizeof(*interface));interface->Interface.Size=size;
+    interface->Interface.Version=badVersion?2:3;
+    interface->Interface.InterfaceDereference=nullDereference?NULL:Dereference;
+    interface->SetGpioMode=Mode;interface->SetLines=Set;interface->GetLines=Get;
+    return STATUS_SUCCESS;
+}
+NTSTATUS WdfIoTargetSendIoctlSynchronously(WDFIOTARGET target,WDFREQUEST request,ULONG ioctl,WDF_MEMORY_DESCRIPTOR *input,WDF_MEMORY_DESCRIPTOR *output,WDF_REQUEST_SEND_OPTIONS *options,ULONG_PTR *returned)
+{
+    UCHAR value=*(UCHAR *)input->Buffer;
+    (void)request;(void)output;(void)options;
+    assert(target->Open && target->Id>=1 && target->Id<=3);
+    assert(ioctl==IOCTL_GPIO_WRITE_PINS && input->Size==1 && value<=1);
+    ++pinCalls;if(pinCalls==failPin)return STATUS_IO_DEVICE_ERROR;
+    events[eventCount++]=10+2*target->Id+value;pinLevels[target->Id-1]=value;
+    *returned=1;return STATUS_SUCCESS;
+}
+BOOLEAN WdfRequestIsCanceled(WDFREQUEST request)
+{ assert(request);return cancelRequest?TRUE:FALSE; }
+enum BB_RESULT BbTransfer(BB_IO *io,BB_MESSAGE *messages,GI_U32 count,GI_U64 deadline)
+{
+    assert(io==&bus.Io && modeActive && deadline>clockUs);
+    if(!bus.Ready) {
+        assert(count==2 && messages[0].Length==2 && !messages[0].Read);
+        assert(messages[0].Bytes[0]==0x26 && messages[0].Bytes[1]==0x44);
+        assert(messages[1].Length==8 && messages[1].Read);
+        memcpy(messages[1].Bytes,badIdentity?"WRONG-ID":"B3W68TIM",8);
+        assert(pinLevels[0] && pinLevels[1] && pinLevels[2]);
+        assert(clockUs>=102000);identityAt=clockUs;events[eventCount++]=2000;
+    }
+    return transferResult;
+}
+static void Init(void)
+{
+    unsigned i;
+    memset(&bus,0,sizeof(bus));memset(&resources,0,sizeof(resources));
+    memset(targets,0,sizeof(targets));memset(pinLevels,0,sizeof(pinLevels));
+    resources.Count=4;resources.NullIndex=-1;
+    for(i=0;i<4;++i) {
+        resources.Entries[i].Type=CmResourceTypeConnection;
+        resources.Entries[i].u.Connection.Class=CM_RESOURCE_CONNECTION_CLASS_GPIO;
+        resources.Entries[i].u.Connection.Type=CM_RESOURCE_CONNECTION_TYPE_GPIO_IO;
+        resources.Entries[i].u.Connection.IdLowPart=i+1;
+    }
+    created=opened=closed=deleted=queried=dereferenced=lists=0;
+    failCreate=failOpen=failPin=createCalls=openCalls=pinCalls=0;
+    failQuery=badVersion=nullDereference=failDiscovery=badIdentity=0;
+    failModeEnable=failModeDisable=failSample=modeActive=0;
+    failSetLines=cancelRequest=modeEnables=modeDisables=0;
+    eventCount=0;clockUs=identityAt=0;contractStatus=STATUS_SUCCESS;transferResult=BbOk;
+}
+static void Clean(void)
+{
+    BbWindowsRelease(&bus);
+    assert(!bus.Provider && !bus.Pins[0] && !bus.Pins[1] && !bus.Pins[2] && !bus.Pins[3]);
+    assert(created==deleted && opened==closed && !lists && !modeActive);
+}
+static void Prepare(void) { assert(BbWindowsPrepare(&bus,NULL,&resources)==STATUS_SUCCESS); }
+static void Good(void)
+{
+    static const unsigned expected[]={12,14,16,1001,15,17,13,2000,12,16,14,1000};
+    BB_MESSAGE message;UCHAR data=0;unsigned allocations;
+    Init();Prepare();assert(bus.Acquired && !bus.Ready && created==2);
+    allocations=created;
+    assert(!NT_SUCCESS(BbWindowsPrepare(&bus,NULL,&resources)) && created==allocations);
+    assert(BbWindowsStart(&bus)==STATUS_SUCCESS && bus.Ready && identityAt>=102000);
+    message.Bytes=&data;message.Length=1;message.Read=1;
+    assert(BbWindowsTransfer(&bus,(WDFREQUEST)1,&message,1)==STATUS_SUCCESS);
+    assert(!bus.Request && bus.Transfers==1 && !bus.Failures);
+    assert(BbWindowsStop(&bus)==STATUS_SUCCESS && !bus.Ready);
+    assert(eventCount==sizeof(expected)/sizeof(expected[0]));
+    assert(!memcmp(events,expected,sizeof(expected)));
+    allocations=created;
+    assert(BbWindowsStart(&bus)==STATUS_DEVICE_NOT_READY && created==allocations);
+    Clean();assert(dereferenced==1);
+}
+static void PrepareFailures(void)
+{
+    unsigned i;
+    Init();contractStatus=STATUS_NOT_SUPPORTED;
+    assert(BbWindowsPrepare(&bus,NULL,&resources)==STATUS_NOT_SUPPORTED);Clean();
+    for(i=1;i<=2;++i) {
+        Init();failCreate=i;assert(!NT_SUCCESS(BbWindowsPrepare(&bus,NULL,&resources)));Clean();
+        Init();failOpen=i;assert(!NT_SUCCESS(BbWindowsPrepare(&bus,NULL,&resources)));Clean();
+    }
+    Init();failDiscovery=1;assert(!NT_SUCCESS(BbWindowsPrepare(&bus,NULL,&resources)));Clean();
+    Init();failQuery=1;assert(!NT_SUCCESS(BbWindowsPrepare(&bus,NULL,&resources)));Clean();
+    Init();badVersion=1;assert(!NT_SUCCESS(BbWindowsPrepare(&bus,NULL,&resources)));Clean();
+    Init();nullDereference=1;assert(!NT_SUCCESS(BbWindowsPrepare(&bus,NULL,&resources)));Clean();
+    Init();resources.NullIndex=2;assert(!NT_SUCCESS(BbWindowsPrepare(&bus,NULL,&resources)));Clean();
+    Init();resources.Entries[0].Type=CmResourceTypeMemory;
+    assert(!NT_SUCCESS(BbWindowsPrepare(&bus,NULL,&resources)));Clean();
+}
+static void StartFailures(void)
+{
+    unsigned i;
+    for(i=3;i<=5;++i) {
+        Init();Prepare();failCreate=i;assert(!NT_SUCCESS(BbWindowsStart(&bus)));Clean();
+        Init();Prepare();failOpen=i;assert(!NT_SUCCESS(BbWindowsStart(&bus)));Clean();
+    }
+    for(i=1;i<=6;++i) {
+        Init();Prepare();failPin=i;assert(!NT_SUCCESS(BbWindowsStart(&bus)));Clean();
+    }
+    Init();Prepare();failModeEnable=1;
+    assert(!NT_SUCCESS(BbWindowsStart(&bus)) && modeEnables==1 && modeDisables==1 && !modeActive);Clean();
+    Init();Prepare();failSample=1;assert(!NT_SUCCESS(BbWindowsStart(&bus)));Clean();
+    Init();Prepare();badIdentity=1;assert(BbWindowsStart(&bus)==STATUS_NO_SUCH_DEVICE);Clean();
+    Init();Prepare();transferResult=BbNack;assert(BbWindowsStart(&bus)==STATUS_NO_SUCH_DEVICE);Clean();
+}
+static void Retained(void)
+{
+    unsigned allocations,closings;
+    Init();Prepare();assert(BbWindowsStart(&bus)==STATUS_SUCCESS);
+    allocations=created;closings=closed;failModeDisable=1;
+    BbWindowsRelease(&bus);
+    assert(modeActive && bus.Provider && bus.Pins[3] && closed==closings && dereferenced==0);
+    assert(BbWindowsStart(&bus)==STATUS_DEVICE_NOT_READY && created==allocations);
+    assert(!NT_SUCCESS(BbWindowsPrepare(&bus,NULL,&resources)) && created==allocations);
+    /* A later successful hardware stop does not clear the permanent
+     * until-reboot latch or relinquish the reservation. */
+    failModeDisable=0;assert(!BbWindowsRelease(&bus));
+    assert(!modeActive && bus.Retained && bus.Pins[3] && !dereferenced);
+    /* Init below models reboot; static mock targets own no heap allocations. */
+    Init();Prepare();failModeEnable=failModeDisable=1;
+    assert(!NT_SUCCESS(BbWindowsStart(&bus)) && modeActive);
+    BbWindowsRelease(&bus);assert(bus.Pins[3] && !closed && !dereferenced);
+    failModeDisable=0;assert(!BbWindowsRelease(&bus));
+    assert(!modeActive && bus.Retained && bus.Pins[3] && !dereferenced);
+    /* A power-pin failure also latches ownership, even if mux restore works. */
+    Init();Prepare();assert(BbWindowsStart(&bus)==STATUS_SUCCESS);
+    failPin=pinCalls+1;
+    assert(!NT_SUCCESS(BbWindowsStop(&bus)) && bus.Retained);
+    assert(!BbWindowsRelease(&bus) && bus.Pins[3] && !dereferenced);
+    Init();Prepare();assert(BbWindowsStart(&bus)==STATUS_SUCCESS);
+    transferResult=BbTimeout;
+    {
+        UCHAR byte=0;BB_MESSAGE message={&byte,1,1};
+        assert(BbWindowsTransfer(&bus,(WDFREQUEST)1,&message,1)==STATUS_IO_TIMEOUT);
+        assert(!bus.Request && bus.Transfers==1 && bus.Failures==1);
+        cancelRequest=1;bus.Request=(WDFREQUEST)1;
+        assert(bus.Io.Cancelled(bus.Io.Context));bus.Request=NULL;
+        failSetLines=1;assert(!bus.Io.SetLines(bus.Io.Context,1,1));
+        assert(bus.LastStatus==STATUS_IO_DEVICE_ERROR);
+    }
+    Clean();
+}
+int main(void)
+{
+    Good();PrepareFailures();StartFailures();Retained();
+    puts("Production bitbang Windows adapter: exact identity/power order, prepare/start failures, partial enable cleanup, no resume and retained reservations passed");
+    return 0;
+}

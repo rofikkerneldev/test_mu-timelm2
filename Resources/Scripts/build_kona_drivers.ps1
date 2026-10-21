@@ -100,6 +100,10 @@ foreach ($component in $metadata.components) {
     $package = Join-Path $output $component
     if (-not (Test-Path -LiteralPath $package)) { throw "Missing package: $package" }
     Copy-Item -LiteralPath $package -Destination $Destination -Recurse
+    $signed=Get-AuthenticodeSignature -LiteralPath (Join-Path $Destination "$component\$component.sys")
+    if (!$signed.SignerCertificate) {throw "Missing test signer certificate for $component"}
+    [IO.File]::WriteAllBytes((Join-Path $Destination "$component\$component.cer"),
+        $signed.SignerCertificate.Export([Security.Cryptography.X509Certificates.X509ContentType]::Cert))
     $pdb = Join-Path $output "$component.pdb"
     if (Test-Path -LiteralPath $pdb) { Copy-Item -LiteralPath $pdb -Destination (Join-Path $Destination $component) }
 }

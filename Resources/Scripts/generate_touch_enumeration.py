@@ -14,21 +14,25 @@ import sys
 repo = Path(__file__).resolve().parents[2]
 out = Path(sys.argv[1]).resolve()
 out.mkdir(parents=True, exist_ok=True)
-source = (repo / 'Platforms/LG/timelmPkg/Experimental/TouchIommuWindows.asl').read_text()
+gpio = '--gpio' in sys.argv[2:]
+name = 'TouchGpio' if gpio else 'TouchEnumeration'
+table_id = 'TIMLTGPI' if gpio else 'TIMLTENU'
+source_file = 'TouchGpioWindows.asl' if gpio else 'TouchIommuWindows.asl'
+source = (repo / ('Platforms/LG/timelmPkg/Experimental/' + source_file)).read_text()
 assert source.count('Name (TWEN, Zero)') == 1
 source = source.replace('Name (TWEN, Zero)', 'Name (TWEN, One)')
 source = source.replace('"TIMLTDMA"', '"TIMLTENU"')
-asl = out / 'TouchEnumeration.asl'
+asl = out / (name + '.asl')
 asl.write_text(source)
-subprocess.run(['iasl', '-ve', '-p', str(out / 'TouchEnumeration'), str(asl)], check=True)
-ssdt = (out / 'TouchEnumeration.aml').read_bytes()
+subprocess.run(['iasl', '-ve', '-p', str(out / name), str(asl)], check=True)
+ssdt = (out / (name + '.aml')).read_bytes()
 dsdt = (repo / 'Resources/DeviceOverlays/timelm/ACPI/DSDT.aml').read_bytes()
 manifest = json.loads((repo / 'Resources/DeviceOverlays/timelm/SHA256.json').read_text())
 assert hashlib.sha256(dsdt).hexdigest() == manifest['ACPI/DSDT.aml']
 for data, sig in [(ssdt, b'SSDT'), (dsdt, b'DSDT')]:
     assert data[:4] == sig and 36 <= len(data) <= 65536
     assert struct.unpack_from('<I', data, 4)[0] == len(data) and sum(data) % 256 == 0
-assert dsdt[10:24] == b'LGE   TIMELM  ' and ssdt[16:24] == b'TIMLTENU'
+assert dsdt[10:24] == b'LGE   TIMELM  ' and ssdt[16:24] == table_id.encode('ascii')
 # Same narrow data-only mask as the existing USB namespace gate. Keep AML
 # opcodes, resource descriptors, names and lengths immutable.
 fields = {'SOID':(0x0c,4),'STOR':(0x0c,4),'SIDV':(0x0c,4),'SVMJ':(0x0b,2),
@@ -55,4 +59,4 @@ def array(name, data):
 (out / 'touch-enumeration-acpi.json').write_text(json.dumps(dict(
     ssdt_sha256=hashlib.sha256(ssdt).hexdigest(), ssdt_size=len(ssdt),
     dsdt_sha256=hashlib.sha256(dsdt).hexdigest(), runtime_patches=ranges,
-    iort_installed=False, requires_no_matching_drivers=True), indent=2) + '\n')
+    iort_installed=False, requires_no_matching_drivers=not gpio), indent=2) + '\n')

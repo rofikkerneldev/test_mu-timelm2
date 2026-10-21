@@ -6,21 +6,48 @@
 +#include "TouchBus.h"
  #include "driver.tmh"
  #include <gpioclx.h>
- 
+
 @@ -9,8 +11,8 @@
  #pragma alloc_text (PAGE, GPIOEvtDriverUnload)
  #endif
- 
+
 -#define Read32 READ_REGISTER_NOFENCE_ULONG
 -#define Write32 WRITE_REGISTER_NOFENCE_ULONG
 +#define Read32 READ_REGISTER_ULONG
 +#define Write32 WRITE_REGISTER_ULONG
- 
+
  static const UINT32 TileOffsets[] = {
      [0] = SOUTH,   [1] = SOUTH,   [2] = SOUTH,   [3] = SOUTH,   [4] = NORTH,   [5] = NORTH,
-@@ -218,6 +220,22 @@
+@@ -180,6 +182,26 @@
+     status = STATUS_INSUFFICIENT_RESOURCES;
+
+     gpioContext = (PGPIO_DEVICE_CONTEXT)Context;
++    if (!gpioContext->TouchGpioLockReady) {
++        KeInitializeSpinLock(&gpioContext->TouchGpioLock);
++        gpioContext->TouchGpioLockReady = TRUE;
++    }
++    if (gpioContext->TouchBusActive) return STATUS_DEVICE_BUSY;
++    gpioContext->TouchDevice = Device;
++    gpioContext->TouchGpioEnabled = FALSE;
++    {
++        WDFKEY key;
++        ULONG enable = 0;
++        UNICODE_STRING value = RTL_CONSTANT_STRING(L"TouchBusGpioEnabled");
++        if (NT_SUCCESS(WdfDeviceOpenRegistryKey(Device, PLUGPLAY_REGKEY_DEVICE,
++            KEY_READ | KEY_SET_VALUE, WDF_NO_OBJECT_ATTRIBUTES, &key))) {
++            UNICODE_STRING result = RTL_CONSTANT_STRING(L"TimelmGpioBitbangGate");
++            (void)WdfRegistryQueryULong(key, &value, &enable);
++            (void)WdfRegistryAssignULong(key, &result, enable == 1 ? 1u : 0u);
++            WdfRegistryClose(key);
++        }
++        gpioContext->TouchGpioEnabled = enable == 1;
++    }
+
+     resourceCount = WdfCmResourceListGetCount(ResourcesTranslated);
+     for (ULONG Index = 0; Index < resourceCount; Index++) {
+@@ -218,6 +240,38 @@
          tlmmInterface.Interface.InterfaceDereference = WdfDeviceInterfaceDereferenceNoOp;
- 
+
          tlmmInterface.ConfigurePinMux = GPIOConfigurePinMux;
 +        {
 +            TIMELM_TOUCH_BUS touch;
@@ -37,12 +64,62 @@
 +            status = WdfDeviceAddQueryInterface(Device, &query);
 +            if (!NT_SUCCESS(status)) goto Exit;
 +        }
-+
- 
++        {
++            TIMELM_TOUCH_BUS_V3 touch;
++            WDF_QUERY_INTERFACE_CONFIG query;
++            RtlZeroMemory(&touch, sizeof(touch));
++            touch.Interface.Size = sizeof(touch);
++            touch.Interface.Version = 3;
++            touch.Interface.Context = gpioContext;
++            touch.Interface.InterfaceReference = GPIOTouchReference;
++            touch.Interface.InterfaceDereference = GPIOTouchDereference;
++            touch.SetGpioMode = GPIOTouchGpioMode;
++            touch.SetLines = GPIOTouchSetLines;
++            touch.GetLines = GPIOTouchGetLines;
++            WDF_QUERY_INTERFACE_CONFIG_INIT(&query, (PINTERFACE)&touch,
++                &GUID_TIMELM_TOUCH_BUS_V3, NULL);
++            status = WdfDeviceAddQueryInterface(Device, &query);
++            if (!NT_SUCCESS(status)) goto Exit;
++        }
+
          WDF_QUERY_INTERFACE_CONFIG_INIT(
              &queryInterfaceConfig,
-@@ -347,16 +365,13 @@
- 
+@@ -258,7 +312,18 @@
+
+     gpioContext = (PGPIO_DEVICE_CONTEXT)Context;
+     if (gpioContext->Base != 0) {
+-        MmUnmapIoSpace((PULONG)gpioContext->Base, gpioContext->Length);
++        KIRQL oldIrql;
++        ULONG_PTR base;
++        KeAcquireSpinLock(&gpioContext->TouchGpioLock, &oldIrql);
++        if (gpioContext->TouchBusActive) {
++            KeReleaseSpinLock(&gpioContext->TouchGpioLock, oldIrql);
++            return STATUS_DEVICE_BUSY;
++        }
++        base = gpioContext->Base;
++        gpioContext->Base = 0;
++        gpioContext->TouchPinsConnected = 0;
++        KeReleaseSpinLock(&gpioContext->TouchGpioLock, oldIrql);
++        MmUnmapIoSpace((PULONG)base, gpioContext->Length);
+     }
+
+     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Exit");
+@@ -312,11 +377,11 @@
+     _In_ WDF_POWER_DEVICE_STATE TargetState
+ )
+ {
+-    UNREFERENCED_PARAMETER(Context);
++    PGPIO_DEVICE_CONTEXT gpioContext = Context;
+     UNREFERENCED_PARAMETER(SaveContext);
+     UNREFERENCED_PARAMETER(TargetState);
+
+-    return STATUS_SUCCESS;
++    return gpioContext->TouchBusActive ? STATUS_DEVICE_BUSY : STATUS_SUCCESS;
+ }
+
+ UINT32
+@@ -347,16 +412,13 @@
+
      switch (PullConfiguration) {
      case GPIO_PIN_PULL_CONFIGURATION_NONE:
 -        ctlReg &= PULL_MASK;
@@ -61,19 +138,67 @@
          break;
      case GPIO_PIN_PULL_CONFIGURATION_DEFAULT:
          break;
-@@ -365,6 +380,8 @@
+@@ -365,6 +427,8 @@
          goto Exit;
          break;
      }
 +
 +    ctlReg &= ~MUX_MASK;
- 
+
      switch (ConnectMode) {
      case ConnectModeInput:
-@@ -528,14 +545,7 @@
- 
+@@ -408,7 +472,21 @@
+     for (ULONG index = 0; index < ConnectParameters->PinCount; index++) {
+         pinNumber = pinNumberTable[index] + ConnectParameters->BankId * GPIO_PER_BANK;
+
+-        GPIOConfigurePin(gpioContext, pinNumber, ConnectParameters->ConnectMode, ConnectParameters->PullConfiguration);
++        if (pinNumber == 36 || pinNumber == 37) {
++            KIRQL oldIrql;
++            KeAcquireSpinLock(&gpioContext->TouchGpioLock, &oldIrql);
++            if (gpioContext->TouchBusActive) status = STATUS_DEVICE_BUSY;
++            else {
++                status = GPIOConfigurePin(gpioContext, pinNumber,
++                    ConnectParameters->ConnectMode, ConnectParameters->PullConfiguration);
++                if (NT_SUCCESS(status) && ConnectParameters->ConnectMode == ConnectModeInput)
++                    gpioContext->TouchPinsConnected |= 1u << (pinNumber - 36);
++            }
++            KeReleaseSpinLock(&gpioContext->TouchGpioLock, oldIrql);
++            if (!NT_SUCCESS(status)) return status;
++        } else {
++            GPIOConfigurePin(gpioContext, pinNumber, ConnectParameters->ConnectMode, ConnectParameters->PullConfiguration);
++        }
+         TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "GPIO[%d] mode: %d, pull: %d", pinNumber, ConnectParameters->ConnectMode, ConnectParameters->PullConfiguration);
+     }
+
+@@ -426,8 +504,22 @@
+ {
+     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Entry");
+
+-    UNREFERENCED_PARAMETER(Context);
+-    UNREFERENCED_PARAMETER(DisconnectParameters);
++    PGPIO_DEVICE_CONTEXT gpioContext = Context;
++    ULONG i;
++    KIRQL oldIrql;
++    KeAcquireSpinLock(&gpioContext->TouchGpioLock, &oldIrql);
++    for (i = 0; i < DisconnectParameters->PinCount; ++i) {
++        ULONG pin = DisconnectParameters->PinNumberTable[i] +
++            DisconnectParameters->BankId * GPIO_PER_BANK;
++        if (pin == 36 || pin == 37) {
++            if (gpioContext->TouchBusActive) {
++                KeReleaseSpinLock(&gpioContext->TouchGpioLock, oldIrql);
++                return STATUS_DEVICE_BUSY;
++            }
++            gpioContext->TouchPinsConnected &= ~(1u << (pin - 36));
++        }
++    }
++    KeReleaseSpinLock(&gpioContext->TouchGpioLock, oldIrql);
+
+     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Exit");
+     return STATUS_SUCCESS;
+@@ -528,14 +620,7 @@
+
      intrReg = Read32((PULONG)(Context->Base + pinOffset));
- 
+
 -    if (Mask) {
 -        intrReg &= ~BIT(INTR_ENABLE_BIT);
 -        intrReg &= ~BIT(INTR_RAW_STATUS_BIT);
@@ -83,23 +208,23 @@
 -        intrReg |= BIT(INTR_RAW_STATUS_BIT);
 -    }
 +    intrReg = KonaGpioMaskValue(intrReg, Mask);
- 
+
      Write32((PULONG)(Context->Base + pinOffset), intrReg);
  }
-@@ -556,7 +566,8 @@
- 
+@@ -556,7 +641,8 @@
+
      TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Entry");
- 
+
 -    if (EnableParameters->Polarity != InterruptActiveHigh && EnableParameters->Polarity != InterruptActiveLow) {
 +    if ((EnableParameters->Polarity != InterruptActiveHigh && EnableParameters->Polarity != InterruptActiveLow) ||
 +        (EnableParameters->InterruptMode != Latched && EnableParameters->InterruptMode != LevelSensitive)) {
          status = STATUS_NOT_SUPPORTED;
          goto Exit;
      }
-@@ -575,17 +586,8 @@
+@@ -575,17 +661,8 @@
      intrReg &= ~(INTR_TARGET_MASK << INTR_TARGET_BIT);
      intrReg |= INTR_TARGET_KPSS_VAL << INTR_TARGET_BIT;
- 
+
 -    // Update configuration
 -    intrReg &= ~(3 << INTR_DETECTION_BIT);
 -    intrReg &= ~(1 << INTR_POLARITY_BIT);
@@ -113,12 +238,12 @@
 -    }
 +    intrReg = KonaGpioIrqValue(intrReg, EnableParameters->InterruptMode == Latched,
 +                                  EnableParameters->Polarity == InterruptActiveHigh);
- 
+
      // Unmask interrupt
      intrReg |= BIT(INTR_ENABLE_BIT);
-@@ -644,6 +646,10 @@
+@@ -644,6 +721,10 @@
      ULONG intrReg;
- 
+
      TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Entry");
 +    if ((ReconfigureParameters->Polarity != InterruptActiveHigh && ReconfigureParameters->Polarity != InterruptActiveLow) ||
 +        (ReconfigureParameters->InterruptMode != Latched && ReconfigureParameters->InterruptMode != LevelSensitive)) {
@@ -126,10 +251,10 @@
 +    }
      gpioContext = (PGPIO_DEVICE_CONTEXT)Context;
      pinNumber = ReconfigureParameters->PinNumber + ReconfigureParameters->BankId * GPIO_PER_BANK;
- 
-@@ -652,16 +658,8 @@
+
+@@ -652,16 +733,8 @@
      intrReg = Read32((PULONG)(gpioContext->Base + pinOffset));
- 
+
      intrReg |= BIT(INTR_RAW_STATUS_BIT);
 -    intrReg &= ~(3 << 2);
 -    intrReg &= ~(1 << 1);
@@ -143,22 +268,170 @@
 -    }
 +    intrReg = KonaGpioIrqValue(intrReg, ReconfigureParameters->InterruptMode == Latched,
 +                                  ReconfigureParameters->Polarity == InterruptActiveHigh);
- 
+
      Write32((PULONG)(gpioContext->Base + pinOffset), intrReg);
- 
-@@ -832,6 +830,34 @@
+
+@@ -832,6 +905,186 @@
      return STATUS_SUCCESS;
  }
- 
+
++/* Private fixed-pin open-drain interface. The caller holds both exclusive
++ * Resource Hub input connections. No clock, GENI or SMMU register is touched.
++ * A spin lock protects one callback, never a complete I2C transfer/delay. */
++VOID GPIOTouchReference(PVOID Context)
++{
++    PGPIO_DEVICE_CONTEXT context = Context;
++    WdfObjectReference(context->TouchDevice);
++}
++VOID GPIOTouchDereference(PVOID Context)
++{
++    PGPIO_DEVICE_CONTEXT context = Context;
++    WdfObjectDereference(context->TouchDevice);
++}
++static BOOLEAN TouchGpioReady(PGPIO_DEVICE_CONTEXT context)
++{
++    return context && context->TouchGpioLockReady && context->Base &&
++        context->Length >= SOUTH + IO_REG(37) + sizeof(ULONG);
++}
++static NTSTATUS TouchGpioLine(PGPIO_DEVICE_CONTEXT context, ULONG pin, BOOLEAN release)
++{
++    PULONG ctl = (PULONG)(context->Base + SOUTH + CTL_REG(pin));
++    PULONG io = (PULONG)(context->Base + SOUTH + IO_REG(pin));
++    ULONG value = Read32(ctl), latch = Read32(io);
++    if (value == 0xffffffffu || latch == 0xffffffffu || (value & MUX_MASK))
++        return STATUS_IO_DEVICE_ERROR;
++    /* Begin already cleared the latch with OE disabled. Never release an
++     * already-low SCL just to clear its latch again: that creates a clock. */
++    if (latch & BIT(OUT_BIT)) return STATUS_IO_DEVICE_ERROR;
++    value = KonaGpioOpenDrainValue(value, release);
++    Write32(ctl, value);
++    return ((Read32(ctl) ^ value) & 0x3ffu) ? STATUS_IO_DEVICE_ERROR : STATUS_SUCCESS;
++}
++NTSTATUS GPIOTouchGpioMode(PVOID Context, BOOLEAN Enable)
++{
++    PGPIO_DEVICE_CONTEXT context = Context;
++    KIRQL oldIrql;
++    NTSTATUS status = STATUS_SUCCESS;
++    ULONG i;
++    if (!TouchGpioReady(context)) return STATUS_DEVICE_NOT_READY;
++    KeAcquireSpinLock(&context->TouchGpioLock, &oldIrql);
++    if (!TouchGpioReady(context)) { status = STATUS_DEVICE_NOT_READY; goto Done; }
++    if (Enable) {
++        if (!context->TouchGpioEnabled) { status = STATUS_NOT_SUPPORTED; goto Done; }
++        if (context->TouchPinsConnected != 3) { status = STATUS_DEVICE_NOT_READY; goto Done; }
++        if (InterlockedCompareExchange(&context->TouchBusActive, -1, 0) != 0) {
++            status = STATUS_DEVICE_BUSY; goto Done;
++        }
++        for (i = 0; i < 2; ++i) {
++            ULONG ctl = Read32((PULONG)(context->Base + SOUTH + CTL_REG(36 + i)));
++            ULONG io = Read32((PULONG)(context->Base + SOUTH + IO_REG(36 + i)));
++            /* The only accepted prior functions are GPIO and QUP13. Restore
++             * must never reinstate a push-pull-high GPIO output. */
++            if (ctl == 0xffffffffu || io == 0xffffffffu ||
++                (ctl & MUX_MASK) > 4u || ((ctl & BIT(OE_BIT)) && (io & BIT(OUT_BIT)))) {
++                InterlockedExchange(&context->TouchBusActive, 0);
++                status = STATUS_DEVICE_CONFIGURATION_ERROR; goto Done;
++            }
++            context->TouchGpioSavedCtl[i] = ctl;
++            context->TouchGpioSavedIo[i] = io;
++        }
++        /* Ownership remains on any partial-write failure: End can restore. */
++        InterlockedExchange(&context->TouchBusActive, 2);
++        for (i = 0; i < 2; ++i) {
++            PULONG ctl = (PULONG)(context->Base + SOUTH + CTL_REG(36 + i));
++            PULONG io = (PULONG)(context->Base + SOUTH + IO_REG(36 + i));
++            Write32(ctl, context->TouchGpioSavedCtl[i] & ~BIT(OE_BIT));
++            if (Read32(ctl) & BIT(OE_BIT)) { status = STATUS_IO_DEVICE_ERROR; goto Done; }
++            Write32(io, KonaGpioLowLatchValue(Read32(io)));
++            if (Read32(io) & BIT(OUT_BIT)) { status = STATUS_IO_DEVICE_ERROR; goto Done; }
++            Write32(ctl, KonaGpioOpenDrainValue(context->TouchGpioSavedCtl[i], 1));
++            if (Read32(ctl) & 0x3ffu) { status = STATUS_IO_DEVICE_ERROR; goto Done; }
++        }
++    } else {
++        if (context->TouchBusActive == 0) goto Done;
++        if (context->TouchBusActive != 2) { status = STATUS_DEVICE_BUSY; goto Done; }
++        /* Release both pins before restoring any saved latches/mux fields. */
++        for (i = 0; i < 2; ++i) {
++            PULONG ctl = (PULONG)(context->Base + SOUTH + CTL_REG(36 + i));
++            Write32(ctl, Read32(ctl) & ~BIT(OE_BIT));
++            if (Read32(ctl) & BIT(OE_BIT)) { status = STATUS_IO_DEVICE_ERROR; goto Done; }
++        }
++        for (i = 0; i < 2; ++i) {
++            PULONG ctl = (PULONG)(context->Base + SOUTH + CTL_REG(36 + i));
++            PULONG io = (PULONG)(context->Base + SOUTH + IO_REG(36 + i));
++            ULONG value = KonaGpioRestoreValue(Read32(ctl), context->TouchGpioSavedCtl[i]);
++            Write32(io, (Read32(io) & ~BIT(OUT_BIT)) | (context->TouchGpioSavedIo[i] & BIT(OUT_BIT)));
++            Write32(ctl, value);
++            if (((Read32(ctl) ^ value) & 0x3ffu) ||
++                ((Read32(io) ^ context->TouchGpioSavedIo[i]) & BIT(OUT_BIT))) {
++                status = STATUS_IO_DEVICE_ERROR; goto Done;
++            }
++        }
++        InterlockedExchange(&context->TouchBusActive, 0);
++    }
++Done:
++    KeReleaseSpinLock(&context->TouchGpioLock, oldIrql);
++    return status;
++}
++NTSTATUS GPIOTouchSetLines(PVOID Context, BOOLEAN ReleaseScl, BOOLEAN ReleaseSda)
++{
++    PGPIO_DEVICE_CONTEXT context = Context;
++    KIRQL oldIrql;
++    NTSTATUS status;
++    if (!TouchGpioReady(context)) return STATUS_DEVICE_NOT_READY;
++    KeAcquireSpinLock(&context->TouchGpioLock, &oldIrql);
++    if (!TouchGpioReady(context) || context->TouchBusActive != 2) {
++        status = STATUS_DEVICE_NOT_READY; goto Done;
++    }
++    /* Pull SCL low before changing data; set data before releasing SCL high. */
++    status = TouchGpioLine(context, ReleaseScl ? 36u : 37u,
++                          ReleaseScl ? ReleaseSda : FALSE);
++    if (NT_SUCCESS(status))
++        status = TouchGpioLine(context, ReleaseScl ? 37u : 36u,
++                              ReleaseScl ? TRUE : ReleaseSda);
++Done:
++    KeReleaseSpinLock(&context->TouchGpioLock, oldIrql);
++    return status;
++}
++NTSTATUS GPIOTouchGetLines(PVOID Context, PBOOLEAN SclHigh, PBOOLEAN SdaHigh)
++{
++    PGPIO_DEVICE_CONTEXT context = Context;
++    KIRQL oldIrql;
++    NTSTATUS status = STATUS_SUCCESS;
++    ULONG scl, sda;
++    if (!SclHigh || !SdaHigh) return STATUS_INVALID_PARAMETER;
++    *SclHigh = *SdaHigh = FALSE;
++    if (!TouchGpioReady(context)) return STATUS_DEVICE_NOT_READY;
++    KeAcquireSpinLock(&context->TouchGpioLock, &oldIrql);
++    if (!TouchGpioReady(context) || context->TouchBusActive != 2) {
++        status = STATUS_DEVICE_NOT_READY; goto Done;
++    }
++    scl = Read32((PULONG)(context->Base + SOUTH + IO_REG(37)));
++    sda = Read32((PULONG)(context->Base + SOUTH + IO_REG(36)));
++    if (scl == 0xffffffffu || sda == 0xffffffffu) {
++        status = STATUS_IO_DEVICE_ERROR; goto Done;
++    }
++    *SclHigh = (scl & BIT(IN_BIT)) != 0;
++    *SdaHigh = (sda & BIT(IN_BIT)) != 0;
++Done:
++    KeReleaseSpinLock(&context->TouchGpioLock, oldIrql);
++    return status;
++}
++
 +// Both pins are exclusively reserved by the SPB client's GPIO connections.
 +NTSTATUS GPIOTouchBus(PVOID Context, BOOLEAN Enable)
 +{
 +    PGPIO_DEVICE_CONTEXT context = Context;
 +    ULONG i;
-+    if (!context->Base || context->Length < SOUTH + CTL_REG(37) + sizeof(ULONG))
-+        return STATUS_DEVICE_NOT_READY;
-+    if (InterlockedCompareExchange(&context->TouchBusActive, -1, Enable ? 0 : 1) != (Enable ? 0 : 1))
-+        return (!Enable && context->TouchBusActive == 0) ? STATUS_SUCCESS : STATUS_DEVICE_BUSY;
++    KIRQL oldIrql;
++    NTSTATUS status = STATUS_SUCCESS;
++    if (!TouchGpioReady(context)) return STATUS_DEVICE_NOT_READY;
++    KeAcquireSpinLock(&context->TouchGpioLock, &oldIrql);
++    if (!TouchGpioReady(context)) { status = STATUS_DEVICE_NOT_READY; goto Done; }
++    if (InterlockedCompareExchange(&context->TouchBusActive, -1, Enable ? 0 : 1) != (Enable ? 0 : 1)) {
++        status = (!Enable && context->TouchBusActive == 0) ? STATUS_SUCCESS : STATUS_DEVICE_BUSY;
++        goto Done;
++    }
 +    for (i = 0; i < 2; ++i) {
 +        PULONG address = (PULONG)(context->Base + SOUTH + CTL_REG(36 + i));
 +        ULONG value = Read32(address);
@@ -171,31 +444,45 @@
 +        if ((value & 0x3ffu) != (Enable ? 4u : (context->TouchBusSaved[i] & 0x3ffu))) {
 +            // Keep the saved state and permit the owner to retry disable.
 +            InterlockedExchange(&context->TouchBusActive, 1);
-+            return STATUS_IO_DEVICE_ERROR;
++            status = STATUS_IO_DEVICE_ERROR;
++            goto Done;
 +        }
 +    }
 +    InterlockedExchange(&context->TouchBusActive, Enable ? 1 : 0);
-+    return STATUS_SUCCESS;
++Done:
++    KeReleaseSpinLock(&context->TouchGpioLock, oldIrql);
++    return status;
 +}
++/* End fixed touch bus callbacks. */
 +
  VOID
  GPIOEvtDriverUnload(
      _In_ WDFDRIVER Driver
 --- a/src/GPIO/Driver.h
 +++ b/src/GPIO/Driver.h
-@@ -49,6 +49,8 @@
+@@ -49,6 +49,13 @@
  {
      ULONG_PTR Base;
      ULONG Length;
 +    volatile LONG TouchBusActive;
 +    ULONG TouchBusSaved[2];
++    KSPIN_LOCK TouchGpioLock;
++    BOOLEAN TouchGpioLockReady, TouchGpioEnabled;
++    ULONG TouchPinsConnected;
++    ULONG TouchGpioSavedCtl[2], TouchGpioSavedIo[2];
++    WDFDEVICE TouchDevice;
  } GPIO_DEVICE_CONTEXT, * PGPIO_DEVICE_CONTEXT;
- 
+
  WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(GPIO_DEVICE_CONTEXT, DeviceGetContext)
-@@ -87,4 +89,6 @@
+@@ -87,4 +94,11 @@
      UCHAR function
      );
- 
+
 +NTSTATUS GPIOTouchBus(PVOID Context, BOOLEAN Enable);
++VOID GPIOTouchReference(PVOID Context);
++VOID GPIOTouchDereference(PVOID Context);
++NTSTATUS GPIOTouchGpioMode(PVOID Context, BOOLEAN Enable);
++NTSTATUS GPIOTouchSetLines(PVOID Context, BOOLEAN ReleaseScl, BOOLEAN ReleaseSda);
++NTSTATUS GPIOTouchGetLines(PVOID Context, PBOOLEAN SclHigh, PBOOLEAN SdaHigh);
 +
  EXTERN_C_END

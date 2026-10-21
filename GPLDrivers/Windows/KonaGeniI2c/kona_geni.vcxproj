@@ -37,6 +37,9 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="driver.c" /><ClCompile Include="geni_fifo.c" />
+    <ClCompile Include="probe_windows.c" /><ClInclude Include="probe_policy.h" />
+    <ClCompile Include="bitbang_i2c.c" /><ClCompile Include="bitbang_windows.c" />
+    <ClInclude Include="bitbang_i2c.h" /><ClInclude Include="bitbang_windows.h" />
     <ClCompile Include="board_windows.c" /><ClCompile Include="touch_clock.c" /><ClCompile Include="touch_board.c" />
     <ClCompile Include="geni_gpi.c" /><ClCompile Include="gpi_windows.c" />
     <ClCompile Include="iommu_windows.c" /><ClInclude Include="iommu_windows.h" />

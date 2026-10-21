@@ -192,7 +192,7 @@ Capture 'touch-driver-diagnostics' {
                         $properties = Get-ItemProperty -LiteralPath $key
                         foreach ($property in $properties.PSObject.Properties) {
                             if ($property.Name -like 'Timelm*' -or
-                                $property.Name -in @('NativeBoardInitEnabled','NativeGpiEnabled','WindowsIommuEnabled','FirmwareHandoffVerified','SourceClockHz')) {
+                                $property.Name -in @('NativeBoardInitEnabled','NativeGpiEnabled','WindowsIommuEnabled','FirmwareHandoffVerified','SourceClockHz','ReadOnlyHardwareProbeEnabled','NativeGpioI2cEnabled','TouchBusGpioEnabled')) {
                                 [pscustomobject]@{device=$id;key=$key;name=$property.Name;value=$property.Value}
                             }
                         }
@@ -204,6 +204,11 @@ Capture 'touch-driver-diagnostics' {
     Write-JsonFile 'touch-driver-diagnostics.json' @($values)
 }
 Capture 'kona-geni-service' { Native 'kona-geni-service' 'reg.exe' @('query','HKLM\SYSTEM\CurrentControlSet\Services\kona_geni','/s') }
+Capture 'platform-driver-states' {
+    Write-JsonFile 'platform-driver-states.json' @(Get-CimInstance Win32_SystemDriver -OperationTimeoutSec 15 |
+        Where-Object {$_.Name -in @('qcpep','GPIO','kona_geni','vhidmini','SpbCx','SPMI','PMIC')} |
+        Select-Object Name,State,Started,StartMode,PathName)
+}
 Capture 'boot-options' { Native 'boot-options' 'bcdedit.exe' @('/enum','all') }
 Capture 'graphics-registry' { Native 'graphics-registry' 'reg.exe' @('query','HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers\Configuration','/s') }
 Capture 'user-dpi' { Native 'user-dpi' 'reg.exe' @('query','HKCU\Control Panel\Desktop','/v','LogPixels') }

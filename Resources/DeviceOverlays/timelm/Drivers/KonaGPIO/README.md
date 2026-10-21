@@ -38,3 +38,29 @@ Use a clean checkout: an earlier power-patched checkout is rejected unless
 the power option is explicitly selected. The desktop-confirmed package uses
 the edge-only GPIO patch and does not yet expose this v2 interface.
 See [native touch bring-up](../../../../../Platforms/LG/timelmPkg/TOUCH-WINDOWS-NATIVE.md).
+
+The same touch build now also exposes the separate `GUID_TIMELM_TOUCH_BUS_V3`
+query interface, version 3. It is disabled unless `TouchBusGpioEnabled=1` is
+present in the GPIO device's hardware key. `TimelmGpioBitbangGate` records the
+effective gate read during controller preparation. The v2 ABI remains unchanged.
+
+V3 is limited to SDA GPIO36 and SCL GPIO37. The caller must first hold both
+exclusive Resource Hub **input** connections. `SetGpioMode(TRUE)` then saves
+the pin configuration and output latches and selects GPIO/open drain. HIGH
+means output disabled; LOW means OUT=0 with output enabled. It never drives
+HIGH. `SetLines` lowers SCL before changing SDA, and changes SDA before raising
+SCL. `GetLines` reads the actual input level, including external clock stretching.
+Each callback holds the provider lock only for its own bounded register sequence.
+
+V2 and V3 share one owner. The GPIO input reservations, provider target and
+query interface must remain held until `SetGpioMode(FALSE)` succeeds, including
+after a partial enable failure. Failed restoration retains ownership and blocks
+another enable. Stop, disconnect and release reject an active owner. A caller
+that cannot restore must retain its resources until reboot. Hardware removal
+and suspend/resume remain unvalidated; this is an experimental fixed-pin path.
+
+`python3 test_touch_bus.py` compiles the actual patched provider callbacks with
+an ordered TLMM shim under ASan/UBSan. It checks input-level reads, no HIGH drive,
+no artificial SCL pulse when holding LOW, v2/v3 exclusion, configuration restore,
+partial enable failure and retained ownership on failed cleanup. These tests
+do not establish successful I2C transactions or touchscreen input on hardware.

@@ -29,4 +29,19 @@ static unsigned int KonaGpioMaskValue(unsigned int value, int masked)
     value |= 0x10u;
     return masked ? (value & ~1u) : (value | 1u);
 }
+
+/* GPIO open drain is emulated by OUT=0 with output-enable only for LOW.
+ * Drive=2mA, no pull, GPIO mux=0; preserve fields above bit nine. */
+static unsigned int KonaGpioOpenDrainValue(unsigned int value, int released)
+{
+    return (value & ~0x3ffu) | (released ? 0u : 0x200u);
+}
+static unsigned int KonaGpioLowLatchValue(unsigned int value)
+{
+    return value & ~2u; /* IN bit zero is read-only; preserve all other fields. */
+}
+static unsigned int KonaGpioRestoreValue(unsigned int value, unsigned int saved)
+{
+    return (value & ~0x3ffu) | (saved & 0x3ffu);
+}
 #endif

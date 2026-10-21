@@ -20,6 +20,8 @@ typedef struct GENI_BOARD {
     PVOID PrePowerContext;
 } GENI_BOARD;
 NTSTATUS GeniBoardPrepare(GENI_BOARD *board, WDFDEVICE device, WDFCMRESLIST resources);
+NTSTATUS GeniBoardCheckContract(WDFDEVICE device, BOOLEAN gpi, BOOLEAN iommu);
+NTSTATUS GeniBoardCheckContractValue(WDFDEVICE device, ULONG expected);
 NTSTATUS GeniBoardStart(GENI_BOARD *board, PUCHAR engine, ULONG *select);
 NTSTATUS GeniBoardConfirmClock(GENI_BOARD *board);
 NTSTATUS GeniBoardStop(GENI_BOARD *board);
