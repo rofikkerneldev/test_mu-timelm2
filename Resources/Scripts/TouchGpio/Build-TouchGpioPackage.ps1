@@ -25,6 +25,20 @@ function Resolve-Directory([string]$Path, [string]$Label) {
 function Get-Sha256([string]$Path) {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
+function Find-PackageFile([string]$Root, [string]$Name, [switch]$Optional) {
+    # Build outputs keep the catalog next to or inside the package folder and
+    # the Kona catalog uses its own case. Match the name case-insensitively
+    # and refuse an ambiguous result.
+    $direct = @(Get-ChildItem -LiteralPath $Root -File | Where-Object {$_.Name -ieq $Name})
+    if ($direct.Count -eq 1) {return $direct[0].FullName}
+    if ($direct.Count -gt 1) {throw "Ambiguous package file: $Name"}
+    $nested = @(Get-ChildItem -LiteralPath $Root -Directory | ForEach-Object {
+        Get-ChildItem -LiteralPath $_.FullName -File | Where-Object {$_.Name -ieq $Name}})
+    if ($nested.Count -eq 1) {return $nested[0].FullName}
+    if ($nested.Count -gt 1) {throw "Ambiguous package file: $Name"}
+    if ($Optional) {return $null}
+    throw "Missing package file: $Name"
+}
 function Assert-Arm64Efi([string]$Path) {
     $bytes = [IO.File]::ReadAllBytes($Path)
     if ($bytes.Length -lt 256 -or $bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) {throw 'Trial launcher is not a PE image'}
@@ -64,12 +78,9 @@ try {
     $files = New-Object 'System.Collections.Generic.List[object]'
     $packages = New-Object 'System.Collections.Generic.List[object]'
     foreach ($source in $sources) {
-        $inf = Join-Path $source.root ($source.base+'.inf')
-        $catalog = Join-Path $source.root $source.catalog
-        $sys = Join-Path $source.root ($source.base+'.sys')
-        foreach ($required in @($inf,$catalog,$sys)) {
-            if (!(Test-Path -LiteralPath $required -PathType Leaf)) {throw "Missing $($source.name) package file: $required"}
-        }
+        $inf = Find-PackageFile $source.root ($source.base+'.inf')
+        $catalog = Find-PackageFile $source.root $source.catalog
+        $sys = Find-PackageFile $source.root ($source.base+'.sys')
         # The hardware ID and catalog must match the manifest identity, so a
         # swapped or unrelated package can never enter the trial bundle.
         $infText = Get-Content -LiteralPath $inf -Raw
@@ -77,20 +88,29 @@ try {
         if (!$declared.Success -or $declared.Groups[1].Value -ine $source.catalog) {throw "Catalog mismatch in $($source.name) INF"}
         $models = @([regex]::Matches($infText, '(?im)^[^;\r\n]*=\s*[^,\r\n]+,\s*ACPI\\([A-Z0-9]+)(?:\s|$)'))
         if ($models.Count -ne 1 -or $models[0].Groups[1].Value -ne $source.id) {throw "Wrong hardware ID in $($source.name) INF"}
-        $certificate = Join-Path $source.root ($source.base+'.cer')
-        if (!(Test-Path -LiteralPath $certificate -PathType Leaf)) {
+        $certificate = Find-PackageFile $source.root ($source.base+'.cer') $true
+        if (!$certificate) {
             # CI packages carry no certificate file; take the signer of the
             # signed driver so the phone can trust the package later.
             $signed = Get-AuthenticodeSignature -LiteralPath $sys
             if (!$signed.SignerCertificate) {throw "No signer certificate for $($source.name) driver"}
+            $certificate = Join-Path $source.root ($source.base+'.cer')
             [IO.File]::WriteAllBytes($certificate,$signed.SignerCertificate.Export([Security.Cryptography.X509Certificates.X509ContentType]::Cert))
         }
         $thumbprint = (New-Object Security.Cryptography.X509Certificates.X509Certificate2($certificate)).Thumbprint
         $destination = Join-Path $Output ('Drivers/'+$source.name)
         $null = New-Item -ItemType Directory -Path $destination -Force
-        $leaves = @(($source.base+'.inf'),$source.catalog,($source.base+'.sys'),($source.base+'.cer'))
+        # Keep the catalog name the INF declares so the bundle and the driver
+        # store agree on the file name.
+        $catalogName = $declared.Groups[1].Value
+        $leaves = @(($source.base+'.inf'),$catalogName,($source.base+'.sys'),($source.base+'.cer'))
         foreach ($leaf in $leaves) {
-            $from = Join-Path $source.root $leaf
+            $from = switch ($leaf) {
+                ($source.base+'.inf') {$inf}
+                $catalogName {$catalog}
+                ($source.base+'.sys') {$sys}
+                default {$certificate}
+            }
             $to = Join-Path $destination $leaf
             Copy-Item -LiteralPath $from -Destination $to
             if ((Get-Sha256 $to) -ne (Get-Sha256 $from)) {throw "Copy verification failed: $leaf"}
@@ -106,7 +126,7 @@ try {
                 if ($hash -ne (Get-Sha256 $inf)) {$replaces += $hash}
             }
         }
-        $packages.Add([ordered]@{name=$source.name;inf=($source.base+'.inf');catalog=$source.catalog;
+        $packages.Add([ordered]@{name=$source.name;inf=($source.base+'.inf');catalog=$catalogName;
             certificate=($source.base+'.cer');certificate_thumbprint=$thumbprint;replaces_inf_sha256=@($replaces)})
     }
     foreach ($file in @(@{from=$launcher;to='TouchGpioOnce.efi'},@{from=$ssdt;to='TouchGpio.aml'},@{from=(Join-Path $trialRoot 'touch-gpio.json');to='touch-gpio.json'})) {
