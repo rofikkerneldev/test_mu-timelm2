@@ -42,10 +42,10 @@ try {
     $matches = @($infs | Select-String -Pattern 'TIML0001|LGSW4290' -List)
     $replaces = $null
     if ($HostLoadTrial) {
-        $replaces = (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'HostLoadPackage.json') -Raw | ConvertFrom-Json).replaces_inf_sha256
+        $replaces = @((Get-Content -LiteralPath (Join-Path $PSScriptRoot 'HostLoadPackage.json') -Raw | ConvertFrom-Json).replaces_inf_sha256)
     }
     foreach ($match in $matches) {
-        if (!$replaces -or (Get-FileHash -LiteralPath $match.Path).Hash -ne $replaces) {throw 'Matching touch/host driver is installed; enumeration-only precondition failed'}
+        if (!$replaces -or (Get-FileHash -LiteralPath $match.Path).Hash -notin $replaces) {throw 'Matching touch/host driver is installed; enumeration-only precondition failed'}
     }
     foreach ($driver in @('kona_geni.sys','vhidmini.sys')) {
         if (Test-Path -LiteralPath (Join-Path $winRoot ('Windows\System32\drivers\'+$driver))) {throw 'Unexpected experimental driver binary installed'}

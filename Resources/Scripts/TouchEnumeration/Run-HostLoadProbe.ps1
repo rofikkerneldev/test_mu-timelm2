@@ -51,7 +51,7 @@ try {
         # Upgrade of a previously trialled host package that failed AddDevice.
         if ($hostDevice[0].ConfigManagerErrorCode -notin @(28,31) -or ($hostDevice[0].Service -and $hostDevice[0].Service -ne 'kona_geni')) {throw 'Unexpected host state for upgrade'}
         foreach ($match in $existing) {
-            if ((Get-FileHash -LiteralPath $match.Path).Hash -ne $manifest.replaces_inf_sha256) {throw 'Unexpected installed host/touch INF'}
+            if ((Get-FileHash -LiteralPath $match.Path).Hash -notin @($manifest.replaces_inf_sha256)) {throw 'Unexpected installed host/touch INF'}
         }
     } else {
         if ($hostDevice[0].ConfigManagerErrorCode -ne 28 -or $hostDevice[0].Service) {throw 'Host must be present without a driver'}
