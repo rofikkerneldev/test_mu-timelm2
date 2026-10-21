@@ -1,0 +1,28 @@
+{
+  "source_commit": "28c6e30595e119d6fffa2072c9909ca1a4d1f3e7",
+  "ci_run": 39528696059,
+  "certificate_thumbprint": "95E7D3DD3B6F4A39F8D61FFCADE1F6DF1179D4CD",
+  "ssdt_sha256": "BC79F372D7173ED97656213C6CA064FBA5A321F823025382CF5991E340F68E7C",
+  "files": [
+    {
+      "name": "kona_geni.inf",
+      "size": 1532,
+      "sha256": "41f445eec0fc829d660f87185bd404f7a5eb3b2b30aff49baf4ce21c873b378e"
+    },
+    {
+      "name": "kona_geni.sys",
+      "size": 74024,
+      "sha256": "a62fd779b838581e6df518c38ea46742ab19026142e98bdd2dee47611361a800"
+    },
+    {
+      "name": "kona_geni.cat",
+      "size": 2610,
+      "sha256": "15dacd51df36822ceb41051451f86be27cbe88bd21497621fa74b2ef7a8e952f"
+    },
+    {
+      "name": "kona_geni.cer",
+      "size": 796,
+      "sha256": "5c175a7f40c213131dbf170d1e3fc066c9bbc1c76d00a2d5bc8eb6beb38d6bea"
+    }
+  ]
+}

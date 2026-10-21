@@ -43,3 +43,46 @@ protocol mocks, including existing IORT/SSDT rejection, corrupted/duplicate
 DSDT, enumeration bounds, install/readback/checkpoint failures, cleanup failure,
 returned boot manager and non-returning handoff. Existing one-shot tests cover
 boot-file restoration and chainloading. Neither replaces device testing.
+
+## Observed V60 enumeration result, 21 October 2026
+
+Windows reached the desktop, collected logs and shut down normally. The
+508-byte `TIMLTENU` SSDT read from Windows exactly matched the build artifact.
+`ACPI\TIML0001\E` appeared with Code 28 and no service, with GSIV 311 and all
+four expected MMIO ranges. `LGSW4290` did not appear, consistent with its
+unsatisfied host dependency; the dependency reason has not been independently
+queried. GPIO and SPMI remained Code 0; the pre-existing PMIC Code 10 remained.
+IORT was absent. Both Windows EFI entries were restored to their original
+SHA256, and all BCD registry values were unchanged. No DMA or touch transfer
+was attempted. The display remained 1080 x 2460.
+
+## Next stage: default-off Windows host load
+
+`Stage-Enumeration.ps1 -HostLoadTrial -HostPackage <reviewed package>` uses the
+same tested EFI/SSDT and a distinct one-attempt `TouchHostLoadProbe` helper.
+It still requires no matching package at staging. After Windows starts, the
+helper first captures and verifies the exact SSDT, absent IORT, Code 28 host,
+no matching installed INF and no previously enabled hardware gates. Only then
+does it install the hash-pinned ARM64 host package from successful run
+39528696059 using PnPUtil. Host source has not changed since that build.
+
+All five INF activation/clock values remain zero. The reviewed `GeniPrepare`
+therefore records stage 1 / `STATUS_DEVICE_NOT_READY` (0xC00000A3) and fails
+before MMIO mapping, power, GPIO or DMA setup. Code 10 with these diagnostic
+values is the expected result: it proves execution reached the host's gate,
+not that I2C works. An earlier signature, dependency, KMDF or SPBCx failure
+instead requires investigating SetupAPI and Code Integrity logs. No GPIO,
+PMIC, SPMI or touch-client package is installed in this stage.
+
+The helper imports only the pinned test certificate into the **phone's**
+LocalMachine Root and TrustedPublisher stores. If the phone clock is earlier
+than the certificate's validity, it sets it to the PC UTC time captured during
+staging and logs both times. This corrects the observed March 2024 RTC; the
+certificate starts October 2026. It does not change the PC clock or stores.
+The package/certificate remain available for subsequent tests. The host is a
+demand-start PnP service; the one-boot ACPI node disappears on the next normal
+boot. PnPUtil is not given `/reboot`. Before/after logs are preserved and the
+helper requests normal shutdown, including after a recorded install failure.
+
+References: [PnPUtil syntax](https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/pnputil-command-syntax)
+and [installing test certificates](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/installing-test-certificates).

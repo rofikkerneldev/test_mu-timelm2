@@ -1,6 +1,8 @@
 # Run elevated on the PC while the known V60 is in Mu Mass Storage.
 param([Parameter(Mandatory=$true)][string]$Artifact,
-      [Parameter(Mandatory=$true)][string]$Output)
+      [Parameter(Mandatory=$true)][string]$Output,
+      [switch]$HostLoadTrial,
+      [string]$HostPackage)
 $ErrorActionPreference = 'Stop'
 $modified = New-Object 'System.Collections.Generic.List[string]'
 $startupCreated = $false
@@ -42,10 +44,23 @@ try {
     foreach ($driver in @('kona_geni.sys','vhidmini.sys')) {
         if (Test-Path -LiteralPath (Join-Path $winRoot ('Windows\System32\drivers\'+$driver))) {throw 'Unexpected experimental driver binary installed'}
     }
-    $bundle = Join-Path $winRoot 'TimelmTools\TouchEnumerationProbe'
-    $logs = Join-Path $winRoot 'TimelmLogs\TouchEnumerationProbe'
-    $startup = Join-Path $winRoot 'ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\Timelm-touch-enumeration.cmd'
+    $probeName = if ($HostLoadTrial) {'TouchHostLoadProbe'} else {'TouchEnumerationProbe'}
+    $runnerName = if ($HostLoadTrial) {'Run-HostLoadProbe.ps1'} else {'Run-EnumerationProbe.ps1'}
+    $startupName = if ($HostLoadTrial) {'Timelm-touch-host-load.cmd'} else {'Timelm-touch-enumeration.cmd'}
+    $bundle = Join-Path $winRoot ('TimelmTools\'+$probeName)
+    $logs = Join-Path $winRoot ('TimelmLogs\'+$probeName)
+    $startup = Join-Path $winRoot ('ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\'+$startupName)
     if ((Test-Path -LiteralPath $bundle) -or (Test-Path -LiteralPath $logs) -or (Test-Path -LiteralPath $startup)) {throw 'Enumeration probe already exists; do not rearm blindly'}
+    if ($HostLoadTrial) {
+        if (!$HostPackage) {throw 'Host package path required'}
+        $package = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'HostLoadPackage.json') -Raw | ConvertFrom-Json
+        if (@($package.files).Count -ne 4) {throw 'Unexpected package manifest'}
+        foreach ($file in $package.files) {
+            if ($file.name -notin @('kona_geni.inf','kona_geni.sys','kona_geni.cat','kona_geni.cer')) {throw 'Unexpected host package file'}
+            $src = Join-Path $HostPackage $file.name
+            if ((Get-Item -LiteralPath $src).Length -ne $file.size -or (Get-FileHash -LiteralPath $src).Hash -ne $file.sha256) {throw 'Pinned host package mismatch'}
+        }
+    }
     $targets = @('EFI\Microsoft\Boot\bootmgfw.efi','EFI\Boot\bootaa64.efi')
     $backups = @('EFI\Microsoft\Boot\bootmgfw.timelm-i2c-original.efi','EFI\Boot\bootaa64.timelm-i2c-original.efi')
     foreach ($rel in $targets) {
@@ -67,17 +82,29 @@ try {
         if ((Get-FileHash -LiteralPath $dest).Hash -ne $meta.windows_reference.sha256) {throw 'Original EFI backup readback failed'}
     }
     $null = New-Item -ItemType Directory -Path $bundle
-    $sources = @((Join-Path $PSScriptRoot 'Run-EnumerationProbe.ps1'),
+    $sources = @((Join-Path $PSScriptRoot $runnerName),
         (Join-Path $PSScriptRoot 'Invoke-ProbeProcess.ps1'),
-        (Join-Path $PSScriptRoot 'Timelm-touch-enumeration.cmd'),
+        (Join-Path $PSScriptRoot $startupName),
         (Join-Path (Split-Path $PSScriptRoot) 'Collect-TimelmDiagnostics.ps1'))
+    if ($HostLoadTrial) {$sources += Join-Path $PSScriptRoot 'HostLoadPackage.json'}
     $hashes = foreach ($source in $sources) {
         $hash = Copy-Verified $source (Join-Path $bundle (Split-Path $source -Leaf))
         [ordered]@{file=(Split-Path $source -Leaf);sha256=$hash}
     }
+    if ($HostLoadTrial) {
+        $packageDest = Join-Path $bundle 'HostPackage'
+        $null = New-Item -ItemType Directory -Path $packageDest
+        foreach ($file in $package.files) {
+            $hash = Copy-Verified (Join-Path $HostPackage $file.name) (Join-Path $packageDest $file.name)
+            $hashes += [ordered]@{file=('HostPackage\'+$file.name);sha256=$hash}
+        }
+        $clockPath = Join-Path $bundle 'host-utc.txt'
+        [DateTime]::UtcNow.ToString('o') | Set-Content -LiteralPath $clockPath
+        $hashes += [ordered]@{file='host-utc.txt';sha256=(Get-FileHash -LiteralPath $clockPath).Hash}
+    }
     # Arm only after both immutable EFI restoration files are verified.
     $startupCreated = $true
-    $null = Copy-Verified (Join-Path $bundle 'Timelm-touch-enumeration.cmd') $startup
+    $null = Copy-Verified (Join-Path $bundle $startupName) $startup
     $newData = [IO.File]::ReadAllBytes($launcher)
     foreach ($rel in $targets) {
         $dest = $espRoot + $rel
@@ -94,6 +121,7 @@ try {
     if ($LASTEXITCODE -ne 0) {throw 'ESP dismount failed'}
     [ordered]@{phase='ready-for-one-boot-enumeration';utc=[DateTime]::UtcNow.ToString('o');
         launcher=$meta;helper_files=$hashes;checked_installed_infs=$infs.Count;
+        runtime_host_install_planned=[bool]$HostLoadTrial;probe=$probeName;
         driver_changes=$false;bcd_before_after=$bcdHash;iort_installed=$false;
         boot_partition_flashed=$false;flushed_and_dismounted=$true;serial='8509C01F'} |
         ConvertTo-Json -Depth 7 | Set-Content -LiteralPath (Join-Path $Output 'stage-status.json')
