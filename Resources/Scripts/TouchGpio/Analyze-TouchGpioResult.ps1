@@ -77,6 +77,19 @@ function ConvertTo-TouchGpioIdentity {
     for ($i = 0; $i -lt 4; ++$i) {$bytes[4+$i] = [byte](($h -shr (8*$i)) -band 0xFF)}
     return [Text.Encoding]::ASCII.GetString($bytes)
 }
+function ConvertTo-TouchGpioTime($Value) {
+    # Windows PowerShell 5.1 keeps a JSON date as a string, while newer
+    # PowerShell converts it to a DateTime during parsing. Both shapes have to
+    # give the same instant, and a value that cannot be read must never look
+    # like a stable clock.
+    if ($null -eq $Value) {return $null}
+    if ($Value -is [DateTime]) {return $Value.ToUniversalTime()}
+    if ($Value -is [DateTimeOffset]) {return $Value.UtcDateTime}
+    try {
+        return [DateTime]::Parse([string]$Value,[Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+    } catch {return $null}
+}
 function Add-TouchGpioStep {
     param([System.Collections.Specialized.OrderedDictionary]$Steps, [string]$Name,
           [string]$Status, [string]$Detail)
@@ -165,6 +178,36 @@ function Get-TouchGpioResult {
         Add-TouchGpioStep $steps 'runtime-no-error' 'failed' ([string]$error.error)
     } else {
         Add-TouchGpioStep $steps 'runtime-no-error' 'proven' 'no trial-error.json was written'
+    }
+    # A missing error receipt is not a finished run. The completion receipt is
+    # only written after the final collection, so its absence proves that the
+    # action ended before the trial was over.
+    $complete = Read-TouchGpioJson (Join-Path $runtime 'complete.json')
+    if ($complete) {
+        Add-TouchGpioStep $steps 'runtime-completed' 'proven' 'the runner wrote the completion receipt'
+    } elseif ($error) {
+        Add-TouchGpioStep $steps 'runtime-completed' 'failed' 'the runner stopped with a recorded error and never wrote the completion receipt'
+    } else {
+        Add-TouchGpioStep $steps 'runtime-completed' 'failed' 'the runner wrote neither a completion nor an error receipt: the action was terminated'
+    }
+    # The phone clock must not move while the trial task runs. A clock jump
+    # inside a task with an execution time limit makes Task Scheduler compute
+    # the task runtime from the new time and hard terminate the action, which
+    # ended a previous attempt before any hardware step.
+    $clock = Read-TouchGpioJson (Join-Path $runtime 'clock.json')
+    if ($clock -and $clock.before_utc -and $clock.after_utc) {
+        $clockBefore = ConvertTo-TouchGpioTime $clock.before_utc
+        $clockAfter = ConvertTo-TouchGpioTime $clock.after_utc
+        if ($null -eq $clockBefore -or $null -eq $clockAfter) {
+            Add-TouchGpioStep $steps 'runtime-clock-stable' 'failed' 'the clock receipt could not be read'
+        } else {
+            $jump = ($clockAfter - $clockBefore).TotalSeconds
+            $facts['runtime_clock_jump_seconds'] = $jump
+            Add-TouchGpioStep $steps 'runtime-clock-stable' $(if ([Math]::Abs($jump) -le 60) {'proven'} else {'failed'}) `
+                ("the phone clock moved " + [Math]::Round($jump,1) + " seconds while the trial task ran")
+        }
+    } else {
+        Add-TouchGpioStep $steps 'runtime-clock-stable' 'missing' 'no clock.json in the runtime log'
     }
     $operations = Read-TouchGpioJson (Join-Path $runtime 'operations.json')
     if ($operations) {
@@ -289,7 +332,8 @@ function Get-TouchGpioResult {
     Add-TouchGpioStep $steps 'tap-and-swipe' $(if ($TapSwipeObserved) {'proven'} else {'missing'}) `
         $(if ($TapSwipeObserved) {'the user reported a real tap and swipe'} else {'no user confirmation was recorded'})
     $ordered = @('runtime-attempt','boot-restore-windows','boot-namespace-gate','boot-ssdt-installed','boot-ssdt-readback',
-        'boot-chainload-windows','trial-ssdt-visible-to-windows','no-iort-installed','runtime-no-error','pnp-installs',
+        'boot-chainload-windows','trial-ssdt-visible-to-windows','no-iort-installed','runtime-no-error','runtime-completed',
+        'runtime-clock-stable','pnp-installs',
         'selected-inf-gpio','selected-inf-host','selected-inf-touch','gpio-provider-v3','gpio-resource-shape',
         'idle-lines-high','chip-identity','host-code-0','touch-code-0','irq-and-reports','test-window','tap-and-swipe')
     # A step that is missing is not a proof. Only a fully proven chain may be

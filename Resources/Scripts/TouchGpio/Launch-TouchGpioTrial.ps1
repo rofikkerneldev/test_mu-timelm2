@@ -24,16 +24,43 @@ try {
 } finally {$stream.Dispose()}
 $taskName = 'TimelmTouchGpioOnce'
 try {
-    if (Get-ScheduledTask -TaskName $taskName -TaskPath '\' -ErrorAction SilentlyContinue) {throw 'Trial task already exists; refusing to overwrite or rearm it'}
     $exe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
     $script = Join-Path $PSScriptRoot 'Run-TouchGpioTrial.ps1'
     $arguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "'+$script+'"'
+    # The phone RTC runs hours behind the PC reference time, and the clock has
+    # to be corrected here, before the scheduled task exists. A clock jump
+    # while a task with an execution time limit is running makes Task
+    # Scheduler compute the task runtime from the new time and hard terminate
+    # the action: that ended the first one-boot trial before any hardware step
+    # and left neither a completion nor an error receipt behind.
+    $hostUtc = [DateTime]::Parse((Get-Content -LiteralPath (Join-Path $PSScriptRoot 'host-utc.txt') -Raw).Trim()).ToUniversalTime()
+    $clockBefore = [DateTime]::UtcNow
+    $clockAdjusted = $false
+    if ([Math]::Abs(($clockBefore - $hostUtc).TotalSeconds) -gt 60) {
+        Set-Date -Date $hostUtc.ToLocalTime() | Out-Null
+        $clockAdjusted = $true
+    }
+    $clockAfter = [DateTime]::UtcNow
+    if ([Math]::Abs(($clockAfter - $hostUtc).TotalSeconds) -gt 300) {throw 'Phone clock is not within five minutes of the PC reference time'}
+    # A task left behind by an interrupted attempt may only be replaced when it
+    # is this exact task. An unrelated task that carries the same name is
+    # refused and never touched.
+    $existing = Get-ScheduledTask -TaskName $taskName -TaskPath '\' -ErrorAction SilentlyContinue
+    $replacedStaleTask = $false
+    if ($existing) {
+        if (@($existing.Actions).Count -ne 1 -or $existing.Actions[0].Execute -ine $exe -or
+            $existing.Actions[0].Arguments -cne $arguments -or
+            $existing.Principal.UserId -notin @('SYSTEM','S-1-5-18')) {throw 'Trial task already exists; refusing to overwrite or rearm it'}
+        Unregister-ScheduledTask -TaskName $taskName -TaskPath '\' -Confirm:$false
+        $replacedStaleTask = $true
+    }
     $action = New-ScheduledTaskAction -Execute $exe -Argument $arguments -WorkingDirectory $PSScriptRoot
     $taskPrincipal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
     # Five bounded PnP operations, two collectors and the test window can take
-    # over 23 minutes in the slow-success case. Keep the final task guard above
-    # those bounds so collection and the normal shutdown can still complete.
-    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 30) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+    # over 23 minutes in the slow-success case. The task limit stays well above
+    # that, so the runner's own monotonic budget is always the first bound to
+    # trigger and a clock correction can never terminate the action.
+    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 120) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
     $task = New-ScheduledTask -Action $action -Principal $taskPrincipal -Settings $settings
     $null = Register-ScheduledTask -TaskName $taskName -TaskPath '\' -InputObject $task
     $check = Get-ScheduledTask -TaskName $taskName -TaskPath '\'
@@ -41,7 +68,9 @@ try {
         $check.Actions[0].Arguments -cne $arguments -or $check.Principal.UserId -notin @('SYSTEM','S-1-5-18')) {throw 'Registered trial task identity mismatch'}
     Start-ScheduledTask -TaskName $taskName -TaskPath '\'
     [ordered]@{phase='system-task-started';utc=[DateTime]::UtcNow.ToString('o');task=$taskName;executable=$exe;arguments=$arguments;
-        script_sha256=(Get-FileHash -LiteralPath $script).Hash;execution_limit_minutes=30} |
+        script_sha256=(Get-FileHash -LiteralPath $script).Hash;execution_limit_minutes=120;
+        clock_utc_before=$clockBefore.ToString('o');clock_utc_after=$clockAfter.ToString('o');clock_host_utc=$hostUtc.ToString('o');
+        clock_adjusted_by_launcher=$clockAdjusted;replaced_stale_task=$replacedStaleTask} |
         ConvertTo-Json | Set-Content -LiteralPath $receipt
 } catch {
     [ordered]@{phase='launch-failed';error=$_.Exception.Message;utc=[DateTime]::UtcNow.ToString('o')} |

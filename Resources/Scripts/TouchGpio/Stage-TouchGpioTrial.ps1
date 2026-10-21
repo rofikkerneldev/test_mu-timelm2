@@ -1,11 +1,13 @@
 # PC-side staging only. Requires elevated access to the identified V60 USB disk.
 param([Parameter(Mandatory=$true)][string]$Artifact,
-      [Parameter(Mandatory=$true)][string]$Output)
+      [Parameter(Mandatory=$true)][string]$Output,
+      [switch]$ReArm)
 $ErrorActionPreference = 'Stop'
 if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') {throw 'Run staging on the x64 PC, not the phone'}
 . (Join-Path $PSScriptRoot 'TouchGpioCommon.ps1')
 $modified = New-Object 'System.Collections.Generic.List[string]'
 $original = $null; $startupCreated = $false; $verifiedDisk = $false; $receiptRoot = $null; $receiptWritable = $false
+$archived = @()
 $expectedWindowsHash = 'fae47d78487e781aa06466775cb461adeb7ff7f887fe2c15295bb2eb4f4954e1'
 function Write-Flushed([string]$Path, [byte[]]$Data) {
     $f = [IO.FileStream]::new($Path,[IO.FileMode]::Create,[IO.FileAccess]::Write,[IO.FileShare]::None,4096,[IO.FileOptions]::WriteThrough)
@@ -73,7 +75,27 @@ try {
     $bundle = Join-Path $winRoot 'TimelmTools\TouchGpioTrial'
     $logs = Join-Path $winRoot 'TimelmLogs\TouchGpioTrial'
     $startup = Join-Path $winRoot 'ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\Timelm-touch-gpio.cmd'
-    if ((Test-Path -LiteralPath $bundle) -or (Test-Path -LiteralPath $logs) -or (Test-Path -LiteralPath $startup)) {throw 'GPIO trial already exists; refusing to rearm'}
+    if (Test-Path -LiteralPath $startup) {throw 'GPIO trial startup is still armed; refusing to rearm'}
+    if ((Test-Path -LiteralPath $bundle) -or (Test-Path -LiteralPath $logs)) {
+        # A re-arm is only allowed for this bundle's own leftovers. The staged
+        # manifest must match the artifact and the runtime log must carry this
+        # trial's receipts; a phone in any other state is refused instead.
+        if (!$ReArm) {throw 'GPIO trial already exists; refusing to rearm'}
+        $stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ')
+        if (Test-Path -LiteralPath $bundle) {
+            $null = Get-TouchGpioManifest $bundle
+            if ((Get-FileHash -LiteralPath (Join-Path $bundle 'package.json')).Hash -ne
+                (Get-FileHash -LiteralPath (Join-Path $artifactRoot 'package.json')).Hash) {throw 'Staged bundle is not this artifact'}
+            $staleBundle = Join-Path $winRoot ('TimelmTools\TouchGpioTrial-stale-' + $stamp)
+            Move-Item -LiteralPath $bundle -Destination $staleBundle
+            $archived += $staleBundle
+        }
+        if (Test-Path -LiteralPath $logs) {
+            $staleLogs = Join-Path $winRoot ('TimelmLogs\TouchGpioTrial-stale-' + $stamp)
+            Move-Item -LiteralPath $logs -Destination $staleLogs
+            $archived += $staleLogs
+        }
+    }
     $installed = @(Get-ChildItem -LiteralPath (Join-Path $winRoot 'Windows\INF') -Filter '*.inf' -File)
     if ($installed.Count -lt 100) {throw 'Incomplete installed INF enumeration'}
     foreach ($p in $manifest.packages) {
@@ -147,7 +169,8 @@ try {
     [ordered]@{phase='ready-for-one-boot-touch-gpio';utc=[DateTime]::UtcNow.ToString('o');launcher=$meta;helper_files=$hashes;
         serial='8509C01F';disk=$disks[0].Number;checked_installed_infs=$installed.Count;package=$manifest;
         bcd_before_after=$bcdHash;iort_installed=$false;boot_partition_flashed=$false;runtime_install_order=@('GPIO','Host','Touch');
-        test_seconds=120;automatic_reboot=$false;normal_shutdown=$true;flushed_and_dismounted=$true} |
+        test_seconds=120;automatic_reboot=$false;normal_shutdown=$true;flushed_and_dismounted=$true;
+        rearm=$ReArm.IsPresent;archived_leftovers=$archived} |
         ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $receiptRoot 'stage-status.json')
 } catch {
     $failure = $_.Exception.Message; $rollback = @()
@@ -166,7 +189,8 @@ try {
     }
     if ($verifiedDisk) {try {Flush-Dismount} catch {$rollback += $_.Exception.Message}}
     if ($receiptWritable) {
-        [ordered]@{phase='failed';error=$failure;rollback_errors=$rollback;trial_bundle_retained_unarmed=$true;utc=[DateTime]::UtcNow.ToString('o')} |
+        [ordered]@{phase='failed';error=$failure;rollback_errors=$rollback;trial_bundle_retained_unarmed=$true;
+            archived_leftovers=$archived;utc=[DateTime]::UtcNow.ToString('o')} |
             ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $receiptRoot 'stage-status.json')
     }
     throw

@@ -83,7 +83,23 @@ foreach ($reader in $readers) {
     if (!$rejected) {throw 'Gate readback failure was ignored'}
 } $writers[0].Extent.Text
 $launch = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Launch-TouchGpioTrial.ps1') -Raw
-if ($launch -notmatch 'New-TimeSpan\s+-Minutes\s+30\b' -or $launch -notmatch 'execution_limit_minutes=30\b') {throw 'Task timeout and receipt must cover the bounded trial'}
+if ($launch -notmatch 'New-TimeSpan\s+-Minutes\s+120\b' -or $launch -notmatch 'execution_limit_minutes=120\b') {throw 'Task timeout and receipt must cover the bounded trial'}
+# The phone clock is corrected before the scheduled task exists. A clock jump
+# while a task with an execution time limit runs makes Task Scheduler compute
+# the task runtime from the new time and hard terminate the action, which
+# ended a real attempt before any hardware step.
+$runnerText = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Run-TouchGpioTrial.ps1') -Raw
+if ($runnerText -match 'Set-Date') {throw 'The runtime runner must never change the clock under the task'}
+if ($launch -notmatch 'Set-Date') {throw 'The launcher must correct the phone clock before the task starts'}
+$clockIndex = $launch.IndexOf('Set-Date')
+$registerIndex = $launch.IndexOf('Register-ScheduledTask')
+if ($clockIndex -lt 0 -or $registerIndex -lt 0 -or $clockIndex -gt $registerIndex) {throw 'The clock must be corrected before the scheduled task is registered'}
+if ($runnerText -notmatch 'Assert-Budget' -or $runnerText -notmatch 'Stopwatch') {throw 'The runtime runner must bound the trial with a monotonic budget'}
+# A gate that an earlier attempt of this bundle left enabled is restored, and
+# a gate that anybody else enabled is refused instead of reset.
+if ($runnerText -notmatch 'Pre-existing hardware gate enabled' -or $runnerText -notmatch 'gates-restored\.json') {
+    throw 'The runtime runner must restore only its own gates and record the restore'
+}
 if ($Artifact) {
     . (Join-Path $PSScriptRoot 'TouchGpioCommon.ps1')
     $null = Get-TouchGpioManifest $Artifact
@@ -128,6 +144,10 @@ function New-SyntheticEvidence([string]$Root, [bool]$Good, [int]$FirstPinId = 38
         ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Root 'runtime\operations.json')
     [ordered]@{utc='2026-10-21T00:00:00Z';seconds=120} |
         ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Root 'runtime\touch-window.json')
+    [ordered]@{before_utc='2026-10-21T00:00:00Z';after_utc='2026-10-21T00:00:00Z';host_utc='2026-10-21T00:00:00Z'} |
+        ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Root 'runtime\clock.json')
+    [ordered]@{after='runtime\after\20261021T000000Z-test';error=$null;need_next_boot=$false;normal_shutdown=$true;utc='2026-10-21T00:00:00Z'} |
+        ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Root 'runtime\complete.json')
     $identity0 = [uint32]0; $identity1 = [uint32]0
     $expected = [Text.Encoding]::ASCII.GetBytes('B3W68TIM')
     for ($i = 0; $i -lt 4; ++$i) {$identity0 = $identity0 -bor ([uint32]$expected[$i] -shl (8*$i))}
@@ -215,6 +235,34 @@ try {
     if ($foreign.verdict -ne 'incomplete' -or $foreign.steps['trial-ssdt-visible-to-windows'].status -ne 'failed') {
         throw 'A foreign SSDT was accepted'
     }
+    # A run that wrote neither a completion nor an error receipt was
+    # terminated. That is proven failure evidence, not a missing step, and it
+    # must never be reported as a finished trial.
+    New-SyntheticEvidence $syntheticRoot $true
+    Remove-Item -LiteralPath (Join-Path $syntheticRoot 'runtime\complete.json') -Force
+    $terminated = Get-TouchGpioResult -Root $syntheticRoot
+    if ($terminated.steps['runtime-completed'].status -ne 'failed') {
+        throw 'A terminated run was not reported as a failure'
+    }
+    if ($terminated.verdict -ne 'incomplete') {throw "A terminated run was accepted: $($terminated.verdict)"}
+    # A clock that moves while the trial task runs is the failure that killed a
+    # real attempt. It must be reported from the clock receipt.
+    [ordered]@{before_utc='2026-10-21T00:00:00Z';after_utc='2026-10-21T03:28:49Z';host_utc='2026-10-21T03:28:49Z'} |
+        ConvertTo-Json | Set-Content -LiteralPath (Join-Path $syntheticRoot 'runtime\clock.json')
+    $jumped = Get-TouchGpioResult -Root $syntheticRoot
+    if ($jumped.steps['runtime-clock-stable'].status -ne 'failed') {throw 'A clock jump under the task was not reported'}
+    if ($jumped.verdict -ne 'incomplete') {throw "A clock jump was accepted: $($jumped.verdict)"}
+    # A run that finished with a recorded error is reported as an error, and a
+    # stable clock with a completion receipt is reported as a finished run.
+    New-SyntheticEvidence $syntheticRoot $true
+    [ordered]@{error='PnPUtil install-Touch returned 3010';need_next_boot=$true;utc='2026-10-21T00:00:00Z'} |
+        ConvertTo-Json | Set-Content -LiteralPath (Join-Path $syntheticRoot 'runtime\trial-error.json')
+    Remove-Item -LiteralPath (Join-Path $syntheticRoot 'runtime\complete.json') -Force
+    $errored = Get-TouchGpioResult -Root $syntheticRoot
+    if ($errored.steps['runtime-no-error'].status -ne 'failed' -or $errored.steps['runtime-completed'].status -ne 'failed') {
+        throw 'A run that stopped with an error was not reported'
+    }
+    Remove-Item -LiteralPath (Join-Path $syntheticRoot 'runtime\trial-error.json') -Force
     $bare = Join-Path ([IO.Path]::GetTempPath()) ('timelm-gpio-empty-' + [guid]::NewGuid().ToString('N').Substring(0,8))
     $null = [IO.Directory]::CreateDirectory($bare)
     $none = Get-TouchGpioResult -Root $bare

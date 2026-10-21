@@ -32,6 +32,23 @@ $gpioKey = 'HKLM:\SYSTEM\CurrentControlSet\Enum\'+$gpioId+'\Device Parameters'
 $gates = @('NativeBoardInitEnabled','NativeGpiEnabled','WindowsIommuEnabled','FirmwareHandoffVerified','SourceClockHz','ReadOnlyHardwareProbeEnabled')
 $needNextBoot = $false; $trialError = $null; $testWindow = $false; $awake = $false
 $operations = New-Object 'System.Collections.Generic.List[object]'
+# A monotonic budget bounds the whole trial. The phone clock is corrected
+# before this task starts and must not move while it runs, and a stopwatch
+# keeps the bound even if the clock is corrected again by something else.
+$budget = [Diagnostics.Stopwatch]::StartNew()
+$budgetLimit = [TimeSpan]::FromMinutes(25)
+function Assert-Budget([string]$Phase) {
+    if ($budget.Elapsed -gt $budgetLimit) {throw "Trial budget of $($budgetLimit.TotalMinutes) minutes exceeded in phase $Phase"}
+}
+function Wait-Seconds([int]$Seconds, [string]$Phase) {
+    $remaining = $Seconds
+    while ($remaining -gt 0) {
+        Assert-Budget $Phase
+        $slice = [Math]::Min(5, $remaining)
+        Start-Sleep -Seconds $slice
+        $remaining -= $slice
+    }
+}
 function Save-Json([string]$Name, $Value) {
     $Value | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $logs $Name)
 }
@@ -73,25 +90,37 @@ function Set-Gate([string]$Path, [string]$Name, [int]$Value) {
     $null = New-ItemProperty -LiteralPath $Path -Name $Name -Value $Value -PropertyType DWord -Force
     if ((Get-ItemPropertyValue -LiteralPath $Path -Name $Name) -ne $Value) {throw "Gate readback failed: $Name"}
 }
-function Assert-SelectedInf([string]$PackageName, [string]$DeviceId) {
+function Get-SelectedInf([string]$PackageName, [string]$DeviceId) {
     # PnPUtil can successfully stage a package while retaining an older driver.
     # Follow the exact device's selected class key, not a matching INF search.
+    # The result also tells a later phase whether this bundle's own driver is
+    # already the selected one, which is how leftovers of an interrupted
+    # attempt are told apart from a foreign state.
     $packages = @($manifest.packages | Where-Object {$_.name -ceq $PackageName})
     if ($packages.Count -ne 1) {throw 'Selected INF check has no unique package'}
     $package = $packages[0]
     $relative = 'Drivers/'+$PackageName+'/'+$package.inf
     $files = @($manifest.files | Where-Object {$_.path -ceq $relative})
     if ($files.Count -ne 1) {throw 'Selected INF check has no unique hash'}
+    $expected = $files[0].sha256
     $driver = Get-ItemPropertyValue -LiteralPath ('HKLM:\SYSTEM\CurrentControlSet\Enum\'+$DeviceId) -Name 'Driver'
-    if ($driver -notmatch '^\{[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\}\\[0-9a-fA-F]{4}$') {throw "Unexpected selected class key: $PackageName"}
+    if ($driver -notmatch '^\{[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\}\\[0-9a-fA-F]{4}$') {
+        return [ordered]@{device=$DeviceId;inf=$null;sha256=$null;expected_sha256=$expected;matches=$false;class_key=$null}
+    }
     $classKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\'+$driver
     $infName = Get-ItemPropertyValue -LiteralPath $classKey -Name 'InfPath'
-    if ($infName -notmatch '^oem[0-9]+\.inf$') {throw "Unexpected selected INF path: $PackageName"}
+    if ($infName -notmatch '^oem[0-9]+\.inf$') {
+        return [ordered]@{device=$DeviceId;inf=$null;sha256=$null;expected_sha256=$expected;matches=$false;class_key=$driver}
+    }
     $actual = (Get-FileHash -LiteralPath (Join-Path $env:SystemRoot ('INF\'+$infName))).Hash
-    $expected = $files[0].sha256
-    Save-Json ('selected-'+$PackageName+'-inf.json') @{device=$DeviceId;class_key=$driver;inf=$infName;
-        sha256=$actual;expected_sha256=$expected;matches=($actual -eq $expected);utc=[DateTime]::UtcNow.ToString('o')}
-    if ($actual -ne $expected) {throw "PnP retained an unexpected $PackageName driver; hardware activation refused"}
+    return [ordered]@{device=$DeviceId;inf=$infName;sha256=$actual;expected_sha256=$expected;
+        matches=($actual -eq $expected);class_key=$driver}
+}
+function Assert-SelectedInf([string]$PackageName, [string]$DeviceId) {
+    $selection = Get-SelectedInf $PackageName $DeviceId
+    if (!$selection.matches) {throw "PnP retained an unexpected $PackageName driver; hardware activation refused"}
+    Save-Json ('selected-'+$PackageName+'-inf.json') @{device=$DeviceId;class_key=$selection.class_key;inf=$selection.inf;
+        sha256=$selection.sha256;expected_sha256=$selection.expected_sha256;matches=$true;utc=[DateTime]::UtcNow.ToString('o')}
 }
 try {
     # Hold the system and display throughout collection, installation and the
@@ -106,17 +135,25 @@ public static class TouchGpioAwake {
 '@
     $awake = [TouchGpioAwake]::Hold()
     if (!$awake) {throw 'Temporary display/system awake request failed; hardware activation refused'}
-    Start-Sleep -Seconds 20
+    Wait-Seconds 20 'awake-hold'
     $manifest = Get-TouchGpioManifest $PSScriptRoot
     $before = Collect-Phase 'before'
+    Assert-Budget 'baseline'
     $tables = Get-Content -LiteralPath (Join-Path $before 'acpi-table-list.json') -Raw | ConvertFrom-Json
     if (@($tables.tables | Where-Object {$_.signature -eq 'IORT'}).Count) {throw 'Unexpected IORT; GPIO trial requires no SMMU owner change'}
     $ssdt = @(Get-ChildItem -LiteralPath $before -Filter '*SSDT*.dat' -File | Where-Object {(Get-FileHash -LiteralPath $_.FullName).Hash -eq $manifest.ssdt_sha256})
     if ($ssdt.Count -ne 1) {throw 'Expected GPIO-only trial SSDT missing'}
     $gpio = Get-TouchGpioDevice $gpioId
     $hostDevice = Get-TouchGpioDevice $hostId
+    # An interrupted attempt can leave this bundle's own driver selected and
+    # its gates enabled. Read the selection first: only a driver from this
+    # bundle may explain an enabled gate, and only that case may be restored.
+    $gpioSelection = Get-SelectedInf 'GPIO' $gpioId
+    $hostSelection = Get-SelectedInf 'Host' $hostId
+    $hostErrorAllowed = @(10,28,31)
+    if ($hostSelection.matches) {$hostErrorAllowed += 0}
     if ($gpio.ConfigManagerErrorCode -ne 0 -or $gpio.Service -ine 'GPIO' -or
-        $hostDevice.ConfigManagerErrorCode -notin @(10,28,31) -or
+        $hostDevice.ConfigManagerErrorCode -notin $hostErrorAllowed -or
         ($hostDevice.Service -and $hostDevice.Service -ine 'kona_geni')) {throw 'Unexpected initial GPIO/host state'}
     foreach ($p in $manifest.packages) {
         $pattern = switch ($p.name) {GPIO {'ACPI\\KONA1001'} Host {'ACPI\\TIML0001'} Touch {'ACPI\\LGSW4290'}}
@@ -128,16 +165,27 @@ public static class TouchGpioAwake {
         }
     }
     $previousGates = @{}
-    foreach ($entry in @(@{path=$hostKey;names=($gates+@('NativeGpioI2cEnabled'))},@{path=$gpioKey;names=@('TouchBusGpioEnabled')})) {
+    $restoredGates = @()
+    foreach ($entry in @(@{path=$hostKey;names=($gates+@('NativeGpioI2cEnabled'));selection=$hostSelection},
+                         @{path=$gpioKey;names=@('TouchBusGpioEnabled');selection=$gpioSelection})) {
         $values = @{}
         foreach ($name in $entry.names) {
             $value = Get-Gate $entry.path $name
             $values[$name] = $value
-            if ($null -ne $value -and $value -ne 0) {throw "Pre-existing hardware gate enabled: $name"}
+            if ($null -ne $value -and $value -ne 0) {
+                # A gate that was enabled by anything but this bundle's own
+                # driver is refused, never reset.
+                if (!$entry.selection.matches) {throw "Pre-existing hardware gate enabled: $name"}
+                Set-Gate $entry.path $name 0
+                $restoredGates += $name
+            }
         }
         $previousGates[$entry.path] = $values
     }
     Save-Json 'gates-before.json' $previousGates
+    if ($restoredGates.Count) {
+        Save-Json 'gates-restored.json' @{restored=$restoredGates;utc=[DateTime]::UtcNow.ToString('o')}
+    }
     $hostUtc = [DateTime]::Parse((Get-Content -LiteralPath (Join-Path $PSScriptRoot 'host-utc.txt') -Raw).Trim()).ToUniversalTime()
     $certificates = @()
     foreach ($p in $manifest.packages) {
@@ -146,7 +194,17 @@ public static class TouchGpioAwake {
         $certificates += $cert
     }
     $clockBefore = [DateTime]::UtcNow
-    if (@($certificates | Where-Object {$clockBefore -lt $_.NotBefore.ToUniversalTime()}).Count) {Set-Date -Date $hostUtc.ToLocalTime() | Out-Null}
+    # The clock is never changed under this task. A clock jump while a task
+    # with an execution time limit is running makes Task Scheduler compute the
+    # task runtime from the new time and hard terminate the action, which
+    # ended a previous attempt before any hardware step and left neither a
+    # completion nor an error receipt behind. The launcher sets the clock
+    # before the task exists; a wrong clock here is refused instead.
+    foreach ($cert in $certificates) {
+        if ($clockBefore -lt $cert.NotBefore.ToUniversalTime() -or $clockBefore -gt $cert.NotAfter.ToUniversalTime()) {
+            throw 'Phone clock outside certificate validity; the launcher must set the clock before the task starts'
+        }
+    }
     foreach ($cert in $certificates) {
         if ([DateTime]::UtcNow -lt $cert.NotBefore.ToUniversalTime() -or [DateTime]::UtcNow -gt $cert.NotAfter.ToUniversalTime()) {throw 'Phone time outside certificate validity'}
         foreach ($storeName in @('Root','TrustedPublisher')) {
@@ -160,15 +218,18 @@ public static class TouchGpioAwake {
         }
         $cert.Reset()
     }
-    Save-Json 'clock.json' @{before_utc=$clockBefore.ToString('o');after_utc=[DateTime]::UtcNow.ToString('o');host_utc=$hostUtc.ToString('o')}
+    Save-Json 'clock.json' @{before_utc=$clockBefore.ToString('o');after_utc=[DateTime]::UtcNow.ToString('o');
+        host_utc=$hostUtc.ToString('o');adjusted_by_task=$false}
+    Assert-Budget 'install-gpio'
     # GPIO gate must be visible when the replacement provider creates its v3 interface.
     Pnp 'install-GPIO' @('/add-driver',(Join-Path $PSScriptRoot 'Drivers\GPIO\GPIO.inf'),'/install')
     Assert-SelectedInf 'GPIO' $gpioId
     Set-Gate $gpioKey 'TouchBusGpioEnabled' 1
     Pnp 'restart-GPIO' @('/restart-device',$gpioId)
-    Start-Sleep -Seconds 5
+    Wait-Seconds 5 'gpio-restart'
     $gpio = Get-TouchGpioDevice $gpioId
     if ($gpio.ConfigManagerErrorCode -ne 0 -or $gpio.Service -ine 'GPIO') {throw 'GPIO provider failed after upgrade/restart'}
+    Assert-Budget 'install-host'
     Pnp 'install-Host' @('/add-driver',(Join-Path $PSScriptRoot 'Drivers\Host\kona_geni.inf'),'/install')
     Assert-SelectedInf 'Host' $hostId
     foreach ($gate in $gates) {Set-Gate $hostKey $gate 0}
@@ -176,9 +237,10 @@ public static class TouchGpioAwake {
     Save-Json 'gates-enabled.json' @{GPIO=(Get-ItemProperty -LiteralPath $gpioKey);Host=(Get-ItemProperty -LiteralPath $hostKey);dma_enabled=$false}
     Pnp 'restart-Host' @('/restart-device',$hostId)
     $testWindow = $true
-    Start-Sleep -Seconds 5
+    Wait-Seconds 5 'host-restart'
     $hostDevice = Get-TouchGpioDevice $hostId
     if ($hostDevice.ConfigManagerErrorCode -ne 0 -or $hostDevice.Service -ine 'kona_geni') {throw 'GPIO I2C host did not start; inspect product/ACK diagnostics'}
+    Assert-Budget 'install-touch'
     Pnp 'install-Touch' @('/add-driver',(Join-Path $PSScriptRoot 'Drivers\Touch\vhidmini.inf'),'/install')
     $touchDevices = @(Get-CimInstance Win32_PnPEntity | Where-Object {$_.PNPDeviceID -like 'ACPI\LGSW4290\*'})
     if ($touchDevices.Count -ne 1) {throw 'Expected exactly one SW42902 device after client installation'}
@@ -189,7 +251,7 @@ public static class TouchGpioAwake {
     Save-Json 'trial-error.json' @{error=$trialError;need_next_boot=$needNextBoot;utc=[DateTime]::UtcNow.ToString('o')}
 }
 if ($testWindow -and !$needNextBoot) {
-    Start-Sleep -Seconds 120
+    Wait-Seconds 120 'test-window'
 }
 try {
     $after = Collect-Phase 'after'
