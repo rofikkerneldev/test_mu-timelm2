@@ -20,6 +20,14 @@ reset38, VCL67, VDD68 and the bus pair36/37. There are no host memory or IRQ
 resources. The child `LGSW4290` retains address0x28, a100kHz speed ceiling and
 falling-edge GPIO39 IRQ. It depends on the host and GPIO provider.
 
+Windows may publish the bus pair as one connection resource or as one resource
+per pin, so the host accepts four or five GPIO connection resources, always in
+_CRS order, and reserves every bus connection it receives. The count and each
+connection identity are recorded as `TimelmBitbangPinCount` and
+`TimelmBitbangPinId0..4`. Only the three single-pin power connections are ever
+written; a bus connection is opened read-only so the provider sees the pins
+connected as inputs before the mux changes.
+
 The new GPIO provider V3 has a separate GUID and exact interface ABI; V2 is
 unchanged. It requires both bus pins reserved through ResourceHub and the
 additional GPIO device opt-in `TouchBusGpioEnabled=1`. It saves/restores only

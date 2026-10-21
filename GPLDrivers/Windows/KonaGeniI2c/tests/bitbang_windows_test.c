@@ -26,12 +26,20 @@ static NTSTATUS contractStatus;
 static GI_U64 clockUs,identityAt;
 static enum BB_RESULT transferResult;
 static unsigned events[128],eventCount,pinLevels[3];
+static ULONG recordedPinCount;static unsigned recordedCounts;
+static ULONG recordedPinId[5];static unsigned recordedIds;
 
 ULONG WdfCmResourceListGetCount(WDFCMRESLIST list) { return list->Count; }
 PCM_PARTIAL_RESOURCE_DESCRIPTOR WdfCmResourceListGetDescriptor(WDFCMRESLIST list,ULONG index)
 { assert(index<list->Count);return (int)index==list->NullIndex?NULL:&list->Entries[index]; }
 VOID GeniRecord(WDFDEVICE device,PCWSTR name,ULONG value)
-{ (void)device;(void)name;(void)value; }
+{
+    (void)device;
+    if (!wcscmp(name,L"TimelmBitbangPinCount")) {recordedPinCount=value;++recordedCounts;return;}
+    if (!wcsncmp(name,L"TimelmBitbangPinId",18) && name[18]>='0' && name[18]<='4') {
+        recordedPinId[name[18]-'0']=value;++recordedIds;return;
+    }
+}
 NTSTATUS GeniBoardCheckContractValue(WDFDEVICE device,ULONG value)
 { (void)device;assert(value==0x54420501u);return contractStatus; }
 size_t RtlCompareMemory(const void *left,const void *right,size_t count)
@@ -65,8 +73,8 @@ NTSTATUS WdfIoTargetOpen(WDFIOTARGET target,WDF_IO_TARGET_OPEN_PARAMS *parameter
     unsigned i,id=parameters->Path->ResourceId;
     if(++openCalls==failOpen)return STATUS_IO_DEVICE_ERROR;
     for(i=0;i<created;++i) assert(!targets[i].Open || targets[i].Id!=id);
-    assert(id==9 || (id>=1 && id<=4));
-    assert(parameters->Access==((id==4 || id==9)?GENERIC_READ:GENERIC_WRITE));
+    assert(id==9 || (id>=1 && id<=5));
+    assert(parameters->Access==((id>=4 || id==9)?GENERIC_READ:GENERIC_WRITE));
     target->Id=id;target->Open=1;++opened;return STATUS_SUCCESS;
 }
 VOID WdfIoTargetClose(WDFIOTARGET target)
@@ -142,14 +150,46 @@ static void Init(void)
     failModeEnable=failModeDisable=failSample=modeActive=0;
     failSetLines=cancelRequest=modeEnables=modeDisables=0;
     eventCount=0;clockUs=identityAt=0;contractStatus=STATUS_SUCCESS;transferResult=BbOk;
+    recordedPinCount=0;recordedCounts=0;recordedIds=0;memset(recordedPinId,0,sizeof(recordedPinId));
+}
+/* Windows may publish the {36,37} bus pair as one connection resource or as
+ * one resource per pin. The second shape adds a fifth GPIO connection. */
+static void AddSplitBusPin(void)
+{
+    assert(resources.Count==4);
+    resources.Count=5;
+    resources.Entries[4].Type=CmResourceTypeConnection;
+    resources.Entries[4].u.Connection.Class=CM_RESOURCE_CONNECTION_CLASS_GPIO;
+    resources.Entries[4].u.Connection.Type=CM_RESOURCE_CONNECTION_TYPE_GPIO_IO;
+    resources.Entries[4].u.Connection.IdLowPart=5;
 }
 static void Clean(void)
 {
     BbWindowsRelease(&bus);
-    assert(!bus.Provider && !bus.Pins[0] && !bus.Pins[1] && !bus.Pins[2] && !bus.Pins[3]);
+    assert(!bus.Provider && !bus.Pins[0] && !bus.Pins[1] && !bus.Pins[2] && !bus.Pins[3] &&
+        !bus.Pins[4]);
     assert(created==deleted && opened==closed && !lists && !modeActive);
 }
 static void Prepare(void) { assert(BbWindowsPrepare(&bus,NULL,&resources)==STATUS_SUCCESS); }
+/* The bus pair published as one resource per pin must work exactly like the
+ * single-resource shape: both pins reserved, power order unchanged. */
+static void SplitBusPins(void)
+{
+    BB_MESSAGE message;UCHAR data=0;
+    Init();AddSplitBusPin();Prepare();
+    assert(bus.Connections==5 && created==3);
+    assert(bus.Pins[3] && bus.Pins[3]->Open && bus.Pins[4] && bus.Pins[4]->Open);
+    assert(!bus.Pins[0] && !bus.Pins[1] && !bus.Pins[2]);
+    assert(recordedCounts==1 && recordedPinCount==5 && recordedIds==5);
+    assert(recordedPinId[0]==1 && recordedPinId[1]==2 && recordedPinId[2]==3 &&
+        recordedPinId[3]==4 && recordedPinId[4]==5);
+    assert(BbWindowsStart(&bus)==STATUS_SUCCESS && bus.Ready && identityAt>=102000);
+    message.Bytes=&data;message.Length=1;message.Read=1;
+    assert(BbWindowsTransfer(&bus,(WDFREQUEST)1,&message,1)==STATUS_SUCCESS);
+    assert(!bus.Request && bus.Transfers==1 && !bus.Failures);
+    assert(BbWindowsStop(&bus)==STATUS_SUCCESS && !bus.Ready);
+    Clean();
+}
 static void Good(void)
 {
     static const unsigned expected[]={12,14,16,1001,15,17,13,2000,12,16,14,1000};
@@ -183,6 +223,14 @@ static void PrepareFailures(void)
     Init();nullDereference=1;assert(!NT_SUCCESS(BbWindowsPrepare(&bus,NULL,&resources)));Clean();
     Init();resources.NullIndex=2;assert(!NT_SUCCESS(BbWindowsPrepare(&bus,NULL,&resources)));Clean();
     Init();resources.Entries[0].Type=CmResourceTypeMemory;
+    assert(!NT_SUCCESS(BbWindowsPrepare(&bus,NULL,&resources)));Clean();
+    /* Only the four-resource and five-resource shapes are this board. */
+    Init();resources.Count=3;assert(!NT_SUCCESS(BbWindowsPrepare(&bus,NULL,&resources)));Clean();
+    Init();AddSplitBusPin();resources.Count=6;resources.Entries[5]=resources.Entries[4];
+    assert(!NT_SUCCESS(BbWindowsPrepare(&bus,NULL,&resources)));Clean();
+    Init();resources.Entries[3].u.Connection.Class=2;
+    assert(!NT_SUCCESS(BbWindowsPrepare(&bus,NULL,&resources)));Clean();
+    Init();resources.Entries[3].u.Connection.Type=1;
     assert(!NT_SUCCESS(BbWindowsPrepare(&bus,NULL,&resources)));Clean();
 }
 static void StartFailures(void)
@@ -240,7 +288,7 @@ static void Retained(void)
 }
 int main(void)
 {
-    Good();PrepareFailures();StartFailures();Retained();
+    Good();SplitBusPins();PrepareFailures();StartFailures();Retained();
     puts("Production bitbang Windows adapter: exact identity/power order, prepare/start failures, partial enable cleanup, no resume and retained reservations passed");
     return 0;
 }

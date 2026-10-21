@@ -54,7 +54,10 @@ an older package selected fails the trial before that provider's gate is enabled
 A successful provider restart is not proof of the v3 interface. The host's
 query-interface and basic identity read must prove the path. If GPIO's gate is
 not observed, logs identify the failed host/interface stage for the next test.
-After host activation, the desktop remains available for 120 seconds for taps/swipes.
+The host records `TimelmBitbangPinCount` plus `TimelmBitbangPinId0..4`, so a
+trial log states whether Windows published the 36/37 bus pair as one connection
+resource or as one resource per pin, and in which order the connections
+arrived. After host activation, the desktop remains available for 120 seconds for taps/swipes.
 A process-scoped execution-state request keeps the display/system awake throughout
 baseline collection, installation, the test window and final collection, restoring
 the request in finally before shutdown; no power plan is edited. If that request

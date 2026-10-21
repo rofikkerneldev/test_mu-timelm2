@@ -12,6 +12,11 @@
 /* The provider's actual public interface GUID is shared with board_windows.c;
  * use a local constant rather than instantiate another DEFINE_GUID symbol. */
 static const GUID ProviderGuid={0x3d4f477b,0x4937,0x407b,{0x93,0x29,0xf7,0xc8,0x8c,0x9a,0x01,0x88}};
+/* Connection resource identities are recorded so a trial log shows exactly
+ * which resources Windows published and in which order. */
+static const PCWSTR PinIdLabels[BB_WINDOWS_MAX_PINS]={
+    L"TimelmBitbangPinId0",L"TimelmBitbangPinId1",L"TimelmBitbangPinId2",
+    L"TimelmBitbangPinId3",L"TimelmBitbangPinId4"};
 
 static VOID DelayMs(ULONG ms)
 { LARGE_INTEGER t;t.QuadPart=-10000LL*ms;(void)KeDelayExecutionThread(KernelMode,FALSE,&t); }
@@ -56,7 +61,8 @@ static NTSTATUS OpenPin(BB_WINDOWS *b,ULONG index)
     if (!NT_SUCCESS(s)) return s;
     s=WdfIoTargetCreate(b->Device,WDF_NO_OBJECT_ATTRIBUTES,&b->Pins[index]);
     if (!NT_SUCCESS(s)) return s;
-    WDF_IO_TARGET_OPEN_PARAMS_INIT_OPEN_BY_NAME(&open,&path,index==3?GENERIC_READ:GENERIC_WRITE);
+    WDF_IO_TARGET_OPEN_PARAMS_INIT_OPEN_BY_NAME(&open,&path,
+        index>=BB_WINDOWS_POWER_PINS?GENERIC_READ:GENERIC_WRITE);
     s=WdfIoTargetOpen(b->Pins[index],&open);
     if (!NT_SUCCESS(s)) {WdfObjectDelete(b->Pins[index]);b->Pins[index]=NULL;}
     return s;
@@ -76,7 +82,8 @@ NTSTATUS BbWindowsPrepare(BB_WINDOWS *b,WDFDEVICE device,WDFCMRESLIST resources)
 {
     ULONG i,pins=0;PWSTR links=NULL;UNICODE_STRING path;
     WDF_IO_TARGET_OPEN_PARAMS open;NTSTATUS s;
-    if(b->Retained || b->Acquired || b->Provider || b->Pins[0] || b->Pins[1] || b->Pins[2] || b->Pins[3])
+    if(b->Retained || b->Acquired || b->Provider || b->Pins[0] || b->Pins[1] || b->Pins[2] ||
+        b->Pins[3] || b->Pins[4])
         return STATUS_DEVICE_BUSY;
     b->Device=device;
     GeniRecord(device,L"TimelmBitbangStage",1);
@@ -87,15 +94,20 @@ NTSTATUS BbWindowsPrepare(BB_WINDOWS *b,WDFDEVICE device,WDFCMRESLIST resources)
         if (!r || r->Type==CmResourceTypeMemory || r->Type==CmResourceTypeMemoryLarge ||
             r->Type==CmResourceTypeInterrupt) {s=STATUS_DEVICE_CONFIGURATION_ERROR;goto Fail;}
         if (r->Type==CmResourceTypeConnection) {
-            if (pins>=4 || r->u.Connection.Class!=CM_RESOURCE_CONNECTION_CLASS_GPIO ||
+            if (pins>=BB_WINDOWS_MAX_PINS || r->u.Connection.Class!=CM_RESOURCE_CONNECTION_CLASS_GPIO ||
                 r->u.Connection.Type!=CM_RESOURCE_CONNECTION_TYPE_GPIO_IO) {s=STATUS_DEVICE_CONFIGURATION_ERROR;goto Fail;}
             b->PinIds[pins].LowPart=r->u.Connection.IdLowPart;
             b->PinIds[pins++].HighPart=r->u.Connection.IdHighPart;
         }
     }
-    if (pins!=4) {s=STATUS_DEVICE_CONFIGURATION_ERROR;goto Fail;}
-    /* Reserve both bus pins for the full provider lifetime before muxing. */
-    s=OpenPin(b,3);if(!NT_SUCCESS(s)) goto Fail;
+    /* Four connections mean the bus pair arrived as one resource; five mean it
+     * arrived per pin. Any other count is not this board's contract. */
+    if (pins!=4 && pins!=5) {s=STATUS_DEVICE_CONFIGURATION_ERROR;goto Fail;}
+    b->Connections=pins;
+    GeniRecord(device,L"TimelmBitbangPinCount",pins);
+    for(i=0;i<pins;++i) GeniRecord(device,PinIdLabels[i],(ULONG)b->PinIds[i].LowPart);
+    /* Reserve the bus pins for the full provider lifetime before muxing. */
+    for(i=BB_WINDOWS_POWER_PINS;i<pins;++i) {s=OpenPin(b,i);if(!NT_SUCCESS(s)) goto Fail;}
     s=IoGetDeviceInterfaces(&ProviderGuid,NULL,0,&links);
     if (!NT_SUCCESS(s)) goto Fail;
     if (!links[0] || links[wcslen(links)+1]!=0) {s=STATUS_DEVICE_CONFIGURATION_ERROR;goto Fail;}
@@ -173,7 +185,7 @@ BOOLEAN BbWindowsRelease(BB_WINDOWS *b)
         b->Bus.Interface.InterfaceDereference(b->Bus.Interface.Context);b->Acquired=FALSE;
     }
     if(b->Provider) {WdfIoTargetClose(b->Provider);WdfObjectDelete(b->Provider);b->Provider=NULL;}
-    for(i=0;i<4;++i) if(b->Pins[i]) {WdfIoTargetClose(b->Pins[i]);WdfObjectDelete(b->Pins[i]);b->Pins[i]=NULL;}
+    for(i=0;i<BB_WINDOWS_MAX_PINS;++i) if(b->Pins[i]) {WdfIoTargetClose(b->Pins[i]);WdfObjectDelete(b->Pins[i]);b->Pins[i]=NULL;}
     return TRUE;
 }
 NTSTATUS BbWindowsTransfer(BB_WINDOWS *b,WDFREQUEST request,BB_MESSAGE *messages,ULONG count)
