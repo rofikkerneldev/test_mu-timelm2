@@ -137,33 +137,35 @@ public static class TouchGpioAwake {
     if (!$awake) {throw 'Temporary display/system awake request failed; hardware activation refused'}
     Wait-Seconds 20 'awake-hold'
     $manifest = Get-TouchGpioManifest $PSScriptRoot
-    $before = Collect-Phase 'before'
-    Assert-Budget 'baseline'
-    $tables = Get-Content -LiteralPath (Join-Path $before 'acpi-table-list.json') -Raw | ConvertFrom-Json
-    if (@($tables.tables | Where-Object {$_.signature -eq 'IORT'}).Count) {throw 'Unexpected IORT; GPIO trial requires no SMMU owner change'}
-    $ssdt = @(Get-ChildItem -LiteralPath $before -Filter '*SSDT*.dat' -File | Where-Object {(Get-FileHash -LiteralPath $_.FullName).Hash -eq $manifest.ssdt_sha256})
-    if ($ssdt.Count -ne 1) {throw 'Expected GPIO-only trial SSDT missing'}
-    $gpio = Get-TouchGpioDevice $gpioId
-    $hostDevice = Get-TouchGpioDevice $hostId
+    # The clock is never changed under this task. A clock jump while a task
+    # with an execution time limit is running makes Task Scheduler compute the
+    # task runtime from the new time and hard terminate the action, which
+    # ended a previous attempt before any hardware step and left neither a
+    # completion nor an error receipt behind. The launcher sets the clock
+    # before the task exists, so a wrong clock here is refused before
+    # anything on the phone is touched.
+    $hostUtc = [DateTime]::Parse((Get-Content -LiteralPath (Join-Path $PSScriptRoot 'host-utc.txt') -Raw).Trim()).ToUniversalTime()
+    $certificates = @()
+    foreach ($p in $manifest.packages) {
+        $cert = New-Object Security.Cryptography.X509Certificates.X509Certificate2((Join-Path $PSScriptRoot ('Drivers/'+$p.name+'/'+$p.certificate)))
+        if ($hostUtc -lt $cert.NotBefore.ToUniversalTime() -or $hostUtc -gt $cert.NotAfter.ToUniversalTime()) {throw 'PC reference time outside package certificate validity'}
+        $certificates += $cert
+    }
+    $clockBefore = [DateTime]::UtcNow
+    foreach ($cert in $certificates) {
+        if ($clockBefore -lt $cert.NotBefore.ToUniversalTime() -or $clockBefore -gt $cert.NotAfter.ToUniversalTime()) {
+            throw 'Phone clock outside certificate validity; the launcher must set the clock before the task starts'
+        }
+    }
+    Save-Json 'clock.json' @{before_utc=$clockBefore.ToString('o');after_utc=[DateTime]::UtcNow.ToString('o');
+        host_utc=$hostUtc.ToString('o');adjusted_by_task=$false}
     # An interrupted attempt can leave this bundle's own driver selected and
     # its gates enabled. Read the selection first: only a driver from this
     # bundle may explain an enabled gate, and only that case may be restored.
+    # The restore happens before the baseline is collected, so the evidence is
+    # taken with the hardware path disabled.
     $gpioSelection = Get-SelectedInf 'GPIO' $gpioId
     $hostSelection = Get-SelectedInf 'Host' $hostId
-    $hostErrorAllowed = @(10,28,31)
-    if ($hostSelection.matches) {$hostErrorAllowed += 0}
-    if ($gpio.ConfigManagerErrorCode -ne 0 -or $gpio.Service -ine 'GPIO' -or
-        $hostDevice.ConfigManagerErrorCode -notin $hostErrorAllowed -or
-        ($hostDevice.Service -and $hostDevice.Service -ine 'kona_geni')) {throw 'Unexpected initial GPIO/host state'}
-    foreach ($p in $manifest.packages) {
-        $pattern = switch ($p.name) {GPIO {'ACPI\\KONA1001'} Host {'ACPI\\TIML0001'} Touch {'ACPI\\LGSW4290'}}
-        $newHash = @($manifest.files | Where-Object {$_.path -ceq ('Drivers/'+$p.name+'/'+$p.inf)})[0].sha256
-        $allowed = @($p.replaces_inf_sha256) + @($newHash)
-        $installed = @(Get-ChildItem -LiteralPath "$env:SystemRoot\INF" -Filter '*.inf' -File | Select-String -Pattern $pattern -List)
-        foreach ($entry in $installed) {
-            if ((Get-FileHash -LiteralPath $entry.Path).Hash -notin $allowed) {throw "Unexpected installed $($p.name) INF"}
-        }
-    }
     $previousGates = @{}
     $restoredGates = @()
     foreach ($entry in @(@{path=$hostKey;names=($gates+@('NativeGpioI2cEnabled'));selection=$hostSelection},
@@ -186,23 +188,28 @@ public static class TouchGpioAwake {
     if ($restoredGates.Count) {
         Save-Json 'gates-restored.json' @{restored=$restoredGates;utc=[DateTime]::UtcNow.ToString('o')}
     }
-    $hostUtc = [DateTime]::Parse((Get-Content -LiteralPath (Join-Path $PSScriptRoot 'host-utc.txt') -Raw).Trim()).ToUniversalTime()
-    $certificates = @()
+    $before = Collect-Phase 'before'
+    Assert-Budget 'baseline'
+    $tables = Get-Content -LiteralPath (Join-Path $before 'acpi-table-list.json') -Raw | ConvertFrom-Json
+    if (@($tables.tables | Where-Object {$_.signature -eq 'IORT'}).Count) {throw 'Unexpected IORT; GPIO trial requires no SMMU owner change'}
+    $ssdt = @(Get-ChildItem -LiteralPath $before -Filter '*SSDT*.dat' -File | Where-Object {(Get-FileHash -LiteralPath $_.FullName).Hash -eq $manifest.ssdt_sha256})
+    if ($ssdt.Count -ne 1) {throw 'Expected GPIO-only trial SSDT missing'}
+    $gpio = Get-TouchGpioDevice $gpioId
+    $hostDevice = Get-TouchGpioDevice $hostId
+    # The driver selection and the gate restore were already read and applied
+    # before the baseline was collected.
+    $hostErrorAllowed = @(10,28,31)
+    if ($hostSelection.matches) {$hostErrorAllowed += 0}
+    if ($gpio.ConfigManagerErrorCode -ne 0 -or $gpio.Service -ine 'GPIO' -or
+        $hostDevice.ConfigManagerErrorCode -notin $hostErrorAllowed -or
+        ($hostDevice.Service -and $hostDevice.Service -ine 'kona_geni')) {throw 'Unexpected initial GPIO/host state'}
     foreach ($p in $manifest.packages) {
-        $cert = New-Object Security.Cryptography.X509Certificates.X509Certificate2((Join-Path $PSScriptRoot ('Drivers/'+$p.name+'/'+$p.certificate)))
-        if ($hostUtc -lt $cert.NotBefore.ToUniversalTime() -or $hostUtc -gt $cert.NotAfter.ToUniversalTime()) {throw 'PC reference time outside package certificate validity'}
-        $certificates += $cert
-    }
-    $clockBefore = [DateTime]::UtcNow
-    # The clock is never changed under this task. A clock jump while a task
-    # with an execution time limit is running makes Task Scheduler compute the
-    # task runtime from the new time and hard terminate the action, which
-    # ended a previous attempt before any hardware step and left neither a
-    # completion nor an error receipt behind. The launcher sets the clock
-    # before the task exists; a wrong clock here is refused instead.
-    foreach ($cert in $certificates) {
-        if ($clockBefore -lt $cert.NotBefore.ToUniversalTime() -or $clockBefore -gt $cert.NotAfter.ToUniversalTime()) {
-            throw 'Phone clock outside certificate validity; the launcher must set the clock before the task starts'
+        $pattern = switch ($p.name) {GPIO {'ACPI\\KONA1001'} Host {'ACPI\\TIML0001'} Touch {'ACPI\\LGSW4290'}}
+        $newHash = @($manifest.files | Where-Object {$_.path -ceq ('Drivers/'+$p.name+'/'+$p.inf)})[0].sha256
+        $allowed = @($p.replaces_inf_sha256) + @($newHash)
+        $installed = @(Get-ChildItem -LiteralPath "$env:SystemRoot\INF" -Filter '*.inf' -File | Select-String -Pattern $pattern -List)
+        foreach ($entry in $installed) {
+            if ((Get-FileHash -LiteralPath $entry.Path).Hash -notin $allowed) {throw "Unexpected installed $($p.name) INF"}
         }
     }
     foreach ($cert in $certificates) {
@@ -218,8 +225,6 @@ public static class TouchGpioAwake {
         }
         $cert.Reset()
     }
-    Save-Json 'clock.json' @{before_utc=$clockBefore.ToString('o');after_utc=[DateTime]::UtcNow.ToString('o');
-        host_utc=$hostUtc.ToString('o');adjusted_by_task=$false}
     Assert-Budget 'install-gpio'
     # GPIO gate must be visible when the replacement provider creates its v3 interface.
     Pnp 'install-GPIO' @('/add-driver',(Join-Path $PSScriptRoot 'Drivers\GPIO\GPIO.inf'),'/install')
