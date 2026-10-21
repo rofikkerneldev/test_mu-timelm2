@@ -1,0 +1,296 @@
+# SPDX-License-Identifier: BSD-2-Clause-Patent
+# Pure analysis of a copied GPIO touch trial evidence tree. No phone, no
+# hardware and no registry access: this file only reads JSON and text files
+# that were already collected from the phone.
+if (-not (Get-Command Get-FileHash -ErrorAction SilentlyContinue)) {
+    # Trimmed Windows PowerShell installs can lack the utility cmdlet; the
+    # shared helper provides a local SHA-256 fallback in that case.
+    . (Join-Path $PSScriptRoot 'TouchGpioCommon.ps1')
+}
+function Get-TouchGpioLogValue {
+    param([string[]]$Lines, [string]$Marker)
+    # The launcher appends one checkpoint block per save, so the last
+    # occurrence of a marker is the authoritative one for that boot.
+    $value = $null
+    foreach ($line in $Lines) {
+        $index = $line.IndexOf($Marker, [StringComparison]::Ordinal)
+        if ($index -lt 0) {continue}
+        $match = [regex]::Match($line.Substring($index + $Marker.Length), '0x[0-9a-fA-F]{16}')
+        if ($match.Success) {$value = $match.Value}
+    }
+    return $value
+}
+function Read-TouchGpioJson {
+    param([string]$Path)
+    if (!(Test-Path -LiteralPath $Path)) {return $null}
+    try {return Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json} catch {return $null}
+}
+function ConvertTo-TouchGpioItems {
+    param($Value)
+    # Windows PowerShell 5.1 can serialize a JSON array as {"value":[...],
+    # "Count":N}. Accept both shapes so a phone written collection is never
+    # misread as an empty result. The wrapper is only unwrapped when the
+    # object carries that exact pair of properties, because a single
+    # diagnostic entry also has a "value" property of its own.
+    if ($null -eq $Value) {return @()}
+    $items = @($Value)
+    if ($items.Count -eq 1) {
+        $single = $items[0]
+        if ($single -isnot [string] -and $single -isnot [ValueType] -and
+            $single.PSObject.Properties['value'] -and $single.PSObject.Properties['Count']) {
+            $inner = @($single.value)
+            if ($inner.Count -gt 0) {return $inner}
+        }
+    }
+    return $items
+}
+function Get-TouchGpioValue {
+    param([object[]]$Diagnostics, [string]$Device, [string]$Name)
+    if ($null -eq $Diagnostics) {return $null}
+    $match = @($Diagnostics | Where-Object {$_.device -ieq $Device -and $_.name -ieq $Name})
+    if ($match.Count -ne 1) {return $null}
+    return $match[0].value
+}
+function ConvertTo-TouchGpioBytes {
+    param($Value)
+    if ($null -eq $Value) {return $null}
+    if ($Value -is [byte[]]) {return ,$Value}
+    if ($Value -is [Array]) {return ,([byte[]]@($Value | ForEach-Object {[byte]$_}))}
+    return $null
+}
+function ConvertTo-TouchGpioIdentity {
+    param($Low, $High)
+    if ($null -eq $Low -or $null -eq $High) {return $null}
+    try {
+        $l = [uint64]$Low; $h = [uint64]$High
+    } catch {return $null}
+    $bytes = New-Object byte[] 8
+    for ($i = 0; $i -lt 4; ++$i) {$bytes[$i] = [byte](($l -shr (8*$i)) -band 0xFF)}
+    for ($i = 0; $i -lt 4; ++$i) {$bytes[4+$i] = [byte](($h -shr (8*$i)) -band 0xFF)}
+    return [Text.Encoding]::ASCII.GetString($bytes)
+}
+function Add-TouchGpioStep {
+    param([System.Collections.Specialized.OrderedDictionary]$Steps, [string]$Name,
+          [string]$Status, [string]$Detail)
+    $Steps[$Name] = [ordered]@{status=$Status;detail=$Detail}
+}
+function Get-TouchGpioResult {
+    param([Parameter(Mandatory=$true)][string]$Root, [bool]$TapSwipeObserved = $false)
+    $result = [ordered]@{
+        root = $Root
+        utc = [DateTime]::UtcNow.ToString('o')
+        verdict = 'no-evidence'
+        tap_swipe = 'user-confirmation-required'
+        steps = [ordered]@{}
+        facts = [ordered]@{}
+    }
+    $steps = $result.steps
+    $facts = $result.facts
+    $runtime = Join-Path $Root 'runtime'
+    if (!(Test-Path -LiteralPath (Join-Path $runtime 'attempt.json'))) {
+        Add-TouchGpioStep $steps 'runtime-attempt' 'missing' 'no attempt.json: the SYSTEM task never started on the phone'
+        return $result
+    }
+    Add-TouchGpioStep $steps 'runtime-attempt' 'proven' 'the SYSTEM task started and created the attempt receipt'
+    $bootLog = Join-Path $Root 'boot\timelm-touch-gpio.txt'
+    if (Test-Path -LiteralPath $bootLog) {
+        $lines = @(Get-Content -LiteralPath $bootLog)
+        $facts['boot_log_lines'] = $lines.Count
+        $restore = Get-TouchGpioLogValue $lines 'Restore status='
+        $gate = Get-TouchGpioLogValue $lines 'Enumeration namespace gate='
+        $install = Get-TouchGpioLogValue $lines 'Install enumeration SSDT='
+        $readback = Get-TouchGpioLogValue $lines 'Enumeration table readback='
+        $facts['boot_restore_status'] = $restore
+        $facts['boot_namespace_gate'] = $gate
+        $facts['boot_ssdt_install'] = $install
+        $facts['boot_ssdt_readback'] = $readback
+        $chainload = @($lines | Where-Object {$_ -like '*BEFORE StartImage (original Windows Boot Manager)*'}).Count -gt 0
+        $facts['boot_chainload_windows'] = $chainload
+        Add-TouchGpioStep $steps 'boot-restore-windows' $(if ($restore -eq '0x0000000000000000') {'proven'} else {'failed'}) `
+            ("last restore status " + $(if ($null -eq $restore) {'absent'} else {$restore}))
+        Add-TouchGpioStep $steps 'boot-namespace-gate' $(if ($gate -eq '0x0000000000000000') {'proven'} else {'failed'}) `
+            ("last namespace gate " + $(if ($null -eq $gate) {'absent'} else {$gate}))
+        Add-TouchGpioStep $steps 'boot-ssdt-installed' $(if ($install -eq '0x0000000000000000') {'proven'} else {'failed'}) `
+            ("last SSDT install " + $(if ($null -eq $install) {'absent'} else {$install}))
+        Add-TouchGpioStep $steps 'boot-ssdt-readback' $(if ($readback -eq '0x0000000000000000') {'proven'} else {'failed'}) `
+            ("last SSDT readback " + $(if ($null -eq $readback) {'absent'} else {$readback}))
+        Add-TouchGpioStep $steps 'boot-chainload-windows' $(if ($chainload) {'proven'} else {'missing'}) `
+            'the launcher handed the original Windows boot manager the kernel'
+    } else {
+        Add-TouchGpioStep $steps 'boot-restore-windows' 'missing' 'the EFI launcher log was not collected'
+    }
+    $package = Read-TouchGpioJson (Join-Path $runtime 'package.json')
+    $expectedSsdt = $null
+    if ($package -and $package.ssdt_sha256 -match '^[0-9a-fA-F]{64}$') {$expectedSsdt = $package.ssdt_sha256.ToUpperInvariant()}
+    $facts['expected_ssdt_sha256'] = $expectedSsdt
+    $before = @(Get-ChildItem -LiteralPath (Join-Path $runtime 'before') -Directory -ErrorAction SilentlyContinue)
+    $beforeFolder = if ($before.Count -eq 1) {$before[0].FullName} else {$null}
+    if ($beforeFolder) {
+        $ssdtFile = Join-Path $beforeFolder 'SSDT.dat'
+        if (Test-Path -LiteralPath $ssdtFile) {
+            $hash = (Get-FileHash -LiteralPath $ssdtFile).Hash.ToUpperInvariant()
+            $facts['observed_ssdt_sha256'] = $hash
+            Add-TouchGpioStep $steps 'trial-ssdt-visible-to-windows' `
+                $(if ($expectedSsdt -and $hash -eq $expectedSsdt) {'proven'} else {'failed'}) `
+                ("Windows first SSDT " + $hash + " expected " + $(if ($expectedSsdt) {$expectedSsdt} else {'unknown'}))
+        } else {
+            Add-TouchGpioStep $steps 'trial-ssdt-visible-to-windows' 'missing' 'the baseline collection has no SSDT.dat'
+        }
+        $tables = Read-TouchGpioJson (Join-Path $beforeFolder 'acpi-table-list.json')
+        if ($tables) {
+            $ssdtCount = @($tables.tables | Where-Object {$_.signature -eq 'SSDT'}).Count
+            $iortCount = @($tables.tables | Where-Object {$_.signature -eq 'IORT'}).Count
+            $facts['ssdt_table_count'] = $ssdtCount
+            $facts['iort_table_count'] = $iortCount
+            Add-TouchGpioStep $steps 'no-iort-installed' $(if ($iortCount -eq 0) {'proven'} else {'failed'}) `
+                ("IORT tables in the baseline: " + $iortCount)
+        } else {
+            Add-TouchGpioStep $steps 'no-iort-installed' 'missing' 'no acpi-table-list.json in the baseline collection'
+        }
+    } else {
+        Add-TouchGpioStep $steps 'trial-ssdt-visible-to-windows' 'missing' 'no baseline collection folder'
+        Add-TouchGpioStep $steps 'no-iort-installed' 'missing' 'no baseline collection folder'
+    }
+    $error = Read-TouchGpioJson (Join-Path $runtime 'trial-error.json')
+    if ($error) {
+        $facts['trial_error'] = $error.error
+        Add-TouchGpioStep $steps 'runtime-no-error' 'failed' ([string]$error.error)
+    } else {
+        Add-TouchGpioStep $steps 'runtime-no-error' 'proven' 'no trial-error.json was written'
+    }
+    $operations = Read-TouchGpioJson (Join-Path $runtime 'operations.json')
+    if ($operations) {
+        $bad = @($operations | Where-Object {$_.operation -like 'install-*' -and $_.exit_code -ne 0})
+        $facts['pnp_operations'] = @($operations).Count
+        Add-TouchGpioStep $steps 'pnp-installs' $(if ($bad.Count -eq 0) {'proven'} else {'failed'}) `
+            ("install operations with a non-zero exit code: " + $bad.Count)
+    } else {
+        Add-TouchGpioStep $steps 'pnp-installs' 'missing' 'no operations.json'
+    }
+    foreach ($packageName in @('GPIO','Host','Touch')) {
+        $selected = Read-TouchGpioJson (Join-Path $runtime ('selected-' + $packageName + '-inf.json'))
+        if ($selected -and $selected.matches -eq $true) {
+            Add-TouchGpioStep $steps ('selected-inf-' + $packageName.ToLowerInvariant()) 'proven' `
+                ([string]$selected.inf + ' matches the staged package hash')
+        } else {
+            Add-TouchGpioStep $steps ('selected-inf-' + $packageName.ToLowerInvariant()) 'failed' `
+                'the device did not select the staged driver package'
+        }
+    }
+    $after = @(Get-ChildItem -LiteralPath (Join-Path $runtime 'after') -Directory -ErrorAction SilentlyContinue)
+    $afterFolder = if ($after.Count -eq 1) {$after[0].FullName} else {$null}
+    $diagnostics = $null
+    $entities = $null
+    if ($afterFolder) {
+        $diagnostics = ConvertTo-TouchGpioItems (Read-TouchGpioJson (Join-Path $afterFolder 'touch-driver-diagnostics.json'))
+        $entities = ConvertTo-TouchGpioItems (Read-TouchGpioJson (Join-Path $afterFolder 'pnp-entities.json'))
+    }
+    $stage = Get-TouchGpioValue $diagnostics 'TIML0001' 'TimelmBitbangStage'
+    $facts['host_bitbang_stage'] = $stage
+    Add-TouchGpioStep $steps 'gpio-provider-v3' $(if ($null -ne $stage -and [uint64]$stage -ge 3) {'proven'} else {'missing'}) `
+        ("host GPIO stage " + $(if ($null -eq $stage) {'absent'} else {$stage}) + " (3 means the V3 interface was queried)")
+    # The trial SSDT publishes three output power pins (38, 67, 68) and the
+    # bus pair (36, 37). Windows may publish the pair as one connection
+    # resource or as one resource per pin, so 4 and 5 are both valid.
+    $pinCount = Get-TouchGpioValue $diagnostics 'TIML0001' 'TimelmBitbangPinCount'
+    $facts['host_bitbang_pin_count'] = $pinCount
+    $pinIds = @()
+    for ($i = 0; $i -lt 5; ++$i) {
+        $pinValue = Get-TouchGpioValue $diagnostics 'TIML0001' ('TimelmBitbangPinId' + $i)
+        if ($null -ne $pinValue) { $pinIds += [uint64]$pinValue }
+    }
+    $facts['host_bitbang_pin_ids'] = $pinIds
+    $shapeDetail = 'connection resources absent'
+    $shapeStatus = 'missing'
+    if ($null -ne $pinCount) {
+        $count = [uint64]$pinCount
+        $expected = switch ($count) { 4 {@(38, 67, 68, 36)} 5 {@(38, 67, 68, 36, 37)} default {@()} }
+        if ($expected.Count -eq 0) {
+            $shapeStatus = 'failed'
+            $shapeDetail = "unexpected connection count $count"
+        } elseif ($pinIds.Count -ne $expected.Count) {
+            $shapeStatus = 'failed'
+            $shapeDetail = ("connection count $count but " + $pinIds.Count + " pin identifiers were recorded")
+        } else {
+            $mismatch = @()
+            for ($i = 0; $i -lt $expected.Count; ++$i) {
+                if ($pinIds[$i] -ne [uint64]$expected[$i]) { $mismatch += $i }
+            }
+            if ($mismatch.Count) {
+                $shapeStatus = 'failed'
+                $shapeDetail = ("connection count $count with unexpected pin identifiers: " + ($pinIds -join ','))
+            } else {
+                $shapeStatus = 'proven'
+                $shapeDetail = ("connection count $count, pins " + ($pinIds -join ','))
+            }
+        }
+    }
+    Add-TouchGpioStep $steps 'gpio-resource-shape' $shapeStatus $shapeDetail
+    foreach ($counter in @('TimelmBitbangTransfers', 'TimelmBitbangFailures', 'TimelmBitbangLastStatus',
+                            'TimelmBitbangRetained', 'TimelmBitbangStopStatus')) {
+        $value = Get-TouchGpioValue $diagnostics 'TIML0001' $counter
+        if ($null -ne $value) { $facts['host_' + $counter.Substring('TimelmBitbang'.Length).ToLowerInvariant()] = $value }
+    }
+    $idle = Get-TouchGpioValue $diagnostics 'TIML0001' 'TimelmBitbangIdleLines'
+    $facts['host_idle_lines'] = $idle
+    Add-TouchGpioStep $steps 'idle-lines-high' $(if ($null -ne $idle -and [uint64]$idle -eq 3) {'proven'} else {'missing'}) `
+        ("idle line sample " + $(if ($null -eq $idle) {'absent'} else {$idle}) + " (3 means SCL and SDA are high)")
+    $identityStatus = Get-TouchGpioValue $diagnostics 'TIML0001' 'TimelmBitbangIdentityStatus'
+    $identity = ConvertTo-TouchGpioIdentity `
+        (Get-TouchGpioValue $diagnostics 'TIML0001' 'TimelmBitbangIdentity0') `
+        (Get-TouchGpioValue $diagnostics 'TIML0001' 'TimelmBitbangIdentity1')
+    $facts['host_identity_status'] = $identityStatus
+    $facts['host_identity'] = $identity
+    Add-TouchGpioStep $steps 'chip-identity' `
+        $(if ($null -ne $identityStatus -and [uint64]$identityStatus -eq 0 -and $identity -ceq 'B3W68TIM') {'proven'} else {'missing'}) `
+        ("identity " + $(if ($null -eq $identity) {'absent'} else {$identity}) + " status " + $(if ($null -eq $identityStatus) {'absent'} else {$identityStatus}))
+    $hostStatus = Get-TouchGpioValue $diagnostics 'TIML0001' 'TimelmBitbangStatus'
+    $facts['host_status'] = $hostStatus
+    $hostEntity = @($entities | Where-Object {$_.PNPDeviceID -like 'ACPI\TIML0001\*'})
+    $hostError = if ($hostEntity.Count -eq 1) {$hostEntity[0].ConfigManagerErrorCode} else {$null}
+    $facts['host_config_manager_error'] = $hostError
+    Add-TouchGpioStep $steps 'host-code-0' `
+        $(if ($null -ne $hostStatus -and [uint64]$hostStatus -eq 0 -and $null -ne $hostError -and [uint64]$hostError -eq 0) {'proven'} else {'missing'}) `
+        ("host status " + $(if ($null -eq $hostStatus) {'absent'} else {$hostStatus}) + " device code " + $(if ($null -eq $hostError) {'absent'} else {$hostError}))
+    $touchStatus = Get-TouchGpioValue $diagnostics 'LGSW4290' 'TimelmTouchStartStatus'
+    $productBytes = ConvertTo-TouchGpioBytes (Get-TouchGpioValue $diagnostics 'LGSW4290' 'TimelmTouchProductId')
+    $product = if ($productBytes) {[Text.Encoding]::ASCII.GetString($productBytes)} else {$null}
+    $facts['touch_start_status'] = $touchStatus
+    $facts['touch_product_id'] = $product
+    $touchEntity = @($entities | Where-Object {$_.PNPDeviceID -like 'ACPI\LGSW4290\*'})
+    $touchError = if ($touchEntity.Count -eq 1) {$touchEntity[0].ConfigManagerErrorCode} else {$null}
+    $facts['touch_config_manager_error'] = $touchError
+    Add-TouchGpioStep $steps 'touch-code-0' `
+        $(if ($null -ne $touchStatus -and [uint64]$touchStatus -eq 0 -and $null -ne $touchError -and [uint64]$touchError -eq 0 -and $product -ceq 'B3W68TIM') {'proven'} else {'missing'}) `
+        ("touch start " + $(if ($null -eq $touchStatus) {'absent'} else {$touchStatus}) + " product " + $(if ($null -eq $product) {'absent'} else {$product}) + " device code " + $(if ($null -eq $touchError) {'absent'} else {$touchError}))
+    $irqs = Get-TouchGpioValue $diagnostics 'LGSW4290' 'TimelmTouchIrqs'
+    $decoded = Get-TouchGpioValue $diagnostics 'LGSW4290' 'TimelmTouchDecoded'
+    $facts['touch_irqs'] = $irqs
+    $facts['touch_decoded_reports'] = $decoded
+    Add-TouchGpioStep $steps 'irq-and-reports' `
+        $(if ($null -ne $irqs -and [uint64]$irqs -gt 0 -and $null -ne $decoded -and [uint64]$decoded -gt 0) {'proven'} else {'missing'}) `
+        ("interrupts " + $(if ($null -eq $irqs) {'absent'} else {$irqs}) + " decoded reports " + $(if ($null -eq $decoded) {'absent'} else {$decoded}))
+    $window = Read-TouchGpioJson (Join-Path $runtime 'touch-window.json')
+    Add-TouchGpioStep $steps 'test-window' $(if ($window) {'proven'} else {'missing'}) `
+        $(if ($window) {('the desktop test window opened at ' + $window.utc)} else {'no touch-window.json: the driver never reached the test window'})
+    Add-TouchGpioStep $steps 'tap-and-swipe' $(if ($TapSwipeObserved) {'proven'} else {'missing'}) `
+        $(if ($TapSwipeObserved) {'the user reported a real tap and swipe'} else {'no user confirmation was recorded'})
+    $ordered = @('runtime-attempt','boot-restore-windows','boot-namespace-gate','boot-ssdt-installed','boot-ssdt-readback',
+        'boot-chainload-windows','trial-ssdt-visible-to-windows','no-iort-installed','runtime-no-error','pnp-installs',
+        'selected-inf-gpio','selected-inf-host','selected-inf-touch','gpio-provider-v3','gpio-resource-shape',
+        'idle-lines-high','chip-identity','host-code-0','touch-code-0','irq-and-reports','test-window','tap-and-swipe')
+    # A step that is missing is not a proof. Only a fully proven chain may be
+    # reported as hardware evidence, and only the user can confirm the tap.
+    $core = @($ordered | Where-Object {$_ -ne 'tap-and-swipe'})
+    $unproven = @($core | Where-Object {(!$steps.Contains($_)) -or $steps[$_].status -ne 'proven'})
+    $failed = @($ordered | Where-Object {$steps.Contains($_) -and $steps[$_].status -eq 'failed'})
+    $tapProven = $steps.Contains('tap-and-swipe') -and $steps['tap-and-swipe'].status -eq 'proven'
+    $result['failed_steps'] = $failed
+    $result['unproven_steps'] = $unproven
+    if ($unproven.Count -eq 0) {
+        $result['verdict'] = if ($tapProven) {'accepted'} else {'hardware-chain-proven-awaiting-user-confirmation'}
+    } else {
+        $result['verdict'] = 'incomplete'
+    }
+    return $result
+}
