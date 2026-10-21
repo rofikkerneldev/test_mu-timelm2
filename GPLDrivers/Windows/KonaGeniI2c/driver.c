@@ -117,7 +117,6 @@ NTSTATUS GeniAdd(WDFDRIVER driver, PWDFDEVICE_INIT init)
     WdfDeviceInitSetPnpPowerEventCallbacks(init, &pnp);
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attributes, DEVICE_CONTEXT);
     attributes.ExecutionLevel = WdfExecutionLevelPassive;
-    attributes.SynchronizationScope = WdfSynchronizationScopeDevice;
     status = WdfDeviceCreate(&init, &attributes, &device);
     if (!NT_SUCCESS(status)) return AddRecord(driver, 2, status);
     SPB_CONTROLLER_CONFIG_INIT(&spb);
