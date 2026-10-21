@@ -169,7 +169,12 @@ function Get-TouchGpioResult {
     }
     foreach ($packageName in @('GPIO','Host','Touch')) {
         $selected = Read-TouchGpioJson (Join-Path $runtime ('selected-' + $packageName + '-inf.json'))
-        if ($selected -and $selected.matches -eq $true) {
+        if ($null -eq $selected) {
+            # No receipt means the device was never offered the package, so
+            # this is missing evidence rather than a proven mismatch.
+            Add-TouchGpioStep $steps ('selected-inf-' + $packageName.ToLowerInvariant()) 'missing' `
+                'the trial never recorded a driver selection for this package'
+        } elseif ($selected.matches -eq $true) {
             Add-TouchGpioStep $steps ('selected-inf-' + $packageName.ToLowerInvariant()) 'proven' `
                 ([string]$selected.inf + ' matches the staged package hash')
         } else {
