@@ -63,6 +63,9 @@ jobs:
           ./Resources/Scripts/build_sw42902_touch.ps1
       - shell: powershell
         run: ./Resources/Scripts/Collect-TimelmDiagnostics.ps1 -ValidateOnly
+      - name: Validate one-boot GPIO touch helpers without touching hardware
+        shell: powershell
+        run: ./Resources/Scripts/TouchGpio/Test-TouchGpioGuards.ps1
       - uses: actions/upload-artifact@v4
         if: always()
         with:

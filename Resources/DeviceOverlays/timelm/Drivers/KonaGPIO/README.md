@@ -44,6 +44,11 @@ query interface, version 3. It is disabled unless `TouchBusGpioEnabled=1` is
 present in the GPIO device's hardware key. `TimelmGpioBitbangGate` records the
 effective gate read during controller preparation. The v2 ABI remains unchanged.
 
+All three query interfaces are registered once per controller device context.
+Successful registrations survive hardware stop/release; a later prepare only
+retries registrations that previously failed. This prevents repeated entries
+when the GPIO device is restarted, including a partial initial allocation failure.
+
 V3 is limited to SDA GPIO36 and SCL GPIO37. The caller must first hold both
 exclusive Resource Hub **input** connections. `SetGpioMode(TRUE)` then saves
 the pin configuration and output latches and selects GPIO/open drain. HIGH

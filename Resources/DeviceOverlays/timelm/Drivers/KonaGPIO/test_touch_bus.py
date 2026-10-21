@@ -13,7 +13,7 @@ import tempfile
 HERE = Path(__file__).resolve().parent
 added = "\n".join(line[1:] for line in (HERE / "timelm-touch.patch").read_text().splitlines()
                   if line.startswith("+") and not line.startswith("+++"))
-begin = added.index("/* Private fixed-pin open-drain interface.")
+begin = added.index("/* Device-lifetime query interfaces.")
 end = added.index("/* End fixed touch bus callbacks. */", begin)
 production = added[begin:end]
 
@@ -28,8 +28,23 @@ typedef uintptr_t ULONG_PTR;
 typedef int32_t LONG, NTSTATUS;
 typedef void VOID, *PVOID;
 typedef unsigned char BOOLEAN, *PBOOLEAN;
+typedef unsigned short USHORT;
 typedef unsigned KIRQL, KSPIN_LOCK;
 typedef void *WDFDEVICE;
+typedef struct {
+ USHORT Size, Version; PVOID Context;
+ VOID (*InterfaceReference)(PVOID); VOID (*InterfaceDereference)(PVOID);
+} INTERFACE, *PINTERFACE;
+#define DEFINE_GUID(name,...) static const unsigned name=__COUNTER__
+#include "TouchBus.h"
+static const unsigned GUID_TLMM_INTERFACE=1000;
+typedef struct {
+ INTERFACE Interface; NTSTATUS (*ConfigurePinMux)(PVOID,USHORT,unsigned char);
+} TLMM_INTERFACE;
+typedef struct { PINTERFACE Interface; const unsigned *Guid; } WDF_QUERY_INTERFACE_CONFIG;
+#define WDF_QUERY_INTERFACE_CONFIG_INIT(q,i,g,unused) do { (q)->Interface=(i); (q)->Guid=(g); } while(0)
+#define RtlZeroMemory(p,n) memset((p),0,(n))
+#define TraceEvents(...) ((void)0)
 #define TRUE 1
 #define FALSE 0
 #define STATUS_SUCCESS ((NTSTATUS)0)
@@ -39,6 +54,7 @@ typedef void *WDFDEVICE;
 #define STATUS_DEVICE_BUSY ((NTSTATUS)-4)
 #define STATUS_DEVICE_CONFIGURATION_ERROR ((NTSTATUS)-5)
 #define STATUS_INVALID_PARAMETER ((NTSTATUS)-6)
+#define STATUS_INSUFFICIENT_RESOURCES ((NTSTATUS)-7)
 #define NT_SUCCESS(s) ((s)>=0)
 #define BIT(n) (1u << (n))
 #define MUX_MASK 0x3cu
@@ -51,11 +67,12 @@ typedef void *WDFDEVICE;
 typedef struct {
  ULONG_PTR Base; ULONG Length; volatile LONG TouchBusActive;
  ULONG TouchBusSaved[2]; KSPIN_LOCK TouchGpioLock;
- BOOLEAN TouchGpioLockReady, TouchGpioEnabled; ULONG TouchPinsConnected;
+ BOOLEAN TouchGpioLockReady, TouchGpioEnabled; ULONG TouchPinsConnected, TouchInterfacesAdded;
  ULONG TouchGpioSavedCtl[2], TouchGpioSavedIo[2]; WDFDEVICE TouchDevice;
 } GPIO_DEVICE_CONTEXT, *PGPIO_DEVICE_CONTEXT;
 static ULONG registers[(SOUTH+IO_REG(37)+4u)/4u];
 static unsigned writes, drop_write, high_drives, scl_rises, references;
+static unsigned query_calls, fail_query_call, registered_interfaces, successful_queries[3];
 static unsigned log_pins[100], log_count;
 static int external_low[2];
 static ULONG *ctl(unsigned pin) { return &registers[(SOUTH+CTL_REG(pin))/4]; }
@@ -87,12 +104,38 @@ static LONG InterlockedCompareExchange(volatile LONG *p,LONG to,LONG expected) {
 static LONG InterlockedExchange(volatile LONG *p,LONG to) { LONG old=*p; *p=to; return old; }
 static void WdfObjectReference(WDFDEVICE d) { assert(d); ++references; }
 static void WdfObjectDereference(WDFDEVICE d) { assert(d&&references); --references; }
+static void WdfDeviceInterfaceReferenceNoOp(PVOID c) { (void)c; }
+static void WdfDeviceInterfaceDereferenceNoOp(PVOID c) { (void)c; }
+static NTSTATUS GPIOConfigurePinMux(PVOID c,USHORT pin,unsigned char mux) {
+ (void)c; (void)pin; (void)mux; return STATUS_SUCCESS;
+}
+VOID GPIOTouchReference(PVOID c);
+VOID GPIOTouchDereference(PVOID c);
+NTSTATUS GPIOTouchBus(PVOID c,BOOLEAN enable);
+NTSTATUS GPIOTouchGpioMode(PVOID c,BOOLEAN enable);
+NTSTATUS GPIOTouchSetLines(PVOID c,BOOLEAN scl,BOOLEAN sda);
+NTSTATUS GPIOTouchGetLines(PVOID c,PBOOLEAN scl,PBOOLEAN sda);
+static NTSTATUS WdfDeviceAddQueryInterface(WDFDEVICE d,WDF_QUERY_INTERFACE_CONFIG *q) {
+ unsigned index=q->Guid==&GUID_TIMELM_TOUCH_BUS ? 0 : q->Guid==&GUID_TIMELM_TOUCH_BUS_V3 ? 1 : 2;
+ assert(d&&q->Interface&&q->Interface->Context==d);
+ assert(q->Guid==&GUID_TIMELM_TOUCH_BUS||q->Guid==&GUID_TIMELM_TOUCH_BUS_V3||q->Guid==&GUID_TLMM_INTERFACE);
+ assert(q->Interface->Version==(index==0?2:index==1?3:1));
+ assert(q->Interface->Size==(index==0?sizeof(TIMELM_TOUCH_BUS):index==1?sizeof(TIMELM_TOUCH_BUS_V3):sizeof(TLMM_INTERFACE)));
+ ++query_calls;
+ if(query_calls==fail_query_call) return STATUS_INSUFFICIENT_RESOURCES;
+ /* KMDF appends entries. Our provider must never ask twice per device. */
+ assert(!(registered_interfaces&(1u<<index)));
+ registered_interfaces|=1u<<index; ++successful_queries[index];
+ return STATUS_SUCCESS;
+}
 '''
 
 TEST = r'''
 static void reset(GPIO_DEVICE_CONTEXT *c) {
  memset(c,0,sizeof(*c)); memset(registers,0,sizeof(registers));
  writes=drop_write=high_drives=scl_rises=log_count=references=0;
+ query_calls=fail_query_call=registered_interfaces=0;
+ memset(successful_queries,0,sizeof(successful_queries));
  external_low[0]=external_low[1]=0;
  c->Base=(ULONG_PTR)registers; c->Length=sizeof(registers);
  c->TouchGpioLockReady=c->TouchGpioEnabled=TRUE;
@@ -102,6 +145,23 @@ static void reset(GPIO_DEVICE_CONTEXT *c) {
 }
 int main(void) {
  GPIO_DEVICE_CONTEXT c; BOOLEAN scl,sda;
+ /* Successful entries persist across stop/reprepare; retry only unfinished
+  * registrations after any single allocation failure. */
+ for(unsigned failed=0;failed<=3;++failed) {
+  reset(&c); fail_query_call=failed;
+  NTSTATUS status=GPIOTouchRegisterInterfaces(&c,&c);
+  assert(status==(failed?STATUS_INSUFFICIENT_RESOURCES:STATUS_SUCCESS));
+  assert(c.TouchInterfacesAdded==(failed?((1u<<(failed-1))-1u):7u));
+  fail_query_call=0;
+  assert(GPIOTouchRegisterInterfaces(&c,&c)==STATUS_SUCCESS);
+  assert(c.TouchInterfacesAdded==7u&&registered_interfaces==7u);
+  assert(successful_queries[0]==1&&successful_queries[1]==1&&successful_queries[2]==1);
+  unsigned before=query_calls;
+  c.Base=0; /* release hardware does not destroy the WDFDEVICE/query list */
+  assert(GPIOTouchRegisterInterfaces(&c,&c)==STATUS_SUCCESS&&query_calls==before);
+  c.Base=(ULONG_PTR)registers;
+  assert(GPIOTouchRegisterInterfaces(&c,&c)==STATUS_SUCCESS&&query_calls==before);
+ }
  reset(&c); c.TouchGpioEnabled=FALSE;
  assert(GPIOTouchGpioMode(&c,TRUE)==STATUS_NOT_SUPPORTED && writes==0);
  reset(&c); c.TouchPinsConnected=1;
@@ -163,7 +223,7 @@ int main(void) {
  assert(GPIOTouchGetLines(&c,NULL,&sda)==STATUS_INVALID_PARAMETER);
  c.Base=0;
  assert(GPIOTouchSetLines(&c,TRUE,TRUE)==STATUS_DEVICE_NOT_READY);
- puts("Actual GPIO v3 provider: ownership, electrical order, input levels, rollback and retention passed");
+ puts("Actual GPIO provider: restart/partial registration, ownership, electrical order, input levels, rollback and retention passed");
  return 0;
 }
 '''

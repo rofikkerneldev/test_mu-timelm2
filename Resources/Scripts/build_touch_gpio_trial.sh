@@ -37,7 +37,7 @@ meta=dict(commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).s
     subsystem='EFI application',imports=[],probe_version=1,
     log='timelm-touch-gpio.txt',restores_windows_first=True,windows_chainload=True,
     smmu_access=False,iort_installed=False,usb_requests=False,clock_requests=False,persistent_acpi=False,
-    requires_no_matching_drivers=False,gpio_touch_trial=True,
+    requires_no_matching_drivers=False,gpio_touch_trial=True,bbtrial=True,
     ssdt_sha256=hashlib.sha256((out/'TouchGpio.aml').read_bytes()).hexdigest(),
     windows_reference=json.load(open('Platforms/LG/timelmPkg/Applications/I2cClockDiag/WindowsBootReference.json')))
 (out/'touch-gpio.json').write_text(json.dumps(meta,indent=2)+'\n')
