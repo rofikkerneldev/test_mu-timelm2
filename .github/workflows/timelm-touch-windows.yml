@@ -13,6 +13,11 @@ on:
       - 'Resources/Scripts/Collect-TimelmRecoveryTouch.sh'
       - 'Resources/Scripts/build_touch_dma_check.sh'
       - 'Platforms/LG/timelmPkg/Applications/TouchDmaCheck/**'
+      - 'Platforms/LG/timelmPkg/Applications/TouchEnumeration/**'
+      - 'Platforms/LG/timelmPkg/Applications/I2cClockDiag/OneShot.h'
+      - 'Resources/Scripts/build_touch_enumeration.sh'
+      - 'Resources/Scripts/generate_touch_enumeration.py'
+      - 'Resources/Scripts/TouchEnumeration/**'
       - 'Platforms/LG/timelmPkg/Experimental/TouchWindows.asl'
       - 'Platforms/LG/timelmPkg/Experimental/**'
       - 'Resources/Scripts/build_timelm_touch_iort.py'
@@ -30,6 +35,11 @@ on:
       - 'Resources/Scripts/Collect-TimelmRecoveryTouch.sh'
       - 'Resources/Scripts/build_touch_dma_check.sh'
       - 'Platforms/LG/timelmPkg/Applications/TouchDmaCheck/**'
+      - 'Platforms/LG/timelmPkg/Applications/TouchEnumeration/**'
+      - 'Platforms/LG/timelmPkg/Applications/I2cClockDiag/OneShot.h'
+      - 'Resources/Scripts/build_touch_enumeration.sh'
+      - 'Resources/Scripts/generate_touch_enumeration.py'
+      - 'Resources/Scripts/TouchEnumeration/**'
       - 'Platforms/LG/timelmPkg/Experimental/TouchWindows.asl'
       - 'Platforms/LG/timelmPkg/Experimental/**'
       - 'Resources/Scripts/build_timelm_touch_iort.py'
@@ -132,6 +142,11 @@ jobs:
         run: |
           git submodule update --init --depth 1 Mu_Basecore
           bash Resources/Scripts/build_touch_dma_check.sh
+          bash Resources/Scripts/build_touch_enumeration.sh
+          gcc -std=c11 -fshort-wchar -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+            -I Mu_Basecore/MdePkg/Include -I Mu_Basecore/MdePkg/Include/X64 -I Build/TouchEnumeration \
+            Platforms/LG/timelmPkg/Applications/TouchEnumeration/trial_test.c -o /tmp/touch-enum-test
+          /tmp/touch-enum-test
       - uses: actions/upload-artifact@v4
         with:
           name: timelm-native-touch-acpi-disabled
@@ -146,4 +161,13 @@ jobs:
           path: |
             Build/TouchDmaCheck/TouchDmaCheckOnce.efi
             Build/TouchDmaCheck/touch-dma-check.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: timelm-touch-enumeration-once
+          path: |
+            Build/TouchEnumeration/TouchEnumerationOnce.efi
+            Build/TouchEnumeration/touch-enumeration.json
+            Build/TouchEnumeration/touch-enumeration-acpi.json
+            Build/TouchEnumeration/TouchEnumeration.aml
           if-no-files-found: error
