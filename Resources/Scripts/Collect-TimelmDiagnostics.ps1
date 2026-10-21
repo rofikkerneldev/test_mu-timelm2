@@ -156,7 +156,7 @@ Capture 'acpi-table-list' {
         note='Windows GetSystemFirmwareTable returns only the first table for a repeated signature.'})
 }
 # A narrow allowlist avoids exporting licensing tables or unrelated firmware data.
-foreach ($signature in @('DSDT','FACP','IORT','APIC','GTDT')) {
+foreach ($signature in @('DSDT','SSDT','FACP','IORT','APIC','GTDT')) {
     Capture ('acpi-' + $signature) {
         $id = [BitConverter]::ToUInt32([Text.Encoding]::ASCII.GetBytes($signature), 0)
         # DSDT is reached through FADT, so it need not appear in the root-table
@@ -166,7 +166,8 @@ foreach ($signature in @('DSDT','FACP','IORT','APIC','GTDT')) {
         [IO.File]::WriteAllBytes((Join-Path $folder ($signature + '.dat')), $bytes)
         $sum = 0
         foreach ($b in $bytes) { $sum = ($sum + $b) -band 255 }
-        Write-JsonFile ($signature + '-validation.json') ([ordered]@{length=$bytes.Length;checksum_valid=($sum -eq 0)})
+        Write-JsonFile ($signature + '-validation.json') ([ordered]@{length=$bytes.Length;checksum_valid=($sum -eq 0);
+            oem_table_id=[Text.Encoding]::ASCII.GetString($bytes,16,8);sha256=(Get-FileHash -LiteralPath (Join-Path $folder ($signature + '.dat'))).Hash})
     }
 }
 Capture 'display-native' { Write-JsonFile 'display-native.json' ([TimelmDisplay]::Query()) }
