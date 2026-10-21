@@ -60,4 +60,5 @@ if ($Artifact) {
     . (Join-Path $PSScriptRoot 'TouchGpioCommon.ps1')
     $null = Get-TouchGpioManifest $Artifact
 }
-'PASS: all GPIO trial scripts parse and the actual runtime runner rejects this PC before clock, certificate, registry, installation or shutdown operations.'
+& (Join-Path $PSScriptRoot 'Test-TouchGpioPackage.ps1')
+'PASS: all GPIO trial scripts parse, the runtime runner rejects this PC before clock, certificate, registry, installation or shutdown operations, and the bundle builder only produces a verifiable package.'

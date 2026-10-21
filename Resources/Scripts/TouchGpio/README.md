@@ -1,5 +1,24 @@
 # One-boot GPIO touch trial
 
+`Build-TouchGpioPackage.ps1` assembles the verified bundle on the build PC:
+
+```powershell
+./Resources/Scripts/TouchGpio/Build-TouchGpioPackage.ps1 `
+  -GpioPackage <kona-packages\GPIO> -HostPackage <KonaGeniI2c\out\ARM64\Debug\kona_geni> `
+  -TouchPackage <Sw42902Touch\out\ARM64\Debug\sw42902> -Trial <Build\TouchGpio> `
+  -InstalledInfFolder <mounted phone Windows\INF> -Output <new bundle folder>
+```
+
+It reads only build outputs and the phone's installed INF set. Each package
+must contain the expected INF, catalog and SYS; a missing certificate is taken
+from the signer of the signed driver. The INF catalog and hardware ID must
+match the manifest identity, and every installed INF matching that hardware ID
+is recorded as a reviewed replacement. The launcher, SSDT and their recorded
+hashes must match, the launcher must be an ARM64 EFI application and the
+metadata must describe a restore-first GPIO-only trial. The finished bundle is
+re-read with the runtime manifest check, so a bundle that the phone bootstrap
+would reject is never produced. The output directory must not exist.
+
 `Stage-TouchGpioTrial.ps1 -Artifact <verified bundle> -Output <new PC receipt folder>`
 checks the exact USB serial, disk size, Windows/ESP partition geometry, marker,
 package hashes, reviewed installed INF hashes, SSDT and original Windows EFI.

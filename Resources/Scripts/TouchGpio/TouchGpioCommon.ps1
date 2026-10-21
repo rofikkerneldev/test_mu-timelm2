@@ -1,4 +1,19 @@
 # Shared read-only validation. Importing this file does not change the machine.
+if (-not (Get-Command Get-FileHash -ErrorAction SilentlyContinue)) {
+    # Some trimmed Windows PowerShell installs ship the utility module without
+    # Get-FileHash. Compute SHA-256 directly so the trial never depends on it.
+    function Get-FileHash {
+        param([Parameter(Mandatory=$true)][string]$LiteralPath, [string]$Algorithm = 'SHA256')
+        $stream = [IO.File]::OpenRead($LiteralPath)
+        try {
+            $hash = [Security.Cryptography.HashAlgorithm]::Create($Algorithm)
+            try {
+                return [pscustomobject]@{Path=$LiteralPath;Algorithm=$Algorithm;
+                    Hash=([BitConverter]::ToString($hash.ComputeHash($stream))).Replace('-','')}
+            } finally {$hash.Dispose()}
+        } finally {$stream.Dispose()}
+    }
+}
 function Get-TouchGpioManifest([string]$Root) {
     $manifest = Get-Content -LiteralPath (Join-Path $Root 'package.json') -Raw | ConvertFrom-Json
     if ($manifest.schema -ne 1 -or $manifest.trial -ne 'touch-gpio-v1' -or
