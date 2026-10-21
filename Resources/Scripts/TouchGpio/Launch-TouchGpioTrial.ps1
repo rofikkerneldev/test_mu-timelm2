@@ -48,9 +48,11 @@ try {
     $existing = Get-ScheduledTask -TaskName $taskName -TaskPath '\' -ErrorAction SilentlyContinue
     $replacedStaleTask = $false
     if ($existing) {
+        # The SYSTEM account is written in several shapes by the task service.
+        $systemAccounts = @('SYSTEM','S-1-5-18','NT AUTHORITY\SYSTEM')
         if (@($existing.Actions).Count -ne 1 -or $existing.Actions[0].Execute -ine $exe -or
             $existing.Actions[0].Arguments -cne $arguments -or
-            $existing.Principal.UserId -notin @('SYSTEM','S-1-5-18')) {throw 'Trial task already exists; refusing to overwrite or rearm it'}
+            $existing.Principal.UserId -notin $systemAccounts) {throw 'Trial task already exists; refusing to overwrite or rearm it'}
         Unregister-ScheduledTask -TaskName $taskName -TaskPath '\' -Confirm:$false
         $replacedStaleTask = $true
     }
@@ -65,7 +67,8 @@ try {
     $null = Register-ScheduledTask -TaskName $taskName -TaskPath '\' -InputObject $task
     $check = Get-ScheduledTask -TaskName $taskName -TaskPath '\'
     if (@($check.Actions).Count -ne 1 -or $check.Actions[0].Execute -ine $exe -or
-        $check.Actions[0].Arguments -cne $arguments -or $check.Principal.UserId -notin @('SYSTEM','S-1-5-18')) {throw 'Registered trial task identity mismatch'}
+        $check.Actions[0].Arguments -cne $arguments -or
+        $check.Principal.UserId -notin @('SYSTEM','S-1-5-18','NT AUTHORITY\SYSTEM')) {throw 'Registered trial task identity mismatch'}
     Start-ScheduledTask -TaskName $taskName -TaskPath '\'
     [ordered]@{phase='system-task-started';utc=[DateTime]::UtcNow.ToString('o');task=$taskName;executable=$exe;arguments=$arguments;
         script_sha256=(Get-FileHash -LiteralPath $script).Hash;execution_limit_minutes=120;
