@@ -14,7 +14,9 @@ on:
       - 'Resources/Scripts/build_touch_dma_check.sh'
       - 'Platforms/LG/timelmPkg/Applications/TouchDmaCheck/**'
       - 'Platforms/LG/timelmPkg/Experimental/TouchWindows.asl'
-      - 'Platforms/LG/timelmPkg/Experimental/TouchGpiWindows.asl'
+      - 'Platforms/LG/timelmPkg/Experimental/**'
+      - 'Resources/Scripts/build_timelm_touch_iort.py'
+      - 'Resources/Scripts/tests/test_timelm_touch_iort.py'
       - '.github/workflows/timelm-touch-windows.yml'
   pull_request:
     paths:
@@ -29,7 +31,9 @@ on:
       - 'Resources/Scripts/build_touch_dma_check.sh'
       - 'Platforms/LG/timelmPkg/Applications/TouchDmaCheck/**'
       - 'Platforms/LG/timelmPkg/Experimental/TouchWindows.asl'
-      - 'Platforms/LG/timelmPkg/Experimental/TouchGpiWindows.asl'
+      - 'Platforms/LG/timelmPkg/Experimental/**'
+      - 'Resources/Scripts/build_timelm_touch_iort.py'
+      - 'Resources/Scripts/tests/test_timelm_touch_iort.py'
       - '.github/workflows/timelm-touch-windows.yml'
 permissions:
   contents: read
@@ -92,6 +96,12 @@ jobs:
             GPLDrivers/Windows/KonaGeniI2c/geni_gpi.c -o /tmp/touch-gpi-test
           /tmp/touch-gpi-test
           gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+            -IGPLDrivers/Windows/KonaGeniI2c/tests/iommu_shim \
+            GPLDrivers/Windows/KonaGeniI2c/tests/iommu_test.c \
+            GPLDrivers/Windows/KonaGeniI2c/iommu_windows.c -o /tmp/touch-iommu-test
+          /tmp/touch-iommu-test
+          python3 Resources/Scripts/tests/test_timelm_touch_iort.py
+          gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
             GPLDrivers/Windows/Sw42902Touch/tests/protocol_test.c -o /tmp/touch-protocol-test
           /tmp/touch-protocol-test
           gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
@@ -115,6 +125,9 @@ jobs:
           sudo apt-get install -y acpica-tools clang lld
           iasl -ve -p /tmp/TouchWindows Platforms/LG/timelmPkg/Experimental/TouchWindows.asl
           iasl -ve -p /tmp/TouchGpiWindows Platforms/LG/timelmPkg/Experimental/TouchGpiWindows.asl
+          python3 Resources/Scripts/build_timelm_touch_iort.py
+          iasl -ve -p Build/TouchIommu/TouchIommuWindows Platforms/LG/timelmPkg/Experimental/TouchIommuWindows.asl
+          iasl -d Build/TouchIommu/TimelmTouchIort.candidate.aml
       - name: Build read-only DMA prerequisite check with restored Windows chainload
         run: |
           git submodule update --init --depth 1 Mu_Basecore
@@ -125,6 +138,7 @@ jobs:
           path: |
             /tmp/TouchWindows.aml
             /tmp/TouchGpiWindows.aml
+            Build/TouchIommu/
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:

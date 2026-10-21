@@ -127,12 +127,13 @@ NTSTATUS GeniPrepare(WDFDEVICE device, WDFCMRESLIST raw, WDFCMRESLIST translated
 {
     DEVICE_CONTEXT *context = GetDeviceContext(device);
     WDFKEY key;
-    ULONG verified = 0, sourceHz = 0, native = 0, gpi = 0, i, memoryCount = 0;
+    ULONG verified = 0, sourceHz = 0, native = 0, gpi = 0, iommu = 0, i, memoryCount = 0;
     NTSTATUS status;
     UNICODE_STRING handoffName = RTL_CONSTANT_STRING(L"FirmwareHandoffVerified");
     UNICODE_STRING clockName = RTL_CONSTANT_STRING(L"SourceClockHz");
     UNICODE_STRING nativeName = RTL_CONSTANT_STRING(L"NativeBoardInitEnabled");
     UNICODE_STRING gpiName = RTL_CONSTANT_STRING(L"NativeGpiEnabled");
+    UNICODE_STRING iommuName = RTL_CONSTANT_STRING(L"WindowsIommuEnabled");
     PCM_PARTIAL_RESOURCE_DESCRIPTOR memory = NULL;
     GeniRecord(device, L"TimelmHostStage", 1);
     /* Native board init is a separate opt-in from inherited firmware state.
@@ -142,11 +143,14 @@ NTSTATUS GeniPrepare(WDFDEVICE device, WDFCMRESLIST raw, WDFCMRESLIST translated
     if (!NT_SUCCESS(status)) return status;
     (void)WdfRegistryQueryULong(key, &nativeName, &native);
     (void)WdfRegistryQueryULong(key, &gpiName, &gpi);
+    (void)WdfRegistryQueryULong(key, &iommuName, &iommu);
     status = WdfRegistryQueryULong(key, &handoffName, &verified);
     if (NT_SUCCESS(status)) status = WdfRegistryQueryULong(key, &clockName, &sourceHz);
     WdfRegistryClose(key);
     if (gpi > 1 || (gpi == 1 && native != 1)) return STATUS_DEVICE_CONFIGURATION_ERROR;
+    if (iommu > 1 || (iommu == 1 && gpi != 1)) return STATUS_DEVICE_CONFIGURATION_ERROR;
     context->UseGpi = gpi == 1;
+    context->Gpi.UseIommu = iommu == 1;
     if (native != 1 && (!NT_SUCCESS(status) || verified != 1 || sourceHz != 19200000u)) {
         GeniRecord(device, L"TimelmHostStatus", (ULONG)STATUS_DEVICE_NOT_READY);
         return STATUS_DEVICE_NOT_READY;
@@ -158,10 +162,11 @@ NTSTATUS GeniPrepare(WDFDEVICE device, WDFCMRESLIST raw, WDFCMRESLIST translated
             if (r->u.Memory.Start.QuadPart == 0xa94000) memory = r;
         }
     }
-    if (memoryCount != (gpi == 1 ? 5u : native == 1 ? 3u : 1u) || !memory ||
+    if (memoryCount != (iommu == 1 ? 4u : gpi == 1 ? 5u : native == 1 ? 3u : 1u) || !memory ||
         memory->u.Memory.Length != 0x4000) return STATUS_DEVICE_CONFIGURATION_ERROR;
     if (native == 1) {
         context->Board.GpiMode = context->UseGpi;
+        context->Board.IommuMode = iommu == 1;
         status = GeniBoardPrepare(&context->Board, device, translated);
         if (!NT_SUCCESS(status)) return status;
     }
@@ -263,6 +268,7 @@ NTSTATUS GeniD0Exit(WDFDEVICE device, WDF_POWER_DEVICE_STATE next)
         if (!NT_SUCCESS(status)) return status;
         WriteRegister(context,GI_GSI_EVENT,0);
         WriteRegister(context,GI_DMA_MODE,0);
+        context->Started = FALSE;
         return GeniBoardStop(&context->Board);
     }
     if (context->Io.Ready) {

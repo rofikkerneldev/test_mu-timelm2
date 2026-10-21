@@ -15,6 +15,7 @@ typedef struct GENI_BOARD {
     BOOLEAN Native;
     BOOLEAN InterfaceAcquired;
     BOOLEAN GpiMode;
+    BOOLEAN IommuMode;
     NTSTATUS (*PrePowerCheck)(PVOID Context);
     PVOID PrePowerContext;
 } GENI_BOARD;

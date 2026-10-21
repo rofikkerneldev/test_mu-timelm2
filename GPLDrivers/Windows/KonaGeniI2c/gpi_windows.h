@@ -2,6 +2,7 @@
 #ifndef TIMELM_GPI_WINDOWS_H
 #define TIMELM_GPI_WINDOWS_H
 #include "geni_gpi.h"
+#include "iommu_windows.h"
 typedef struct GPI_WINDOWS {
     WDFDEVICE Device;
     WDFINTERRUPT Interrupt;
@@ -14,6 +15,8 @@ typedef struct GPI_WINDOWS {
     volatile LONG Error, Irqs, InterruptEnabled;
     SPBREQUEST CurrentRequest;
     BOOLEAN Retained;
+    BOOLEAN UseIommu;
+    TIMELM_IOMMU Dma;
 } GPI_WINDOWS;
 NTSTATUS GpiWindowsPrepare(GPI_WINDOWS *g, WDFDEVICE device, WDFCMRESLIST raw, WDFCMRESLIST translated);
 NTSTATUS GpiWindowsStart(GPI_WINDOWS *g, ULONG clockSelect);

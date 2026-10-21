@@ -1,0 +1,22 @@
+{
+  "description": "User-supplied kernel files audited for SW42902-vs-SW42000 wire layout and initialization semantics; source not redistributed here",
+  "g8_windows_commit": "98ef6043ff3d2c6ec388a492e27aeb1639e98de5",
+  "files": {
+    "Kernel/touch_sw42902/touch_sw42902.c": {
+      "sha256": "4809f17ea6456f7dc013734622664390e6a2b205e0383904d1a3bd3a3bea948d",
+      "size": 159814
+    },
+    "Kernel/touch_sw42902/touch_sw42902.h": {
+      "sha256": "869892d0d7a032aaa256e642c6eb66e912391fc30bb0a05a1a0967c8a114a142",
+      "size": 20806
+    },
+    "Kernel/touch_42000/touch_sw42000.c": {
+      "sha256": "08fd838fba9be08f64b5b0208737c12f210252af422115ae237814e992b58c49",
+      "size": 123796
+    },
+    "Kernel/touch_42000/touch_sw42000.h": {
+      "sha256": "d78ef7c99ec3e4edc59e4dbb4b24e8ddb94532770d6d85df8ef9d1e633715609",
+      "size": 19345
+    }
+  }
+}

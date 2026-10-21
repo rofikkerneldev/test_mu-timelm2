@@ -5,7 +5,7 @@
 #include "board_windows.h"
 #include "gpi_windows.h"
 #include "dma_policy.h"
-#define GP_ALLOCATION_SIZE 8192u
+#define GP_ALLOCATION_SIZE TIMELM_DMA_BYTES
 typedef struct IRQ_CONTEXT { GPI_WINDOWS *Gpi; } IRQ_CONTEXT;
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(IRQ_CONTEXT, GpiGetIrqContext)
 EVT_WDF_INTERRUPT_ISR GpiIsr;
@@ -59,11 +59,17 @@ static VOID Record(GPI_WINDOWS *g, NTSTATUS status)
     GeniRecord(g->Device, L"TimelmGpiStage", g->Io.Stage);
     GeniRecord(g->Device, L"TimelmGpiUnsafe", g->Io.Unsafe);
     GeniRecord(g->Device, L"TimelmGpiIrqs", (ULONG)g->Irqs);
+    GeniRecord(g->Device, L"TimelmDmaMode", g->UseIommu ? 1 : 0);
+    GeniRecord(g->Device, L"TimelmIommuStage", g->Dma.Stage);
+    GeniRecord(g->Device, L"TimelmIommuStatus", (ULONG)g->Dma.LastStatus);
+    GeniRecord(g->Device, L"TimelmIommuReady", g->Dma.Ready);
+    GeniRecord(g->Device, L"TimelmIommuRetained", g->Dma.Retained);
+    GeniRecord(g->Device, L"TimelmDmaLogicalLow", (ULONG)g->Logical.LowPart);
+    GeniRecord(g->Device, L"TimelmDmaLogicalHigh", (ULONG)g->Logical.HighPart);
     for (i = 0; i < 4; ++i) GeniRecord(g->Device, names[i], g->Io.LastEvent[i]);
 }
-/* The known minimal firmware has no Windows SMMU/IORT provider for this
- * device. This first adapter supports verified firmware BYPASS only. It
- * neither programs SMMU state nor treats Recovery IOVAs as DMA addresses. */
+/* The legacy profile inspects firmware BYPASS read-only. The translated
+ * profile uses only the Windows IOMMU API and has no SMMU MMIO resource. */
 static GI_U32 SmmuRead(void *context, GI_U32 offset)
 {
     return READ_REGISTER_ULONG((PULONG)(((GPI_WINDOWS *)context)->Smmu + offset));
@@ -106,11 +112,12 @@ NTSTATUS GpiWindowsPrepare(GPI_WINDOWS *g, WDFDEVICE device, WDFCMRESLIST raw, W
             rawIndex = i; ++rawIrqs;
         }
     }
-    if (gpiCount != 1 || smmuCount != 1 || irqs != 1 || rawIrqs != 1)
+    if (gpiCount != 1 || smmuCount != (g->UseIommu ? 0u : 1u) || irqs != 1 || rawIrqs != 1)
         return STATUS_DEVICE_CONFIGURATION_ERROR;
     g->Registers = MmMapIoSpaceEx(gp->u.Memory.Start,0x70000,PAGE_READWRITE|PAGE_NOCACHE);
-    g->Smmu = MmMapIoSpaceEx(smmu->u.Memory.Start,0x1000,PAGE_READONLY|PAGE_NOCACHE);
-    if (!g->Registers || !g->Smmu) { status = STATUS_INSUFFICIENT_RESOURCES; goto Fail; }
+    if (!g->UseIommu)
+        g->Smmu = MmMapIoSpaceEx(smmu->u.Memory.Start,0x1000,PAGE_READONLY|PAGE_NOCACHE);
+    if (!g->Registers || (!g->UseIommu && !g->Smmu)) { status = STATUS_INSUFFICIENT_RESOURCES; goto Fail; }
     WDF_INTERRUPT_CONFIG_INIT(&config,GpiIsr,NULL);
     config.PassiveHandling = TRUE;
     config.AutomaticSerialization = FALSE;
@@ -138,8 +145,20 @@ NTSTATUS GpiWindowsStart(GPI_WINDOWS *g, ULONG clockSelect)
     GI_U64 dma;
     g->Io.Stage = 10;
     InterlockedExchange(&g->Error,0);
+    if (g->Retained || g->Io.EventOwned || g->Io.ChannelOwned[0] || g->Io.ChannelOwned[1]) {
+        status = STATUS_DEVICE_BUSY; goto Exit;
+    }
+    if (g->UseIommu) {
+        /* PrePowerCheck must have acquired the domain before touch power/reset. */
+        if (!g->Dma.Ready || g->Dma.Retained) { status = STATUS_DEVICE_NOT_READY; goto Exit; }
+        g->Allocation = g->Dma.Buffer;
+        g->Logical.QuadPart = (LONGLONG)g->Dma.Logical;
+        dma = g->Dma.Logical;
+        goto ConfigureRings;
+    }
     if (!DirectDmaAllowed(g)) { status = STATUS_DEVICE_CONFIGURATION_ERROR; goto Exit; }
     GeniRecord(g->Device,L"TimelmGpiDmaBypassVerified",1);
+    if (g->Allocation) goto ValidateDirect;
     RtlZeroMemory(&description,sizeof(description));
     description.Version = DEVICE_DESCRIPTION_VERSION3;
     description.Master = TRUE;
@@ -147,13 +166,15 @@ NTSTATUS GpiWindowsStart(GPI_WINDOWS *g, ULONG clockSelect)
     description.DmaAddressWidth = 64;
     description.InterfaceType = Internal;
     description.MaximumLength = GP_ALLOCATION_SIZE;
-    g->Adapter = IoGetDmaAdapter(WdfDeviceWdmGetPhysicalDevice(g->Device),&description,&maps);
+    if (!g->Adapter)
+        g->Adapter = IoGetDmaAdapter(WdfDeviceWdmGetPhysicalDevice(g->Device),&description,&maps);
     if (!g->Adapter || !g->Adapter->DmaOperations->AllocateCommonBuffer ||
         !g->Adapter->DmaOperations->FreeCommonBuffer ||
         !g->Adapter->DmaOperations->PutDmaAdapter) { status = STATUS_NOT_SUPPORTED; goto Exit; }
     g->Allocation = g->Adapter->DmaOperations->AllocateCommonBuffer(g->Adapter,
         GP_ALLOCATION_SIZE,&g->Logical,FALSE);
     if (!g->Allocation) { status = STATUS_INSUFFICIENT_RESOURCES; goto Exit; }
+ValidateDirect:
     dma = (GI_U64)g->Logical.QuadPart;
     /* Addresses submitted to GPI always come from the DMA adapter. In the
      * verified direct-bypass profile require a matching physical backing,
@@ -162,6 +183,11 @@ NTSTATUS GpiWindowsStart(GPI_WINDOWS *g, ULONG clockSelect)
         MmGetPhysicalAddress((PUCHAR)g->Allocation+GP_ALLOCATION_SIZE-1).QuadPart !=
             g->Logical.QuadPart+GP_ALLOCATION_SIZE-1 || (dma & 4095u) ||
         (dma >> 32) != ((dma+GP_ALLOCATION_SIZE-1) >> 32)) {
+        status = STATUS_DEVICE_CONFIGURATION_ERROR; goto Exit;
+    }
+ConfigureRings:
+    if ((dma & 4095u) || dma > MAXULONGLONG - GP_ALLOCATION_SIZE ||
+        (dma >> 32) != ((dma + GP_ALLOCATION_SIZE - 1) >> 32)) {
         status = STATUS_DEVICE_CONFIGURATION_ERROR; goto Exit;
     }
     RtlZeroMemory(g->Allocation,GP_ALLOCATION_SIZE);
@@ -181,9 +207,12 @@ NTSTATUS GpiWindowsCheckReady(PVOID context)
     GPI_WINDOWS *g = context;
     NTSTATUS status = STATUS_SUCCESS;
     if (g->Retained) status = STATUS_DEVICE_BUSY;
-    else if (!g->Registers || !g->Smmu || !DirectDmaAllowed(g)) status = STATUS_DEVICE_CONFIGURATION_ERROR;
+    else if (!g->Registers) status = STATUS_DEVICE_CONFIGURATION_ERROR;
     else if (((Read(g,GP_CH(0)) | Read(g,GP_CH(1)) | Read(g,GP_EV)) & 0xf00000u) ||
         (Read(g,GP_IRQ_MASK) & 127u)) status = STATUS_DEVICE_BUSY;
+    else if (g->UseIommu)
+        status = TimelmIommuAcquire(&g->Dma,WdfDeviceWdmGetPhysicalDevice(g->Device));
+    else if (!g->Smmu || !DirectDmaAllowed(g)) status = STATUS_DEVICE_CONFIGURATION_ERROR;
     Record(g,status);
     return status;
 }
@@ -210,17 +239,21 @@ BOOLEAN GpiWindowsRelease(GPI_WINDOWS *g)
     BOOLEAN safe = TRUE;
     if (g->Io.Read && !NT_SUCCESS(GpiWindowsStop(g))) safe = FALSE;
     if (g->Interrupt) { WdfObjectDelete(g->Interrupt); g->Interrupt = NULL; }
-    if (safe) {
+    if (g->UseIommu) {
+        if (!NT_SUCCESS(TimelmIommuRelease(&g->Dma,safe))) safe = FALSE;
+    } else if (safe) {
         if (g->Allocation) g->Adapter->DmaOperations->FreeCommonBuffer(g->Adapter,
             GP_ALLOCATION_SIZE,g->Logical,g->Allocation,FALSE);
         if (g->Adapter) g->Adapter->DmaOperations->PutDmaAdapter(g->Adapter);
-    } else {
+    }
+    if (!safe) {
         /* This explicit DMA allocation has no WDF device parent that could
          * auto-free active ring memory. Retain buffer AND adapter until reboot.
          * No code/stack/request memory was ever submitted as a DMA target. */
         g->Retained = TRUE;
         GeniRecord(g->Device,L"TimelmGpiDmaRetainedUntilReboot",1);
     }
+    Record(g,safe ? STATUS_SUCCESS : STATUS_DEVICE_BUSY);
     g->Allocation = NULL; g->Adapter = NULL;
     if (g->Registers) { MmUnmapIoSpace(g->Registers,0x70000); g->Registers = NULL; }
     if (g->Smmu) { MmUnmapIoSpace(g->Smmu,0x1000); g->Smmu = NULL; }

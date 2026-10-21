@@ -1,5 +1,10 @@
 # Native V60 GPI transport
 
+The new experimental translated Windows IOMMU profile is documented in
+[TOUCH-IOMMU.md](../../../Platforms/LG/timelmPkg/Experimental/TOUCH-IOMMU.md).
+It has a separate ACPI contract and remains disabled. The BYPASS description
+below describes the original profile, not the new translated backend.
+
 The SPB host now contains a source GPI backend, not a renamed Qualcomm binary.
 It is an experimental integration, not yet a working-on-phone claim. FIFO and
 GPI share the board clock/GPIO lifecycle, but use separate transport state.
@@ -47,10 +52,10 @@ is skipped. DMA was never pointed at a stack, request or executable buffer. The
 retained/unsafe state is recorded; restart is refused. This deliberate failure
 retention is a bring-up limit, not a production recovery strategy.
 
-No runtime idle is enabled and a second D0 entry after successful startup is
-refused. Suspend/resume, IOMMU-translated operation, shared SE locking, other
+No runtime idle is enabled. Suspend/resume, shared SE locking, other
 GPI instances/targets and a production asynchronous transfer engine are not
-implemented. Hardware validation must establish firmware ownership/fabric access,
+validated. The translated backend is now implemented as an experimental source
+path; Windows IOMMU hardware operation is not validated. Hardware tests must establish firmware ownership/fabric access,
 the actual SMMU mapping, I2C ID read, GPIO interrupts and usable Windows HID.
 
 ## Tests

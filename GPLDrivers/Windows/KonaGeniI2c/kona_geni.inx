@@ -4,7 +4,7 @@ Signature="$WINDOWS NT$"
 Class=System
 ClassGuid={4D36E97D-E325-11CE-BFC1-08002BE10318}
 Provider=%Provider%
-DriverVer=10/19/2026,0.2.0.0
+DriverVer=10/21/2026,0.3.0.0
 CatalogFile=kona_geni.cat
 PnpLockDown=1
 [Manufacturer]
@@ -22,6 +22,8 @@ AddReg=Handoff
 ; exact board ACPI resources and explicit hardware experiment activation.
 HKR,,NativeBoardInitEnabled,0x00010001,0
 HKR,,NativeGpiEnabled,0x00010001,0
+; Requires the paired V60 IORT + TBCF 0x54420301 ACPI, never an alioth table.
+HKR,,WindowsIommuEnabled,0x00010001,0
 ; Never enable until firmware has an independently validated bus handoff.
 HKR,,FirmwareHandoffVerified,0x00010001,0
 HKR,,SourceClockHz,0x00010001,0
@@ -34,6 +36,9 @@ StartType=3
 ErrorControl=1
 ServiceBinary=%13%\kona_geni.sys
 Dependencies=SpbCx
+AddReg=DmaRemapping
+[DmaRemapping]
+HKR,Parameters,DmaRemappingCompatible,0x00010001,1
 [Geni.NT.Wdf]
 KmdfService=kona_geni,Wdf
 [Wdf]
