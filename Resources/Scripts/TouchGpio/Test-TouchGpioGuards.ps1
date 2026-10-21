@@ -26,27 +26,30 @@ if ($writers.Count -ne 1) {throw 'Expected one production gate writer'}
 # PowerShell 5.1 throws from Get-ItemPropertyValue in that case, and the
 # trial aborted on the phone before it reached any hardware operation.
 $readers = @($runnerAst.FindAll({param($node)
-    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-Gate'
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+    $node.Name -in @('Get-Gate','Get-RegistryValue')
 },$true))
-if ($readers.Count -ne 1) {throw 'Expected one production gate reader'}
-& {
-    param([string]$Definition)
-    $state = @{exists=$true;values=@{NativeGpioI2cEnabled=0;TouchBusGpioEnabled=1}}
-    function Test-Path {param([string]$LiteralPath) return $state.exists}
-    function Get-ItemProperty {
-        param([string]$LiteralPath,[string]$ErrorAction)
-        if (!$state.exists) {return $null}
-        return [pscustomobject]$state.values
-    }
-    Invoke-Expression $Definition
-    $missing = Get-Gate 'HKLM:\InMemoryOnly' 'ReadOnlyHardwareProbeEnabled'
-    if ($null -ne $missing) {throw 'A gate that was never written must read as not enabled'}
-    $zero = Get-Gate 'HKLM:\InMemoryOnly' 'NativeGpioI2cEnabled'
-    if ($null -eq $zero -or $zero -ne 0) {throw 'A zero gate must read as zero'}
-    $state.exists = $false
-    $absent = Get-Gate 'HKLM:\InMemoryOnly' 'TouchBusGpioEnabled'
-    if ($null -ne $absent) {throw 'A missing device key must read as not enabled'}
-} $readers[0].Extent.Text
+if ($readers.Count -lt 1) {throw 'Expected a production gate reader'}
+foreach ($reader in $readers) {
+    & {
+        param([string]$Definition,[string]$Name)
+        $state = @{exists=$true;values=@{NativeGpioI2cEnabled=0;TouchBusGpioEnabled=1}}
+        function Test-Path {param([string]$LiteralPath) return $state.exists}
+        function Get-ItemProperty {
+            param([string]$LiteralPath,[string]$ErrorAction)
+            if (!$state.exists) {return $null}
+            return [pscustomobject]$state.values
+        }
+        Invoke-Expression $Definition
+        $missing = & $Name 'HKLM:\InMemoryOnly' 'ReadOnlyHardwareProbeEnabled'
+        if ($null -ne $missing) {throw "A gate that was never written must read as not enabled: $Name"}
+        $zero = & $Name 'HKLM:\InMemoryOnly' 'NativeGpioI2cEnabled'
+        if ($null -eq $zero -or $zero -ne 0) {throw "A zero gate must read as zero: $Name"}
+        $state.exists = $false
+        $absent = & $Name 'HKLM:\InMemoryOnly' 'TouchBusGpioEnabled'
+        if ($null -ne $absent) {throw "A missing device key must read as not enabled: $Name"}
+    } $reader.Extent.Text $reader.Name
+}
 & {
     param([string]$Definition)
     $state = @{exists=$true;created=0;values=@{ExistingProviderValue=17};badReadback=$false}
@@ -191,6 +194,18 @@ try {
     if ($wrapped.verdict -ne 'hardware-chain-proven-awaiting-user-confirmation' -or
         $wrapped.steps['chip-identity'].status -ne 'proven') {
         throw 'A wrapped diagnostic array was not read as evidence'
+    }
+    # The same wrap can appear around the binary product id of the touch
+    # device. It must still be read as the panel identity.
+    $text = Get-Content -LiteralPath $diagnosticsPath -Raw
+    $text = [regex]::Replace($text,
+        '("name"\s*:\s*"TimelmTouchProductId"\s*,\s*"value"\s*:\s*)\[[^\]]*\]',
+        '$1{"value":[66,51,87,54,56,84,73,77],"Count":8}')
+    Set-Content -LiteralPath $diagnosticsPath -Value $text
+    $wrappedProduct = Get-TouchGpioResult -Root $syntheticRoot
+    if ($wrappedProduct.verdict -ne 'hardware-chain-proven-awaiting-user-confirmation' -or
+        $wrappedProduct.steps['touch-code-0'].status -ne 'proven') {
+        throw 'A wrapped product id was not read as the panel identity'
     }
     $packagePath = Join-Path $syntheticRoot 'runtime\package.json'
     $package = Get-Content -LiteralPath $packagePath -Raw | ConvertFrom-Json

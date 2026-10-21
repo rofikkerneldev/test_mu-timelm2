@@ -56,6 +56,14 @@ function ConvertTo-TouchGpioBytes {
     if ($null -eq $Value) {return $null}
     if ($Value -is [byte[]]) {return ,$Value}
     if ($Value -is [Array]) {return ,([byte[]]@($Value | ForEach-Object {[byte]$_}))}
+    # Windows PowerShell 5.1 can also wrap a nested array as {"value":[...],
+    # "Count":N}. A product id that stays unreadable must never look like a
+    # matching panel.
+    if ($Value -isnot [string] -and $Value -isnot [ValueType] -and
+        $Value.PSObject.Properties['value'] -and $Value.PSObject.Properties['Count']) {
+        $inner = @($Value.value)
+        if ($inner.Count -gt 0) {return ,([byte[]]@($inner | ForEach-Object {[byte]$_}))}
+    }
     return $null
 }
 function ConvertTo-TouchGpioIdentity {
