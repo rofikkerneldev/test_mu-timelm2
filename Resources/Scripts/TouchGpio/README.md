@@ -65,4 +65,7 @@ an automatic reboot. Logs and gate snapshots stay under TimelmLogs/TouchGpioTria
 
 `Test-TouchGpioGuards.ps1 [-Artifact <bundle>]` is safe on the x64 build PC:
 it parses scripts, optionally verifies package files, and executes the runtime
-runner only to prove its very first machine guard rejects the PC.
+runner only to prove its very first machine guard rejects the PC. It also runs
+`Test-TouchGpioPackage.ps1`, which builds a synthetic bundle to prove the
+builder accepts a correct package and rejects a wrong hardware ID, a wrong
+catalog, a mismatched trial hash and an existing output directory.

@@ -64,6 +64,11 @@ HID tap/swipe at1080x2460. No controller firmware is flashed.
   enabled memory-only SSDT. It restores both original Windows EFI entries
   before publishing the table, verifies the known timelm namespace and does
   not install an IORT or perform firmware GPIO requests.
+- `Build-TouchGpioPackage.ps1` assembles the verified bundle from the three
+  driver packages, the launcher/SSDT and the phone's installed INF set. Only
+  that bundle may be staged.
+- `Stage-TouchGpioTrial.ps1` arms the bundle on the identified phone from the
+  build PC and records the restore-first backups.
 
 GPIO/host/client installation, certificate trust, activation flags and device
 restart must be guarded by package hashes and the V60 installation identity.
