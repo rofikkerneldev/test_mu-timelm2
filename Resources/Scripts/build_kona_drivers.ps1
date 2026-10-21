@@ -2,7 +2,8 @@ param(
     [Parameter(Mandatory=$true)][string]$Source,
     [Parameter(Mandatory=$true)][string]$Destination,
     [switch]$TimelmGpioFixes,
-    [switch]$TimelmTouchFixes
+    [switch]$TimelmTouchFixes,
+    [switch]$TimelmPowerFixes
 )
 $ErrorActionPreference = 'Stop'
 $Source = (Resolve-Path -LiteralPath $Source).Path
@@ -11,7 +12,14 @@ $Destination = (Resolve-Path -LiteralPath $Destination).Path
 $expected = '3dcdec0bd59e3e77be92629b2ed9e095ae6e19e8'
 $actual = (& git -C $Source rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $actual -ne $expected) { throw "Unexpected driver source: $actual" }
+if (-not $TimelmPowerFixes) {
+    & git -C $Source diff --quiet HEAD -- src/SPMI src/PMIC
+    if ($LASTEXITCODE -ne 0 -or (Test-Path -LiteralPath (Join-Path $Source 'src/SPMI/Transaction.h'))) {
+        throw 'SPMI/PMIC source contains prior changes; use a clean source for the touch-only build'
+    }
+}
 $patchMetadata = @()
+$metadataFiles = @()
 if ($TimelmGpioFixes -or $TimelmTouchFixes) {
     $overlay = Join-Path $PSScriptRoot '../DeviceOverlays/timelm/Drivers/KonaGPIO'
     $patchName = if ($TimelmTouchFixes) { 'timelm-touch.patch' } else { 'timelm-gpio.patch' }
@@ -40,30 +48,32 @@ if ($TimelmGpioFixes -or $TimelmTouchFixes) {
         Copy-Item -LiteralPath $helper -Destination (Join-Path $Source ('src/GPIO/' + $name))
         $metadataFiles += $helper
     }
-    if ($TimelmTouchFixes) {
-        $spmiOverlay = Join-Path $PSScriptRoot '../DeviceOverlays/timelm/Drivers/KonaSPMI'
-        $powerPatch = (Resolve-Path -LiteralPath (Join-Path $spmiOverlay 'timelm-power.patch')).Path
-        $transHelper = (Resolve-Path -LiteralPath (Join-Path $spmiOverlay 'Transaction.h')).Path
-        $targetTrans = Join-Path $Source 'src/SPMI/Transaction.h'
-        if ((Test-Path -LiteralPath $targetTrans) -and
-            (Get-FileHash -LiteralPath $transHelper).Hash -ne (Get-FileHash -LiteralPath $targetTrans).Hash) {
-            throw "Existing Transaction.h differs from the timelm helper"
-        }
-        & git -C $Source apply --check -- $powerPatch 2>$null
-        if ($LASTEXITCODE -eq 0) {
-            & git -C $Source apply -- $powerPatch
-            if ($LASTEXITCODE -ne 0) { throw 'Failed to apply timelm power patch' }
-        } else {
-            & git -C $Source apply --reverse --check -- $powerPatch 2>$null
-            if ($LASTEXITCODE -ne 0) { throw 'SPMI/PMIC source is neither clean nor already patched as expected' }
-        }
-        Copy-Item -LiteralPath $transHelper -Destination $targetTrans
-        $metadataFiles += @($powerPatch, $transHelper)
-    }
-    $patchMetadata = $metadataFiles | ForEach-Object {
-        [ordered]@{name=[IO.Path]::GetFileName($_);sha256=(Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant()}
-    }
 }
+# Touch pinmux does not require replacing the booting SPMI/PMIC drivers.
+# The experimental power patch has a separate, explicit build option.
+if ($TimelmPowerFixes) {
+    $spmiOverlay = Join-Path $PSScriptRoot '../DeviceOverlays/timelm/Drivers/KonaSPMI'
+    $powerPatch = (Resolve-Path -LiteralPath (Join-Path $spmiOverlay 'timelm-power.patch')).Path
+    $transHelper = (Resolve-Path -LiteralPath (Join-Path $spmiOverlay 'Transaction.h')).Path
+    $targetTrans = Join-Path $Source 'src/SPMI/Transaction.h'
+    if ((Test-Path -LiteralPath $targetTrans) -and
+        (Get-FileHash -LiteralPath $transHelper).Hash -ne (Get-FileHash -LiteralPath $targetTrans).Hash) {
+        throw "Existing Transaction.h differs from the timelm helper"
+    }
+    & git -C $Source apply --check -- $powerPatch 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        & git -C $Source apply -- $powerPatch
+        if ($LASTEXITCODE -ne 0) { throw 'Failed to apply timelm power patch' }
+    } else {
+        & git -C $Source apply --reverse --check -- $powerPatch 2>$null
+        if ($LASTEXITCODE -ne 0) { throw 'SPMI/PMIC source is neither clean nor already patched as expected' }
+    }
+    Copy-Item -LiteralPath $transHelper -Destination $targetTrans
+    $metadataFiles += @($powerPatch, $transHelper)
+}
+$patchMetadata = @($metadataFiles | ForEach-Object {
+    [ordered]@{name=[IO.Path]::GetFileName($_);sha256=(Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant()}
+})
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 $msbuild = & $vswhere -latest -products '*' -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\amd64\MSBuild.exe' | Select-Object -First 1
 if (-not $msbuild) { throw 'MSBuild not found' }

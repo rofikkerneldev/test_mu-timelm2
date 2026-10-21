@@ -3,6 +3,7 @@
 # registry writes, BCD edits, device resets, or event-channel enablement.
 param(
     [string]$OutputRoot = "$env:SystemDrive\TimelmLogs",
+    [switch]$SkipEsp,
     [switch]$ValidateOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -52,6 +53,37 @@ public static class TimelmDisplay {
     result["CollectorDpiAwareness"] = GetAwarenessFromDpiAwarenessContext(GetThreadDpiAwarenessContext());
     result["DpiNote"] = "DPI is process-context dependent; unaware processes may report 96. No scaling was changed.";
     return result;
+  }
+}
+public static class TimelmAcpi {
+  // Provider is the C multi-character constant 'ACPI'. Table IDs below are
+  // returned by Windows and passed back unchanged (little endian signatures).
+  const uint Provider = 0x41435049;
+  [DllImport("kernel32.dll", SetLastError=true)]
+  static extern uint EnumSystemFirmwareTables(uint provider, [Out] byte[] data, uint size);
+  [DllImport("kernel32.dll", SetLastError=true)]
+  static extern uint GetSystemFirmwareTable(uint provider, uint id, [Out] byte[] data, uint size);
+  public static uint[] Enumerate() {
+    uint size = EnumSystemFirmwareTables(Provider, null, 0);
+    if (size == 0) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+    if (size > 65536 || (size & 3) != 0) throw new InvalidOperationException("Invalid ACPI enumeration length");
+    byte[] data = new byte[size];
+    if (EnumSystemFirmwareTables(Provider, data, size) != size)
+      throw new InvalidOperationException("ACPI table list changed or could not be read");
+    uint[] ids = new uint[size / 4];
+    for (int i = 0; i < ids.Length; ++i) ids[i] = BitConverter.ToUInt32(data, i * 4);
+    return ids;
+  }
+  public static byte[] Read(uint id) {
+    uint size = GetSystemFirmwareTable(Provider, id, null, 0);
+    if (size == 0) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+    if (size < 36 || size > 16 * 1024 * 1024) throw new InvalidOperationException("Invalid ACPI table length");
+    byte[] data = new byte[size];
+    if (GetSystemFirmwareTable(Provider, id, data, size) != size)
+      throw new InvalidOperationException("ACPI table changed or could not be read");
+    if (BitConverter.ToUInt32(data, 0) != id || BitConverter.ToUInt32(data, 4) != size)
+      throw new InvalidOperationException("ACPI header mismatch");
+    return data;
   }
 }
 '@
@@ -114,6 +146,29 @@ Capture 'windows-version' {
     Write-JsonFile 'windows-version.json' (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' |
         Select-Object DisplayVersion,CurrentBuildNumber,UBR,BuildLabEx,EditionID,ProductName)
 }
+Capture 'acpi-table-list' {
+    $script:acpiIds = @([TimelmAcpi]::Enumerate())
+    $entries = @($script:acpiIds | Group-Object | ForEach-Object {
+        $id = [uint32]$_.Name
+        [ordered]@{id=$id;signature=[Text.Encoding]::ASCII.GetString([BitConverter]::GetBytes($id));count=$_.Count}
+    })
+    Write-JsonFile 'acpi-table-list.json' ([ordered]@{tables=$entries;
+        note='Windows GetSystemFirmwareTable returns only the first table for a repeated signature.'})
+}
+# A narrow allowlist avoids exporting licensing tables or unrelated firmware data.
+foreach ($signature in @('DSDT','FACP','IORT','APIC','GTDT')) {
+    Capture ('acpi-' + $signature) {
+        $id = [BitConverter]::ToUInt32([Text.Encoding]::ASCII.GetBytes($signature), 0)
+        # DSDT is reached through FADT, so it need not appear in the root-table
+        # enumeration. Try its direct query; do not mistake that for no DSDT.
+        if ($signature -ne 'DSDT' -and (!$script:acpiIds -or $id -notin $script:acpiIds)) { throw "$signature was not enumerated" }
+        $bytes = [TimelmAcpi]::Read($id)
+        [IO.File]::WriteAllBytes((Join-Path $folder ($signature + '.dat')), $bytes)
+        $sum = 0
+        foreach ($b in $bytes) { $sum = ($sum + $b) -band 255 }
+        Write-JsonFile ($signature + '-validation.json') ([ordered]@{length=$bytes.Length;checksum_valid=($sum -eq 0)})
+    }
+}
 Capture 'display-native' { Write-JsonFile 'display-native.json' ([TimelmDisplay]::Query()) }
 Capture 'display-controller' {
     Write-JsonFile 'display-controller.json' @(Get-CimInstance Win32_VideoController -OperationTimeoutSec 15 |
@@ -127,7 +182,7 @@ Capture 'connected-resources' { Native 'connected-resources' 'pnputil.exe' @('/e
 Capture 'problem-devices' { Native 'problem-devices' 'pnputil.exe' @('/enum-devices','/problem','/deviceids','/properties') }
 Capture 'driver-packages' { Native 'driver-packages' 'pnputil.exe' @('/enum-drivers','/files') }
 Capture 'touch-driver-diagnostics' {
-    $values = foreach ($id in @('TIML0001','LGSW4290')) {
+    $values = foreach ($id in @('TIML0001','LGSW4290','KONA1001','KONA1002','KONA1003')) {
         $path = 'HKLM:\SYSTEM\CurrentControlSet\Enum\ACPI\' + $id
         if (Test-Path -LiteralPath $path) {
             foreach ($instance in Get-ChildItem -LiteralPath $path) {
@@ -151,7 +206,7 @@ Capture 'boot-options' { Native 'boot-options' 'bcdedit.exe' @('/enum','all') }
 Capture 'graphics-registry' { Native 'graphics-registry' 'reg.exe' @('query','HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers\Configuration','/s') }
 Capture 'user-dpi' { Native 'user-dpi' 'reg.exe' @('query','HKCU\Control Panel\Desktop','/v','LogPixels') }
 Capture 'per-monitor-dpi' { Native 'per-monitor-dpi' 'reg.exe' @('query','HKCU\Control Panel\Desktop\PerMonitorSettings','/s') }
-foreach ($channel in @('System','Application','Microsoft-Windows-Kernel-PnP/Configuration','Microsoft-Windows-DriverFrameworks-UserMode/Operational')) {
+foreach ($channel in @('System','Application','Microsoft-Windows-CodeIntegrity/Operational','Microsoft-Windows-Kernel-PnP/Configuration','Microsoft-Windows-DriverFrameworks-UserMode/Operational')) {
     $safe = $channel.Replace('/','-')
     Capture $safe { Native $safe 'wevtutil.exe' @('epl',$channel,(Join-Path $folder ($safe + '.evtx')),'/ow:true') }
 }
@@ -168,6 +223,7 @@ Capture 'setup-logs' {
     }
 }
 Capture 'esp-logs' {
+    if ($SkipEsp) { return }
     if (-not $admin) { throw 'Administrator required for temporary ESP mapping' }
     $used = @([IO.Directory]::GetLogicalDrives() | ForEach-Object { $_.Substring(0,1) })
     $letter = @('Z','Y','X','W','V','U','T') | Where-Object { $_ -notin $used } | Select-Object -First 1
@@ -179,7 +235,7 @@ Capture 'esp-logs' {
         if ($esp.GptType -ne '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' -or $esp.DiskNumber -ne $windows.DiskNumber) {
             throw 'Mapped ESP is not an ESP on the Windows disk; copy skipped'
         }
-        foreach ($name in @('timelm-i2c-clockdiag.txt','timelm-ufsdiag-v2.txt')) {
+        foreach ($name in @('timelm-i2c-clockdiag.txt','timelm-ufsdiag-v2.txt','timelm-touch-dma-check.txt')) {
             $source = $letter + ':\' + $name
             if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination (Join-Path $folder $name) }
         }

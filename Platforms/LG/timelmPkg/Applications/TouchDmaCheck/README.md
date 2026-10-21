@@ -1,5 +1,13 @@
 # Read-only touch DMA prerequisite check
 
+The source correction after e40970c removes the SMMU writes introduced in
+653e717. Artifacts from 653e717/e40970c are NOT read-only, despite their old
+description and manifest; do not use them as diagnostics. The corrected source
+does not create a stream mapping. Missing DMA ownership remains a startup
+failure in the Windows host. The embedded WindowsBootReference must also match
+the installed boot manager before any future staging; old artifacts predate
+the successful clean Windows installation.
+
 TouchDmaCheckOnce restores both verified original Windows EFI entries before
 reading the known timelm SMMU global page at 0x15000000. It appends its result to
 `\timelm-touch-dma-check.txt` on the ESP, then starts the restored Windows Boot

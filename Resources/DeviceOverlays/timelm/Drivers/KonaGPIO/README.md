@@ -31,4 +31,10 @@ fixes plus ordered MMIO and the private v2 `TouchBus.h` query interface. The
 client must reserve GPIO 36/37 through exclusive Resource Hub connections
 before selecting qup13/no-pull/2mA. Disable restores the saved low ten control
 bits. This is not a general pinmux API or a completed V60 GPI transport.
+This option leaves SPMI/PMIC at the pinned baseline. The separate
+`-TimelmPowerFixes` option selects the experimental power patch; it is not
+required for the GPIO query interface and is not enabled in the touch workflow.
+Use a clean checkout: an earlier power-patched checkout is rejected unless
+the power option is explicitly selected. The desktop-confirmed package uses
+the edge-only GPIO patch and does not yet expose this v2 interface.
 See [native touch bring-up](../../../../../Platforms/LG/timelmPkg/TOUCH-WINDOWS-NATIVE.md).
