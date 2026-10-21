@@ -22,6 +22,31 @@ $writers = @($runnerAst.FindAll({param($node)
     $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Set-Gate'
 },$true))
 if ($writers.Count -ne 1) {throw 'Expected one production gate writer'}
+# The gate reader must survive a property that was never written. Windows
+# PowerShell 5.1 throws from Get-ItemPropertyValue in that case, and the
+# trial aborted on the phone before it reached any hardware operation.
+$readers = @($runnerAst.FindAll({param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-Gate'
+},$true))
+if ($readers.Count -ne 1) {throw 'Expected one production gate reader'}
+& {
+    param([string]$Definition)
+    $state = @{exists=$true;values=@{NativeGpioI2cEnabled=0;TouchBusGpioEnabled=1}}
+    function Test-Path {param([string]$LiteralPath) return $state.exists}
+    function Get-ItemProperty {
+        param([string]$LiteralPath,[string]$ErrorAction)
+        if (!$state.exists) {return $null}
+        return [pscustomobject]$state.values
+    }
+    Invoke-Expression $Definition
+    $missing = Get-Gate 'HKLM:\InMemoryOnly' 'ReadOnlyHardwareProbeEnabled'
+    if ($null -ne $missing) {throw 'A gate that was never written must read as not enabled'}
+    $zero = Get-Gate 'HKLM:\InMemoryOnly' 'NativeGpioI2cEnabled'
+    if ($null -eq $zero -or $zero -ne 0) {throw 'A zero gate must read as zero'}
+    $state.exists = $false
+    $absent = Get-Gate 'HKLM:\InMemoryOnly' 'TouchBusGpioEnabled'
+    if ($null -ne $absent) {throw 'A missing device key must read as not enabled'}
+} $readers[0].Extent.Text
 & {
     param([string]$Definition)
     $state = @{exists=$true;created=0;values=@{ExistingProviderValue=17};badReadback=$false}

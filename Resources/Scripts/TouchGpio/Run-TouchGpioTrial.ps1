@@ -54,6 +54,18 @@ function Pnp([string]$Label, [string[]]$PnpArguments) {
     if ($code -eq 3010) {$script:needNextBoot = $true; throw 'Driver update requires a second boot; collecting before normal shutdown'}
     if ($code -ne 0) {throw "PnPUtil $Label returned $code"}
 }
+function Get-Gate([string]$Path, [string]$Name) {
+    # Windows PowerShell 5.1 throws from Get-ItemPropertyValue when the
+    # property does not exist, even with -ErrorAction SilentlyContinue. A gate
+    # that is not written is not enabled, so read the key once and look the
+    # single property up instead of asking for a value that may be absent.
+    if (!(Test-Path -LiteralPath $Path)) {return $null}
+    $key = Get-ItemProperty -LiteralPath $Path -ErrorAction SilentlyContinue
+    if ($null -eq $key) {return $null}
+    $property = $key.PSObject.Properties[$Name]
+    if ($null -eq $property) {return $null}
+    return $property.Value
+}
 function Set-Gate([string]$Path, [string]$Name, [int]$Value) {
     # Registry New-Item -Force replaces an existing key. Keep the provider's
     # other Device Parameters and gates when setting one explicit DWORD.
@@ -119,7 +131,7 @@ public static class TouchGpioAwake {
     foreach ($entry in @(@{path=$hostKey;names=($gates+@('NativeGpioI2cEnabled'))},@{path=$gpioKey;names=@('TouchBusGpioEnabled')})) {
         $values = @{}
         foreach ($name in $entry.names) {
-            $value = Get-ItemPropertyValue -LiteralPath $entry.path -Name $name -ErrorAction SilentlyContinue
+            $value = Get-Gate $entry.path $name
             $values[$name] = $value
             if ($null -ne $value -and $value -ne 0) {throw "Pre-existing hardware gate enabled: $name"}
         }
