@@ -119,7 +119,7 @@ NTSTATUS TimelmIommuAcquire(TIMELM_IOMMU *d, PDEVICE_OBJECT pdo)
     if (!d->Buffer) { status = STATUS_INSUFFICIENT_RESOURCES; goto Fail; }
     RtlZeroMemory(d->Buffer, TIMELM_DMA_BYTES);
     RtlZeroMemory(&physical, sizeof(physical));
-    physical.MapType = MapPhysicalAddressContiguousRange;
+    physical.MapType = MapPhysicalAddressTypeContiguousRange;
     physical.ContiguousRange.Base = MmGetPhysicalAddress(d->Buffer);
     physical.ContiguousRange.Size = TIMELM_DMA_BYTES;
     if (physical.ContiguousRange.Base.QuadPart & (PAGE_SIZE - 1)) {

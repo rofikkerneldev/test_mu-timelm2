@@ -33,7 +33,7 @@ typedef void *PIOMMU_DMA_DEVICE, *PIOMMU_DMA_DOMAIN;
 typedef uint64_t IOMMU_DMA_LOGICAL_ADDRESS;
 typedef union { ULONGLONG AsUlonglong; } IOMMU_DMA_DOMAIN_CREATION_FLAGS;
 typedef enum { DomainTypeTranslate, DomainTypePassThrough } IOMMU_DMA_DOMAIN_TYPE;
-enum { IommuDeviceCreationConfigTypeAcpi = 1, MapPhysicalAddressContiguousRange = 1 };
+enum { IommuDeviceCreationConfigTypeAcpi = 1, MapPhysicalAddressTypeContiguousRange = 1 };
 typedef struct {
     LIST_ENTRY NextConfiguration;
     int ConfigType;

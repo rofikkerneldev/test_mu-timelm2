@@ -191,7 +191,7 @@ Capture 'touch-driver-diagnostics' {
                         $properties = Get-ItemProperty -LiteralPath $key
                         foreach ($property in $properties.PSObject.Properties) {
                             if ($property.Name -like 'Timelm*' -or
-                                $property.Name -in @('NativeBoardInitEnabled','NativeGpiEnabled','FirmwareHandoffVerified','SourceClockHz')) {
+                                $property.Name -in @('NativeBoardInitEnabled','NativeGpiEnabled','WindowsIommuEnabled','FirmwareHandoffVerified','SourceClockHz')) {
                                 [pscustomobject]@{device=$id;key=$key;name=$property.Name;value=$property.Value}
                             }
                         }

@@ -62,7 +62,7 @@ static NTSTATUS MapRange(PIOMMU_DMA_DOMAIN domain, ULONG permissions, IOMMU_MAP_
 {
     NTSTATUS s = Step(Map);
     assert(domain == &m.Domain && m.Attached && !m.Mapped && permissions == 3);
-    assert(physical->MapType == MapPhysicalAddressContiguousRange);
+    assert(physical->MapType == MapPhysicalAddressTypeContiguousRange);
     assert(physical->ContiguousRange.Base.QuadPart == 0x180000000LL);
     assert(physical->ContiguousRange.Size == 8192 && explicitAddress && *explicitAddress == 0x10000000);
     assert(!min && !max);
