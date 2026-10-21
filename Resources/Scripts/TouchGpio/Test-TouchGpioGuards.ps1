@@ -100,6 +100,12 @@ if ($runnerText -notmatch 'Assert-Budget' -or $runnerText -notmatch 'Stopwatch')
 if ($runnerText -notmatch 'Pre-existing hardware gate enabled' -or $runnerText -notmatch 'gates-restored\.json') {
     throw 'The runtime runner must restore only its own gates and record the restore'
 }
+# A re-arm on the phone may only remove the Startup entry that this script
+# staged itself. Anything else has to stay untouched.
+$stage = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Stage-TouchGpioTrial.ps1') -Raw
+if ($stage -notmatch 'refusing to disarm it' -or $stage -notmatch 'refusing to rearm') {
+    throw 'The staging re-arm must refuse a foreign Startup entry and a plain re-arm'
+}
 if ($Artifact) {
     . (Join-Path $PSScriptRoot 'TouchGpioCommon.ps1')
     $null = Get-TouchGpioManifest $Artifact

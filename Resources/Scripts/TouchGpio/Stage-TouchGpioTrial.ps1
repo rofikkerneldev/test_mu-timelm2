@@ -8,6 +8,7 @@ if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') {throw 'Run staging on the x64 PC, 
 $modified = New-Object 'System.Collections.Generic.List[string]'
 $original = $null; $startupCreated = $false; $verifiedDisk = $false; $receiptRoot = $null; $receiptWritable = $false
 $archived = @()
+$disarmedStartup = $false
 $expectedWindowsHash = 'fae47d78487e781aa06466775cb461adeb7ff7f887fe2c15295bb2eb4f4954e1'
 function Write-Flushed([string]$Path, [byte[]]$Data) {
     $f = [IO.FileStream]::new($Path,[IO.FileMode]::Create,[IO.FileAccess]::Write,[IO.FileShare]::None,4096,[IO.FileOptions]::WriteThrough)
@@ -75,7 +76,19 @@ try {
     $bundle = Join-Path $winRoot 'TimelmTools\TouchGpioTrial'
     $logs = Join-Path $winRoot 'TimelmLogs\TouchGpioTrial'
     $startup = Join-Path $winRoot 'ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\Timelm-touch-gpio.cmd'
-    if (Test-Path -LiteralPath $startup) {throw 'GPIO trial startup is still armed; refusing to rearm'}
+    if (Test-Path -LiteralPath $startup) {
+        # A re-arm removes the Startup entry only when it is byte for byte the
+        # entry this script staged. Any other entry is refused and never
+        # disarmed, because it may belong to something else entirely.
+        if (!$ReArm) {throw 'GPIO trial startup is still armed; refusing to rearm'}
+        $stagedCmd = Join-Path $bundle 'Timelm-touch-gpio.cmd'
+        if (!(Test-Path -LiteralPath $stagedCmd) -or
+            (Get-FileHash -LiteralPath $startup).Hash -ne (Get-FileHash -LiteralPath $stagedCmd).Hash) {
+            throw 'Startup entry is not this trial own; refusing to disarm it'
+        }
+        Remove-Item -LiteralPath $startup -Force
+        $disarmedStartup = $true
+    }
     if ((Test-Path -LiteralPath $bundle) -or (Test-Path -LiteralPath $logs)) {
         # A re-arm is only allowed for this bundle's own leftovers. The staged
         # manifest must match the artifact and the runtime log must carry this
@@ -170,7 +183,7 @@ try {
         serial='8509C01F';disk=$disks[0].Number;checked_installed_infs=$installed.Count;package=$manifest;
         bcd_before_after=$bcdHash;iort_installed=$false;boot_partition_flashed=$false;runtime_install_order=@('GPIO','Host','Touch');
         test_seconds=120;automatic_reboot=$false;normal_shutdown=$true;flushed_and_dismounted=$true;
-        rearm=$ReArm.IsPresent;archived_leftovers=$archived} |
+        rearm=$ReArm.IsPresent;disarmed_startup=$disarmedStartup;archived_leftovers=$archived} |
         ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $receiptRoot 'stage-status.json')
 } catch {
     $failure = $_.Exception.Message; $rollback = @()
