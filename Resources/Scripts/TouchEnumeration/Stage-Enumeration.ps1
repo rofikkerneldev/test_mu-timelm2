@@ -39,8 +39,14 @@ try {
     if ((Get-Content -LiteralPath (Join-Path $winRoot 'TimelmTools\OobeHelper\timelm-device.marker') -Raw).Trim() -ne 'LG-V60-timelm-8509C01F') {throw 'Wrong installation marker'}
     $infs = @(Get-ChildItem -LiteralPath (Join-Path $winRoot 'Windows\INF') -Filter '*.inf' -File)
     if ($infs.Count -lt 100) {throw 'Incomplete Windows INF enumeration'}
-    $matches = @($infs | Select-String -Pattern 'TIML0001|LGSW4290')
-    if ($matches.Count) {throw 'Matching touch/host driver is installed; enumeration-only precondition failed'}
+    $matches = @($infs | Select-String -Pattern 'TIML0001|LGSW4290' -List)
+    $replaces = $null
+    if ($HostLoadTrial) {
+        $replaces = (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'HostLoadPackage.json') -Raw | ConvertFrom-Json).replaces_inf_sha256
+    }
+    foreach ($match in $matches) {
+        if (!$replaces -or (Get-FileHash -LiteralPath $match.Path).Hash -ne $replaces) {throw 'Matching touch/host driver is installed; enumeration-only precondition failed'}
+    }
     foreach ($driver in @('kona_geni.sys','vhidmini.sys')) {
         if (Test-Path -LiteralPath (Join-Path $winRoot ('Windows\System32\drivers\'+$driver))) {throw 'Unexpected experimental driver binary installed'}
     }

@@ -203,6 +203,7 @@ Capture 'touch-driver-diagnostics' {
     }
     Write-JsonFile 'touch-driver-diagnostics.json' @($values)
 }
+Capture 'kona-geni-service' { Native 'kona-geni-service' 'reg.exe' @('query','HKLM\SYSTEM\CurrentControlSet\Services\kona_geni','/s') }
 Capture 'boot-options' { Native 'boot-options' 'bcdedit.exe' @('/enum','all') }
 Capture 'graphics-registry' { Native 'graphics-registry' 'reg.exe' @('query','HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers\Configuration','/s') }
 Capture 'user-dpi' { Native 'user-dpi' 'reg.exe' @('query','HKCU\Control Panel\Desktop','/v','LogPixels') }
