@@ -84,6 +84,22 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT object, PUNICODE_STRING path)
     return WdfDriverCreate(object, path, WDF_NO_OBJECT_ATTRIBUTES, &config, WDF_NO_HANDLE);
 }
 
+/* AddDevice runs before a device key exists; failures go to the service
+ * Parameters key so a Code 31 identifies the failing call. */
+static NTSTATUS AddRecord(WDFDRIVER driver, ULONG stage, NTSTATUS status)
+{
+    WDFKEY key;
+    UNICODE_STRING stageName = RTL_CONSTANT_STRING(L"TimelmAddStage");
+    UNICODE_STRING statusName = RTL_CONSTANT_STRING(L"TimelmAddStatus");
+    if (NT_SUCCESS(WdfDriverOpenParametersRegistryKey(driver, KEY_SET_VALUE,
+        WDF_NO_OBJECT_ATTRIBUTES, &key))) {
+        (void)WdfRegistryAssignULong(key, &stageName, stage);
+        (void)WdfRegistryAssignULong(key, &statusName, (ULONG)status);
+        WdfRegistryClose(key);
+    }
+    return status;
+}
+
 NTSTATUS GeniAdd(WDFDRIVER driver, PWDFDEVICE_INIT init)
 {
     WDF_PNPPOWER_EVENT_CALLBACKS pnp;
@@ -91,9 +107,8 @@ NTSTATUS GeniAdd(WDFDRIVER driver, PWDFDEVICE_INIT init)
     WDFDEVICE device;
     SPB_CONTROLLER_CONFIG spb;
     NTSTATUS status;
-    UNREFERENCED_PARAMETER(driver);
     status = SpbDeviceInitConfig(init);
-    if (!NT_SUCCESS(status)) return status;
+    if (!NT_SUCCESS(status)) return AddRecord(driver, 1, status);
     WDF_PNPPOWER_EVENT_CALLBACKS_INIT(&pnp);
     pnp.EvtDevicePrepareHardware = GeniPrepare;
     pnp.EvtDeviceReleaseHardware = GeniRelease;
@@ -104,7 +119,7 @@ NTSTATUS GeniAdd(WDFDRIVER driver, PWDFDEVICE_INIT init)
     attributes.ExecutionLevel = WdfExecutionLevelPassive;
     attributes.SynchronizationScope = WdfSynchronizationScopeDevice;
     status = WdfDeviceCreate(&init, &attributes, &device);
-    if (!NT_SUCCESS(status)) return status;
+    if (!NT_SUCCESS(status)) return AddRecord(driver, 2, status);
     SPB_CONTROLLER_CONFIG_INIT(&spb);
     spb.ControllerDispatchType = WdfIoQueueDispatchSequential;
     spb.PowerManaged = WdfTrue;
@@ -114,13 +129,16 @@ NTSTATUS GeniAdd(WDFDRIVER driver, PWDFDEVICE_INIT init)
     spb.EvtSpbIoSequence = GeniSequence;
     /* Separate lock/unlock requests are unsupported. Atomic sequences only. */
     status = SpbDeviceInitialize(device, &spb);
-    if (NT_SUCCESS(status)) {
+    if (!NT_SUCCESS(status)) return AddRecord(driver, 3, status);
+    {
         WDF_DEVICE_POWER_POLICY_IDLE_SETTINGS idle;
         WDF_DEVICE_POWER_POLICY_IDLE_SETTINGS_INIT(&idle,IdleCannotWakeFromS0);
         idle.Enabled = WdfFalse; /* no resume lifecycle yet */
+        /* Idle is disabled anyway; a refusal must not block the SPB host. */
         status = WdfDeviceAssignS0IdleSettings(device,&idle);
+        GeniRecord(device, L"TimelmIdleStatus", (ULONG)status);
     }
-    return status;
+    return AddRecord(driver, 4, STATUS_SUCCESS);
 }
 
 NTSTATUS GeniPrepare(WDFDEVICE device, WDFCMRESLIST raw, WDFCMRESLIST translated)
