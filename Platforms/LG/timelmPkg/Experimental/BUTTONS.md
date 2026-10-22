@@ -521,13 +521,40 @@ The agent now measures the request:
 The trial ends with the same request (`shutdown /s /t 30 /f`) and writes the
 exit code into the log.
 
+### Attempt 11, the power key switches the window
+
+The eleventh attempt was staged with the new agent (the measured shutdown) and
+the same mapping as the attempt 10.  The report of the user: the shutdown of
+the phone still did not answer well enough for the daily use, so the power key
+got a new mapping:
+
+| Button | Short press | Long press |
+| --- | --- | --- |
+| Volume Up | `UP` | `RIGHT` (800 ms) |
+| Volume Down | `DOWN` | `LEFT` (800 ms) |
+| Assist | `ENTER` | `TAB` (800 ms) |
+| Power | `TAB` | `Alt+Tab` (1500 ms) |
+
+`Alt+Tab` is a new action of the agent (17).  The switch between the windows
+belongs to the shell, so the alt key has to be held while the tab key is
+pressed; both keys are sent in one batch, otherwise the shell would see a tab
+without the alt key and would move the focus inside the window instead of
+switching the window.
+
+The action is the number 17 in the mapping and the driver carries the number
+of the action without looking at it, so no new build of the driver is needed.
+The default of every script is the new mapping now, the action `Shutdown` is
+still there for the end of a trial.
+
 ## What is still open
 
 * The **shutdown of the long power press** is answered (the agent calls
   `shutdown.exe`), but the phone needed two minutes for it on the attempt
   10.  The next attempt reads the exit code of the request; the open
   question is what holds the shutdown back (the attached USB mass storage
-  or an open program).
+  or an open program).  The daily mapping does not use it any more.
+* The **`Alt+Tab` of the power key is not proven on the phone yet**: the
+  action is new and the shell has to take it, not the application.
 * The **capture of the touch chip** in the recovery came out empty
   (`captures/touch/f-touch`): the chip is quiet in the recovery, so the
   capture has to run in Android, not in the recovery.

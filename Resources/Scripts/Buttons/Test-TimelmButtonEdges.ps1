@@ -301,8 +301,8 @@ $mapping = ConvertTo-TimelmButtonMapping -Mode Agent -Version 3
 $decoded = ConvertFrom-TimelmButtonMapping $mapping
 Assert-Equal 4 $decoded.Action.Count 'the mapping has four buttons'
 Assert-Equal 1500 $decoded.Action[0].LongPressMillis 'the power key has a long press'
-Assert-Equal 9 $decoded.Action[0].AgentShortAction 'the short press of the power key opens the start menu'
-Assert-Equal 5 $decoded.Action[0].AgentLongAction 'the long press of the power key shuts the phone down'
+Assert-Equal 1 $decoded.Action[0].AgentShortAction 'the short press of the power key answers with TAB'
+Assert-Equal 17 $decoded.Action[0].AgentLongAction 'the long press of the power key switches the window with Alt+Tab'
 Assert-Equal 800 $decoded.Action[1].LongPressMillis 'the volume up key has a long press'
 Assert-Equal 13 $decoded.Action[1].AgentShortAction 'the short press of the volume up key moves the cursor up'
 Assert-Equal 14 $decoded.Action[1].AgentLongAction 'the long press of the volume up key moves the cursor right'
@@ -341,6 +341,19 @@ Assert-Equal 'Up' (Get-TimelmAgentActionName 13) 'the up arrow has a name'
 Assert-Equal 'Right' (Get-TimelmAgentActionName 14) 'the right arrow has a name'
 Assert-Equal 'Down' (Get-TimelmAgentActionName 15) 'the down arrow has a name'
 Assert-Equal 'Left' (Get-TimelmAgentActionName 16) 'the left arrow has a name'
+Assert-Equal 'AltTab' (Get-TimelmAgentActionName 17) 'the alt tab has a name'
+
+Write-Host '--- the alt tab can be chosen for every button ---'
+$altTab = ConvertTo-TimelmButtonMapping -Mode Agent -Version 3 `
+    -PowerAction 'AltTab' -PowerLongAction 'AltTab' `
+    -VolumeUpAction 'AltTab' -VolumeUpLongAction 'AltTab' `
+    -VolumeDownAction 'AltTab' -VolumeDownLongAction 'AltTab' `
+    -AssistAction 'AltTab' -AssistLongAction 'AltTab'
+$altTabDecoded = ConvertFrom-TimelmButtonMapping $altTab
+foreach ($index in 0..3) {
+    Assert-Equal 17 $altTabDecoded.Action[$index].AgentShortAction ("the short press of the button {0} switches the window" -f $index)
+    Assert-Equal 17 $altTabDecoded.Action[$index].AgentLongAction ("the long press of the button {0} switches the window" -f $index)
+}
 
 if ($script:Failures -gt 0) {
     Write-Host ("{0} checks failed" -f $script:Failures)

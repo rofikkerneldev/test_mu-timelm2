@@ -155,6 +155,20 @@ function Invoke-TimelmShiftF10 {
     Write-TimelmAgentLog 'action Shift+F10'
 }
 
+function Invoke-TimelmAltTab {
+    <#
+      The switch between the windows belongs to the shell: the alt key is
+      held while the tab key is pressed, otherwise the tab would move the
+      focus inside the window.
+    #>
+    if ($DryRun) {
+        Write-TimelmAgentLog 'action Alt+Tab (dry run)'
+        return
+    }
+    [TimelmButtonsNative]::SendAltTab()
+    Write-TimelmAgentLog 'action Alt+Tab'
+}
+
 function Get-TimelmLockState {
     <#
       The state of the lock of the session: 'Unlocked', 'Locked' or
@@ -467,6 +481,9 @@ function Invoke-TimelmAgentAction {
     elseif ($Action -eq $script:TimelmAgentAction.Left) {
         Invoke-TimelmKey -Name 'LEFT' -VirtualKey $script:TimelmVkLeft -Extended $true
     }
+    elseif ($Action -eq $script:TimelmAgentAction.AltTab) {
+        Invoke-TimelmAltTab
+    }
 }
 
 # Button bit -> index inside the driver state arrays (Power, VolumeUp, VolumeDown, Assist)
@@ -475,7 +492,7 @@ function Invoke-TimelmAgentAction {
 # not know the mapping.  As soon as the mapping of the driver is readable,
 # it decides what the agent does.
 $buttonTable = @(
-    [pscustomobject]@{ Bit = 1; Name = 'Power'; Index = 0; LongPress = $PowerLongPressMillis; ShortAction = $script:TimelmAgentAction.StartMenu; LongAction = $script:TimelmAgentAction.Shutdown },
+    [pscustomobject]@{ Bit = 1; Name = 'Power'; Index = 0; LongPress = $PowerLongPressMillis; ShortAction = $script:TimelmAgentAction.Tab; LongAction = $script:TimelmAgentAction.AltTab },
     [pscustomobject]@{ Bit = 2; Name = 'VolumeUp'; Index = 1; LongPress = $VolumeUpLongPressMillis; ShortAction = $script:TimelmAgentAction.Up; LongAction = $script:TimelmAgentAction.Right },
     [pscustomobject]@{ Bit = 4; Name = 'VolumeDown'; Index = 2; LongPress = $VolumeDownLongPressMillis; ShortAction = $script:TimelmAgentAction.Down; LongAction = $script:TimelmAgentAction.Left },
     [pscustomobject]@{ Bit = 8; Name = 'Assist'; Index = 3; LongPress = $AssistLongPressMillis; ShortAction = $script:TimelmAgentAction.Enter; LongAction = $script:TimelmAgentAction.Tab }

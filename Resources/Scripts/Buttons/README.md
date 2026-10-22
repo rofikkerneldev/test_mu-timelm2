@@ -86,7 +86,7 @@ scripts write a mapping that the installed driver understands.
 | --- | --- | --- |
 | Volume Up | `UP` (the cursor moves up) | `RIGHT` (800 ms) |
 | Volume Down | `DOWN` (the cursor moves down) | `LEFT` (800 ms) |
-| Power | the Windows key, the start menu opens | `shutdown /s` (1500 ms), clean shutdown |
+| Power | `TAB` | `Alt+Tab` (1500 ms), switch the window |
 | Assist | `ENTER` | `TAB` (800 ms) |
 
 The long press is detected with the press duration that the driver reports,
@@ -125,6 +125,7 @@ The mode is written into the driver, so it can be changed while Windows runs
 | 14 | Right | the cursor moves right |
 | 15 | Down | the cursor moves down |
 | 16 | Left | the cursor moves left |
+| 17 | Alt+Tab | switch to the next window, the alt key is held while the tab key is pressed |
 
 The driver does **not** check the numbers, it only carries them from the
 mapping of the tool into the agent, so the new actions need no new build of
@@ -437,6 +438,30 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File Stage-TimelmButtonsTrial.ps1 `
     -VolumeDownAction Down -VolumeDownLongAction Left `
     -AssistAction Enter -AssistLongAction Tab -Seconds 900 -Arm
 ```
+
+### The mapping of the eleventh attempt: the power key switches the window
+
+The shutdown of the phone did not answer well enough for the daily use: the
+request was made, but the phone needed two minutes for it and the screen gave
+no sign of life.  The user asked for a new mapping of the power key:
+
+| Button | Short press | Long press |
+| --- | --- | --- |
+| Volume Up | `UP` | `RIGHT` (800 ms) |
+| Volume Down | `DOWN` | `LEFT` (800 ms) |
+| Assist | `ENTER` | `TAB` (800 ms) |
+| Power | `TAB` | `Alt+Tab` (1500 ms) |
+
+`Alt+Tab` is a new action of the agent (17).  The switch between the windows
+belongs to the shell, so the alt key is held while the tab key is pressed; the
+two keys are sent in one batch, otherwise the shell would see a tab without the
+alt key and would move the focus inside the window.
+
+The action is the number 17 in the mapping, and the driver carries the number
+of the action without looking at it, so no new build of the driver is needed.
+The default of every script is the new mapping now, the action `Shutdown` is
+still there for the end of a trial.
+
 
 ## The status of the buses
 

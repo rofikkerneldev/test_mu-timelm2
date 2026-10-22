@@ -343,6 +343,32 @@ public static class TimelmButtonsNative
     }
 
     //
+    // The switch between the windows is done by the shell, so the alt key has
+    // to be held while the tab key is pressed.  The two keys are sent in one
+    // batch, otherwise the shell would see a tab without the alt key.
+    //
+    public static void SendAltTab()
+    {
+        INPUT[] inputs = new INPUT[4];
+
+        inputs[0].type = INPUT_KEYBOARD;
+        inputs[0].u.ki.wVk = 0x12;   // VK_MENU
+
+        inputs[1].type = INPUT_KEYBOARD;
+        inputs[1].u.ki.wVk = 0x09;   // VK_TAB
+
+        inputs[2].type = INPUT_KEYBOARD;
+        inputs[2].u.ki.wVk = 0x09;
+        inputs[2].u.ki.dwFlags = KEYEVENTF_KEYUP;
+
+        inputs[3].type = INPUT_KEYBOARD;
+        inputs[3].u.ki.wVk = 0x12;
+        inputs[3].u.ki.dwFlags = KEYEVENTF_KEYUP;
+
+        SendInput(4, inputs, Marshal.SizeOf(typeof(INPUT)));
+    }
+
+    //
     // Turns the display on again and resets the idle timers of the system.
     // The call is made without ES_CONTINUOUS, so the request ends with the
     // thread of the agent.
@@ -928,6 +954,7 @@ $script:TimelmAgentAction = @{
     Right         = 14
     Down          = 15
     Left          = 16
+    AltTab        = 17
 }
 
 function Get-TimelmAgentActionName {
@@ -1386,19 +1413,19 @@ function ConvertTo-TimelmButtonMapping {
         [ValidateSet('Agent', 'Hid', 'Both')]
         [string]$Mode = 'Agent',
         [int]$PowerLongPressMillis = 1500,
-        [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
-        [string]$PowerAction = 'StartMenu',
-        [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
-        [string]$PowerLongAction = 'Shutdown',
+        [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left', 'AltTab')]
+        [string]$PowerAction = 'Tab',
+        [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left', 'AltTab')]
+        [string]$PowerLongAction = 'AltTab',
         [int]$VolumeUpLongPressMillis = 800,
-        [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+        [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left', 'AltTab')]
         [string]$VolumeUpAction = 'Up',
-        [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+        [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left', 'AltTab')]
         [string]$VolumeUpLongAction = 'Right',
         [int]$VolumeDownLongPressMillis = 800,
-        [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+        [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left', 'AltTab')]
         [string]$VolumeDownAction = 'Down',
-        [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+        [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left', 'AltTab')]
         [string]$VolumeDownLongAction = 'Left',
         [ValidateSet(1, 2, 3)]
         [int]$Version = 3,
@@ -1406,10 +1433,10 @@ function ConvertTo-TimelmButtonMapping {
         [int]$AssistAddress = 0xC010,
         [int]$AssistMask = 0x01,
         [int]$AssistPolarity = 1,
-        [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+        [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left', 'AltTab')]
         [string]$AssistAction = 'Enter',
         [int]$AssistLongPressMillis = 800,
-        [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+        [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left', 'AltTab')]
         [string]$AssistLongAction = 'Tab'
     )
 
