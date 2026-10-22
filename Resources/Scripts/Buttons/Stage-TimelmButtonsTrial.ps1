@@ -19,6 +19,13 @@
   powershell -ExecutionPolicy Bypass -File Stage-TimelmButtonsTrial.ps1 `
       -Artifact C:\artifacts\timelm-native-buttons -Output C:\receipts\buttons `
       -ButtonMode Hid -Arm
+
+.EXAMPLE
+  # a second trial, the bundle and the receipts of the first one are
+  # archived on the PC before they are removed from the phone
+  powershell -ExecutionPolicy Bypass -File Stage-TimelmButtonsTrial.ps1 `
+      -Artifact C:\artifacts\timelm-native-buttons -Output C:\receipts\buttons `
+      -ButtonMode Agent -Replace
 #>
 [CmdletBinding()]
 param(
@@ -26,7 +33,11 @@ param(
     [Parameter(Mandatory = $true)][string]$Output,
     [ValidateSet('Agent', 'Hid', 'Both')]
     [string]$ButtonMode = 'Agent',
-    [switch]$Arm
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu')]
+    [string]$AssistAction = 'LaunchTarget',
+    [string]$AssistTarget = 'notepad.exe',
+    [switch]$Arm,
+    [switch]$Replace
 )
 
 $ErrorActionPreference = 'Stop'
@@ -118,13 +129,46 @@ try {
     if ((Get-Content -LiteralPath $marker -Raw).Trim() -ne 'LG-V60-timelm-8509C01F') { throw 'Wrong installed Windows marker' }
 
     $bundle = Join-Path $winRoot 'TimelmTools\TimelmButtonsTrial'
-    if (Test-Path -LiteralPath $bundle) { throw 'The button trial bundle already exists on the phone' }
+    $logDir = Join-Path $winRoot 'TimelmLogs\TimelmButtonsTrial'
+    $startup = Join-Path $winRoot 'ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\Timelm-buttons.cmd'
+
+    #
+    # A trial leaves its bundle, its receipts and possibly its startup entry
+    # on the phone.  A second trial needs a clean phone, but the receipts of
+    # the first one are evidence and are archived on the PC before they are
+    # removed.
+    #
+    $archived = @()
+    if ((Test-Path -LiteralPath $bundle) -or (Test-Path -LiteralPath $logDir)) {
+        if (-not $Replace) {
+            throw 'A previous button trial is still on the phone, use -Replace to archive it'
+        }
+
+        if (Test-Path -LiteralPath $logDir) {
+            $archive = Join-Path $receiptRoot 'previous-trial-logs'
+            if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Recurse -Force }
+            Copy-Item -LiteralPath $logDir -Destination $archive -Recurse -Force
+            $archived += 'TimelmLogs\TimelmButtonsTrial'
+            Remove-Item -LiteralPath $logDir -Recurse -Force
+        }
+        if (Test-Path -LiteralPath $bundle) {
+            Remove-Item -LiteralPath $bundle -Recurse -Force
+            $archived += 'TimelmTools\TimelmButtonsTrial'
+        }
+        if (Test-Path -LiteralPath $startup) {
+            Remove-Item -LiteralPath $startup -Force
+            $archived += 'Startup\Timelm-buttons.cmd'
+        }
+        $modified = $true
+    }
 
     $scripts = @(
         @{ source = (Join-Path $PSScriptRoot 'Run-TimelmButtonsTrial.ps1'); relative = 'Run-TimelmButtonsTrial.ps1' },
         @{ source = (Join-Path $PSScriptRoot 'Start-TimelmButtonsTrial.ps1'); relative = 'Start-TimelmButtonsTrial.ps1' },
         @{ source = (Join-Path $PSScriptRoot 'TimelmButtonAgent.ps1'); relative = 'TimelmButtonAgent.ps1' },
         @{ source = (Join-Path $PSScriptRoot 'TimelmButtonsCommon.ps1'); relative = 'TimelmButtonsCommon.ps1' },
+        @{ source = (Join-Path $PSScriptRoot 'Set-TimelmButtonMode.ps1'); relative = 'Set-TimelmButtonMode.ps1' },
+        @{ source = (Join-Path $PSScriptRoot 'Install-TimelmButtonAgent.ps1'); relative = 'Install-TimelmButtonAgent.ps1' },
         @{ source = $manifestPath; relative = 'sha256.json' },
         @{ source = $sourcePath; relative = 'source.json' }
     )
@@ -143,8 +187,19 @@ try {
     $cmdText = [IO.File]::ReadAllText($cmdSource)
     if ($cmdText -notmatch '-ButtonMode\s+(Agent|Hid|Both)') { throw 'The trial launcher has no button mode' }
     $cmdText = $cmdText -replace '-ButtonMode\s+(Agent|Hid|Both)', ('-ButtonMode ' + $ButtonMode)
+    if ($cmdText -notmatch '-AssistAction\s+\w+') { throw 'The trial launcher has no assist action' }
+    $cmdText = $cmdText -replace '-AssistAction\s+\w+', ('-AssistAction ' + $AssistAction)
     $cmdPath = Join-Path $bundle 'Timelm-buttons.cmd'
     Write-Flushed $cmdPath ([Text.Encoding]::ASCII.GetBytes($cmdText))
+
+    #
+    # The target of the assist key is a text file, so the function of the
+    # key can be changed without touching the agent.
+    #
+    $targetDir = Join-Path $winRoot 'ProgramData\Timelm'
+    $null = New-Item -ItemType Directory -Force -Path $targetDir
+    $targetFile = Join-Path $targetDir 'assist-target.txt'
+    Write-Flushed $targetFile ([Text.Encoding]::ASCII.GetBytes($AssistTarget))
 
     # The reference time of the build PC.  The RTC of the phone runs hours
     # behind, the trial corrects the clock before it writes any receipt.
@@ -159,6 +214,7 @@ try {
     }
     $hashes += [ordered]@{ path = 'host-utc.txt'; sha256 = (Get-FileHash -LiteralPath (Join-Path $bundle 'host-utc.txt') -Algorithm SHA256).Hash }
     $hashes += [ordered]@{ path = 'Timelm-buttons.cmd'; sha256 = (Get-FileHash -LiteralPath $cmdPath -Algorithm SHA256).Hash }
+    $hashes += [ordered]@{ path = 'ProgramData/Timelm/assist-target.txt'; sha256 = (Get-FileHash -LiteralPath $targetFile -Algorithm SHA256).Hash }
 
     $staged = [ordered]@{
         phase = 'staged'
@@ -172,6 +228,9 @@ try {
         driver_sha256 = (Get-FileHash -LiteralPath $sys -Algorithm SHA256).Hash
         inf_sha256 = (Get-FileHash -LiteralPath $inf -Algorithm SHA256).Hash
         button_mode = $ButtonMode
+        assist_action = $AssistAction
+        assist_target = $AssistTarget
+        archived = $archived
         files = $hashes
         armed = $Arm.IsPresent
         esp_touched = $false

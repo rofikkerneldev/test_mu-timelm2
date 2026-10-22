@@ -9,5 +9,5 @@ if not exist "%TRIAL%\Start-TimelmButtonsTrial.ps1" (
     echo TimelmButtons trial bundle is missing.
     exit /b 1
 )
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%TRIAL%\Start-TimelmButtonsTrial.ps1" -Seconds 120 -ButtonMode Agent
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%TRIAL%\Start-TimelmButtonsTrial.ps1" -Seconds 120 -ButtonMode Agent -AssistAction LaunchTarget
 exit /b %ERRORLEVEL%

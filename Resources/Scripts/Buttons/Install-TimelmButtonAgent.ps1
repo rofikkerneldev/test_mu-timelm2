@@ -28,6 +28,9 @@
   says so and keeps the behaviour of the driver, the agent falls back to
   the built in behaviour on its own.
 
+  With -AssistAction the function of the assist key is chosen, the target of
+  the "LaunchTarget" action is the file %ProgramData%\Timelm\assist-target.txt.
+
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File Install-TimelmButtonAgent.ps1 -StartNow
 
@@ -39,6 +42,8 @@ param(
     [string]$InstallDirectory = (Join-Path $env:ProgramData 'Timelm'),
     [ValidateSet('Agent', 'Hid', 'Both')]
     [string]$Mode = 'Agent',
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu')]
+    [string]$AssistAction = 'LaunchTarget',
     [switch]$StartNow,
     [switch]$Uninstall
 )
@@ -104,7 +109,7 @@ try {
     Write-Host ("HID face available     : {0}" -f $state.HidReady)
 
     $mappingVersion = Get-TimelmButtonMappingVersion -Handle $handle
-    $mapping = ConvertTo-TimelmButtonMapping -Mode $Mode -Version $mappingVersion
+    $mapping = ConvertTo-TimelmButtonMapping -Mode $Mode -Version $mappingVersion -AssistAction $AssistAction
     Set-TimelmButtonMapping -Handle $handle -Mapping $mapping
 
     $readBack = Get-TimelmButtonMapping -Handle $handle
