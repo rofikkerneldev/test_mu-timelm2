@@ -14,11 +14,18 @@
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File Stage-TimelmButtonsTrial.ps1 `
       -Artifact C:\artifacts\timelm-native-buttons -Output C:\receipts\buttons
+
+.EXAMPLE
+  powershell -ExecutionPolicy Bypass -File Stage-TimelmButtonsTrial.ps1 `
+      -Artifact C:\artifacts\timelm-native-buttons -Output C:\receipts\buttons `
+      -ButtonMode Hid -Arm
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$Artifact,
     [Parameter(Mandatory = $true)][string]$Output,
+    [ValidateSet('Agent', 'Hid', 'Both')]
+    [string]$ButtonMode = 'Agent',
     [switch]$Arm
 )
 
@@ -118,7 +125,6 @@ try {
         @{ source = (Join-Path $PSScriptRoot 'Start-TimelmButtonsTrial.ps1'); relative = 'Start-TimelmButtonsTrial.ps1' },
         @{ source = (Join-Path $PSScriptRoot 'TimelmButtonAgent.ps1'); relative = 'TimelmButtonAgent.ps1' },
         @{ source = (Join-Path $PSScriptRoot 'TimelmButtonsCommon.ps1'); relative = 'TimelmButtonsCommon.ps1' },
-        @{ source = (Join-Path $PSScriptRoot 'Timelm-buttons.cmd'); relative = 'Timelm-buttons.cmd' },
         @{ source = $manifestPath; relative = 'sha256.json' },
         @{ source = $sourcePath; relative = 'source.json' }
     )
@@ -128,6 +134,17 @@ try {
 
     $null = New-Item -ItemType Directory -Path $bundle
     $modified = $true
+
+    #
+    # The launcher of the trial carries the button mode, the mode of the
+    # mapping is written by the trial before the agent starts.
+    #
+    $cmdSource = Join-Path $PSScriptRoot 'Timelm-buttons.cmd'
+    $cmdText = [IO.File]::ReadAllText($cmdSource)
+    if ($cmdText -notmatch '-ButtonMode\s+(Agent|Hid|Both)') { throw 'The trial launcher has no button mode' }
+    $cmdText = $cmdText -replace '-ButtonMode\s+(Agent|Hid|Both)', ('-ButtonMode ' + $ButtonMode)
+    $cmdPath = Join-Path $bundle 'Timelm-buttons.cmd'
+    Write-Flushed $cmdPath ([Text.Encoding]::ASCII.GetBytes($cmdText))
 
     # The reference time of the build PC.  The RTC of the phone runs hours
     # behind, the trial corrects the clock before it writes any receipt.
@@ -141,6 +158,7 @@ try {
         [ordered]@{ path = $file.relative; sha256 = $hash }
     }
     $hashes += [ordered]@{ path = 'host-utc.txt'; sha256 = (Get-FileHash -LiteralPath (Join-Path $bundle 'host-utc.txt') -Algorithm SHA256).Hash }
+    $hashes += [ordered]@{ path = 'Timelm-buttons.cmd'; sha256 = (Get-FileHash -LiteralPath $cmdPath -Algorithm SHA256).Hash }
 
     $staged = [ordered]@{
         phase = 'staged'
@@ -153,6 +171,7 @@ try {
         driver_configuration = $provenance.configuration
         driver_sha256 = (Get-FileHash -LiteralPath $sys -Algorithm SHA256).Hash
         inf_sha256 = (Get-FileHash -LiteralPath $inf -Algorithm SHA256).Hash
+        button_mode = $ButtonMode
         files = $hashes
         armed = $Arm.IsPresent
         esp_touched = $false

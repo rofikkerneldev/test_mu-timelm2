@@ -11,10 +11,15 @@
 
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File Start-TimelmButtonsTrial.ps1 -Seconds 120
+
+.EXAMPLE
+  powershell -ExecutionPolicy Bypass -File Start-TimelmButtonsTrial.ps1 -Seconds 120 -ButtonMode Hid
 #>
 [CmdletBinding()]
 param(
-    [int]$Seconds = 120
+    [int]$Seconds = 120,
+    [ValidateSet('Agent', 'Hid', 'Both')]
+    [string]$ButtonMode = 'Agent'
 )
 
 Set-StrictMode -Version 2.0
@@ -26,7 +31,7 @@ $package = Join-Path $PSScriptRoot 'Drivers\Buttons'
 if (-not (Test-Path -LiteralPath $trial)) { throw 'The trial script is missing' }
 if (-not (Test-Path -LiteralPath $package)) { throw 'The button driver package is missing' }
 
-$arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -Seconds {1} -PackagePath "{2}"' -f $trial, $Seconds, $package
+$arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -Seconds {1} -PackagePath "{2}" -ButtonMode {3}' -f $trial, $Seconds, $package, $ButtonMode
 
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 $elevated = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
