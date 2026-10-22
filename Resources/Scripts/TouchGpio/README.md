@@ -50,6 +50,27 @@ then it installs the SW42902 client. Native GENI/GPI/IOMMU gates stay zero.
 After each install it follows that device's selected class key to its published
 OEM INF and verifies the new package hash. A successful PnPUtil exit that leaves
 an older package selected fails the trial before that provider's gate is enabled.
+PnPUtil exit code 259 (ERROR_NO_MORE_ITEMS) is not a failure: it is the normal
+answer when the package is already the selected driver for that device. The exit
+code is recorded and the selected INF of the exact device is verified
+separately, so the package identity is still proven.
+
+A second Startup entry opens Device Manager expanded in the logged-on desktop
+session, so the loaded drivers can be read while the trial runs. The helper
+only displays: it expands the console tree through UI Automation, refreshes it
+after every hardware phase receipt the runner publishes, and records what it saw
+in `device-manager-phases.json`. A process of the SYSTEM task stays in session 0
+and can never show a window, which is why the display helper runs from the
+Startup folder instead. The entry is disarmed by the same rule as the trial
+entry: only an entry that the staging script wrote byte for byte is removed, and
+a foreign entry is never touched.
+
+The runner records the enumeration timeline of the trial as plain text. It
+samples the device node list around every provider restart, because the ACPI
+child of the bus host may exist for a moment before Windows removes it again;
+each sample is one JSON line in `watch-*.jsonl`. It snapshots the rolling
+SetupAPI log after every install, and it records a live ETW trace of the kernel
+PnP and ACPI providers that the build PC converts to CSV with `tracerpt`.
 
 A successful provider restart is not proof of the v3 interface. The host's
 query-interface and basic identity read must prove the path. If GPIO's gate is

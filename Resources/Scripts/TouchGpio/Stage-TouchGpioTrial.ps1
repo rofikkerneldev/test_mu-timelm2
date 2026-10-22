@@ -9,6 +9,8 @@ $modified = New-Object 'System.Collections.Generic.List[string]'
 $original = $null; $startupCreated = $false; $verifiedDisk = $false; $receiptRoot = $null; $receiptWritable = $false
 $archived = @()
 $disarmedStartup = $false
+$devMgrStartupCreated = $false
+$devMgrDisarmed = $false
 $expectedWindowsHash = 'fae47d78487e781aa06466775cb461adeb7ff7f887fe2c15295bb2eb4f4954e1'
 function Write-Flushed([string]$Path, [byte[]]$Data) {
     $f = [IO.FileStream]::new($Path,[IO.FileMode]::Create,[IO.FileAccess]::Write,[IO.FileShare]::None,4096,[IO.FileOptions]::WriteThrough)
@@ -89,6 +91,20 @@ try {
         Remove-Item -LiteralPath $startup -Force
         $disarmedStartup = $true
     }
+    # The Device Manager helper is a second Startup entry. It only displays the
+    # console, and it is disarmed by the same rule as the trial entry: only an
+    # entry that this script staged byte for byte may be removed.
+    $devMgrStartup = Join-Path $winRoot 'ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\Timelm-device-manager.cmd'
+    if (Test-Path -LiteralPath $devMgrStartup) {
+        if (!$ReArm) {throw 'GPIO trial device manager startup is still armed; refusing to rearm'}
+        $stagedDevMgrCmd = Join-Path $bundle 'Timelm-device-manager.cmd'
+        if (!(Test-Path -LiteralPath $stagedDevMgrCmd) -or
+            (Get-FileHash -LiteralPath $devMgrStartup).Hash -ne (Get-FileHash -LiteralPath $stagedDevMgrCmd).Hash) {
+            throw 'Device manager startup entry is not this trial own; refusing to disarm it'
+        }
+        Remove-Item -LiteralPath $devMgrStartup -Force
+        $devMgrDisarmed = $true
+    }
     if ((Test-Path -LiteralPath $bundle) -or (Test-Path -LiteralPath $logs)) {
         # A re-arm is only allowed for this bundle's own leftovers. The staged
         # manifest must match the artifact and the runtime log must carry this
@@ -149,6 +165,9 @@ try {
         @{source=(Join-Path $PSScriptRoot 'Run-TouchGpioTrial.ps1');relative='Run-TouchGpioTrial.ps1'},
         @{source=(Join-Path $PSScriptRoot 'TouchGpioCommon.ps1');relative='TouchGpioCommon.ps1'},
         @{source=(Join-Path $PSScriptRoot 'Timelm-touch-gpio.cmd');relative='Timelm-touch-gpio.cmd'},
+        @{source=(Join-Path $PSScriptRoot 'TouchGpioDeviceManager.ps1');relative='TouchGpioDeviceManager.ps1'},
+        @{source=(Join-Path $PSScriptRoot 'Timelm-device-manager.cmd');relative='Timelm-device-manager.cmd'},
+        @{source=(Join-Path $PSScriptRoot 'Watch-DeviceNodes.ps1');relative='Watch-DeviceNodes.ps1'},
         @{source=(Join-Path (Split-Path $PSScriptRoot) 'TouchEnumeration\Invoke-ProbeProcess.ps1');relative='Invoke-ProbeProcess.ps1'},
         @{source=(Join-Path (Split-Path $PSScriptRoot) 'Collect-TimelmDiagnostics.ps1');relative='Collect-TimelmDiagnostics.ps1'},
         @{source=(Join-Path $artifactRoot 'package.json');relative='package.json'},
@@ -166,11 +185,23 @@ try {
     $null = Get-TouchGpioManifest $bundle
     # Preserve the exact staged startup/helper on the PC before arming it.
     $null = Copy-Verified (Join-Path $bundle 'Timelm-touch-gpio.cmd') (Join-Path $receiptRoot 'startup-staged.cmd')
+    $null = Copy-Verified (Join-Path $bundle 'Timelm-device-manager.cmd') (Join-Path $receiptRoot 'device-manager-startup-staged.cmd')
     $startupBytes = [IO.File]::ReadAllBytes((Join-Path $bundle 'Timelm-touch-gpio.cmd'))
     $startupStream = [IO.FileStream]::new($startup,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None,4096,[IO.FileOptions]::WriteThrough)
     $startupCreated = $true
     try {$startupStream.Write($startupBytes,0,$startupBytes.Length);$startupStream.Flush($true)} finally {$startupStream.Dispose()}
     if ((Get-FileHash -LiteralPath $startup).Hash -ne (Get-FileHash -LiteralPath (Join-Path $bundle 'Timelm-touch-gpio.cmd')).Hash) {throw 'Startup readback failed'}
+    # The Device Manager helper runs in the same desktop session as the trial
+    # bootstrap, so the console opens on the visible screen. It is written with
+    # CreateNew as well: an entry that already exists is never overwritten.
+    $devMgrBytes = [IO.File]::ReadAllBytes((Join-Path $bundle 'Timelm-device-manager.cmd'))
+    $devMgrStream = [IO.FileStream]::new($devMgrStartup,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None,4096,[IO.FileOptions]::WriteThrough)
+    $devMgrStartupCreated = $true
+    try {$devMgrStream.Write($devMgrBytes,0,$devMgrBytes.Length);$devMgrStream.Flush($true)} finally {$devMgrStream.Dispose()}
+    if ((Get-FileHash -LiteralPath $devMgrStartup).Hash -ne (Get-FileHash -LiteralPath (Join-Path $bundle 'Timelm-device-manager.cmd')).Hash) {throw 'Device manager startup readback failed'}
+    # The phone volume is dismounted before the receipt is written, so the
+    # hash of the armed entry is captured here and not read again later.
+    $devMgrStartupHash = (Get-FileHash -LiteralPath $devMgrStartup).Hash
     foreach ($rel in $targets) {
         $dest = $espRoot + $rel
         $modified.Add($dest)
@@ -183,7 +214,9 @@ try {
         serial='8509C01F';disk=$disks[0].Number;checked_installed_infs=$installed.Count;package=$manifest;
         bcd_before_after=$bcdHash;iort_installed=$false;boot_partition_flashed=$false;runtime_install_order=@('GPIO','Host','Touch');
         test_seconds=120;automatic_reboot=$false;normal_shutdown=$true;flushed_and_dismounted=$true;
-        rearm=$ReArm.IsPresent;disarmed_startup=$disarmedStartup;archived_leftovers=$archived} |
+        rearm=$ReArm.IsPresent;disarmed_startup=$disarmedStartup;archived_leftovers=$archived;
+        device_manager_startup='Timelm-device-manager.cmd';device_manager_startup_sha256=$devMgrStartupHash;
+        disarmed_device_manager_startup=$devMgrDisarmed} |
         ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $receiptRoot 'stage-status.json')
 } catch {
     $failure = $_.Exception.Message; $rollback = @()
@@ -198,6 +231,11 @@ try {
             # This path was opened with CreateNew by this attempt, so even a
             # partial write belongs to us and must be disarmed on rollback.
             Remove-Item -LiteralPath $startup
+        } catch {$rollback += $_.Exception.Message}
+    }
+    if ($devMgrStartupCreated -and (Test-Path -LiteralPath $devMgrStartup)) {
+        try {
+            Remove-Item -LiteralPath $devMgrStartup
         } catch {$rollback += $_.Exception.Message}
     }
     if ($verifiedDisk) {try {Flush-Dismount} catch {$rollback += $_.Exception.Message}}

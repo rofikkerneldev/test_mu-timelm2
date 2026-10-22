@@ -32,6 +32,7 @@ $gpioKey = 'HKLM:\SYSTEM\CurrentControlSet\Enum\'+$gpioId+'\Device Parameters'
 $gates = @('NativeBoardInitEnabled','NativeGpiEnabled','WindowsIommuEnabled','FirmwareHandoffVerified','SourceClockHz','ReadOnlyHardwareProbeEnabled')
 $needNextBoot = $false; $trialError = $null; $testWindow = $false; $awake = $false
 $operations = New-Object 'System.Collections.Generic.List[object]'
+$script:activeWatches = New-Object 'System.Collections.Generic.List[object]'
 # A monotonic budget bounds the whole trial. The phone clock is corrected
 # before this task starts and must not move while it runs, and a stopwatch
 # keeps the bound even if the clock is corrected again by something else.
@@ -69,7 +70,80 @@ function Pnp([string]$Label, [string[]]$PnpArguments) {
     $operations.Add([ordered]@{operation=$Label;arguments=$PnpArguments;exit_code=$code;utc=[DateTime]::UtcNow.ToString('o')})
     Save-Json 'operations.json' @($operations.ToArray())
     if ($code -eq 3010) {$script:needNextBoot = $true; throw 'Driver update requires a second boot; collecting before normal shutdown'}
-    if ($code -ne 0) {throw "PnPUtil $Label returned $code"}
+    # 259 is ERROR_NO_MORE_ITEMS. PnPUtil returns it when the package was
+    # staged but no device had to be updated, which is the normal answer when
+    # the driver is already the selected one for that device. Treating it as a
+    # failure aborted a real attempt before any hardware step, even though the
+    # install itself had succeeded. The selected INF of the exact device is
+    # verified separately, so the package identity is still proven.
+    if ($code -eq 0 -or $code -eq 259) {return}
+    throw "PnPUtil $Label returned $code"
+}
+function Start-NodeWatch([string]$Label, [int]$Seconds) {
+    # The ACPI child of the I2C host may exist for a moment before Windows
+    # removes it again, so the node list is sampled continuously while the
+    # provider is restarted instead of being read once afterwards.
+    $out = Join-Path $logs ('watch-'+$Label+'.jsonl')
+    $watch = [ordered]@{label=$Label;output=$out;seconds=$Seconds;process_id=$null;error=$null;
+        started=[DateTime]::UtcNow.ToString('o')}
+    try {
+        $process = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+            -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $PSScriptRoot 'Watch-DeviceNodes.ps1'),
+                '-Output',$out,'-Seconds',$Seconds) -WindowStyle Hidden -PassThru
+        $watch.process_id = $process.Id
+    } catch {
+        $watch.error = $_.Exception.Message
+    }
+    $script:activeWatches.Add($watch)
+    return $watch
+}
+function Stop-NodeWatch($Watch) {
+    if ($null -eq $Watch -or !$Watch.process_id) {return}
+    try {Stop-Process -Id $Watch.process_id -Force -ErrorAction SilentlyContinue} catch {}
+}
+function Copy-SetupApiLog([string]$Label) {
+    # The SetupAPI log is a rolling file. A snapshot right after each install
+    # keeps the decision of that install, which the rolling log can lose.
+    try {
+        $source = Join-Path $env:SystemRoot 'INF\setupapi.dev.log'
+        if (Test-Path -LiteralPath $source) {
+            Copy-Item -LiteralPath $source -Destination (Join-Path $logs ('setupapi-'+$Label+'.log')) -Force
+        }
+    } catch {}
+}
+function Start-LiveTrace {
+    # A live trace of the kernel PnP and ACPI providers records the device node
+    # decisions as they happen. It is a diagnostic only: the session is stopped
+    # again before the phone shuts down, and a failure to start it never fails
+    # the trial.
+    $state = [ordered]@{started=$false;session='TimelmTouchTrace';output=(Join-Path $logs 'live-pnp-trace.etl');
+        providers=(Join-Path $logs 'live-trace-providers.txt');error=$null;utc=[DateTime]::UtcNow.ToString('o')}
+    try {
+        # logman takes only one provider per -p option, so the provider list
+        # is written to a file and passed with -pf.
+        Set-Content -LiteralPath $state.providers -Encoding ASCII -Value @(
+            'Microsoft-Windows-Kernel-PnP 0xFFFFFFFF 0xFF',
+            'Microsoft-Windows-Kernel-Acpi 0xFFFFFFFF 0xFF',
+            'Microsoft-Windows-DriverFrameworks-UserMode 0xFFFFFFFF 0xFF')
+        $output = & logman.exe create trace $state.session -pf $state.providers -ets -o $state.output -mode circular -max 64 2>&1
+        $state.exit_code = $LASTEXITCODE
+        $state.output_text = ($output | Out-String)
+        $state.started = ($LASTEXITCODE -eq 0)
+    } catch {
+        $state.error = $_.Exception.Message
+    }
+    Save-Json 'live-trace-start.json' $state
+    return $state
+}
+function Stop-LiveTrace($Trace) {
+    if ($null -eq $Trace -or !$Trace.started) {return}
+    try {
+        $output = & logman.exe stop $Trace.session -ets 2>&1
+        Save-Json 'live-trace-stop.json' @{session=$Trace.session;exit_code=$LASTEXITCODE;
+            output=($output | Out-String);utc=[DateTime]::UtcNow.ToString('o')}
+    } catch {
+        Save-Json 'live-trace-stop.json' @{session=$Trace.session;error=$_.Exception.Message;utc=[DateTime]::UtcNow.ToString('o')}
+    }
 }
 function Get-Gate([string]$Path, [string]$Name) {
     # Windows PowerShell 5.1 throws from Get-ItemPropertyValue when the
@@ -226,31 +300,59 @@ public static class TouchGpioAwake {
         $cert.Reset()
     }
     Assert-Budget 'install-gpio'
+    # The live trace and the node sampler run over the whole installation, so
+    # the device node decisions of this attempt are recorded while they happen.
+    $liveTrace = Start-LiveTrace
     # GPIO gate must be visible when the replacement provider creates its v3 interface.
     Pnp 'install-GPIO' @('/add-driver',(Join-Path $PSScriptRoot 'Drivers\GPIO\GPIO.inf'),'/install')
     Assert-SelectedInf 'GPIO' $gpioId
+    Copy-SetupApiLog 'after-gpio-install'
     Set-Gate $gpioKey 'TouchBusGpioEnabled' 1
+    $watchGpio = Start-NodeWatch 'gpio' 30
     Pnp 'restart-GPIO' @('/restart-device',$gpioId)
     Wait-Seconds 5 'gpio-restart'
     $gpio = Get-TouchGpioDevice $gpioId
+    Stop-NodeWatch $watchGpio
+    Copy-SetupApiLog 'after-gpio-restart'
     if ($gpio.ConfigManagerErrorCode -ne 0 -or $gpio.Service -ine 'GPIO') {throw 'GPIO provider failed after upgrade/restart'}
+    # Every hardware phase publishes a receipt. The Device Manager helper in
+    # the desktop session watches them and refreshes the console tree, so the
+    # loaded drivers are visible while the trial continues.
+    Save-Json 'phase-gpio-started.json' @{phase='gpio-started';device=$gpioId;service=$gpio.Service;
+        code=$gpio.ConfigManagerErrorCode;utc=[DateTime]::UtcNow.ToString('o')}
     Assert-Budget 'install-host'
     Pnp 'install-Host' @('/add-driver',(Join-Path $PSScriptRoot 'Drivers\Host\kona_geni.inf'),'/install')
     Assert-SelectedInf 'Host' $hostId
+    Copy-SetupApiLog 'after-host-install'
     foreach ($gate in $gates) {Set-Gate $hostKey $gate 0}
     Set-Gate $hostKey 'NativeGpioI2cEnabled' 1
     Save-Json 'gates-enabled.json' @{GPIO=(Get-ItemProperty -LiteralPath $gpioKey);Host=(Get-ItemProperty -LiteralPath $hostKey);dma_enabled=$false}
+    # The host start is the moment the ACPI child of the bus has to appear.
+    # The sampler runs across the restart, so a child node that exists only
+    # briefly is still recorded.
+    $watchHost = Start-NodeWatch 'host' 60
     Pnp 'restart-Host' @('/restart-device',$hostId)
     $testWindow = $true
     Wait-Seconds 5 'host-restart'
     $hostDevice = Get-TouchGpioDevice $hostId
+    Stop-NodeWatch $watchHost
+    Copy-SetupApiLog 'after-host-restart'
     if ($hostDevice.ConfigManagerErrorCode -ne 0 -or $hostDevice.Service -ine 'kona_geni') {throw 'GPIO I2C host did not start; inspect product/ACK diagnostics'}
+    Save-Json 'phase-host-started.json' @{phase='host-started';device=$hostId;service=$hostDevice.Service;
+        code=$hostDevice.ConfigManagerErrorCode;utc=[DateTime]::UtcNow.ToString('o')}
     Assert-Budget 'install-touch'
+    $watchTouch = Start-NodeWatch 'touch' 40
     Pnp 'install-Touch' @('/add-driver',(Join-Path $PSScriptRoot 'Drivers\Touch\vhidmini.inf'),'/install')
+    Copy-SetupApiLog 'after-touch-install'
     $touchDevices = @(Get-CimInstance Win32_PnPEntity | Where-Object {$_.PNPDeviceID -like 'ACPI\LGSW4290\*'})
+    Stop-NodeWatch $watchTouch
+    Copy-SetupApiLog 'after-touch-enumeration'
     if ($touchDevices.Count -ne 1) {throw 'Expected exactly one SW42902 device after client installation'}
     Assert-SelectedInf 'Touch' $touchDevices[0].PNPDeviceID
     Save-Json 'touch-window.json' @{utc=[DateTime]::UtcNow.ToString('o');seconds=120;instruction='Try taps and swipes. Automatic normal shutdown follows log collection.'}
+    Save-Json 'phase-test-window.json' @{phase='test-window';device=$touchDevices[0].PNPDeviceID;seconds=120;
+        instruction='Try taps and swipes; Device Manager is open expanded on the desktop.';
+        utc=[DateTime]::UtcNow.ToString('o')}
 } catch {
     $trialError = $_.Exception.Message
     Save-Json 'trial-error.json' @{error=$trialError;need_next_boot=$needNextBoot;utc=[DateTime]::UtcNow.ToString('o')}
@@ -259,10 +361,17 @@ if ($testWindow -and !$needNextBoot) {
     Wait-Seconds 120 'test-window'
 }
 try {
+    # The live trace is closed before the evidence is collected, so the trace
+    # file is complete in the log tree. Every sampler is stopped as well.
+    Stop-LiveTrace $liveTrace
+} catch {}
+foreach ($watch in @($script:activeWatches.ToArray())) {Stop-NodeWatch $watch}
+try {
     $after = Collect-Phase 'after'
     Save-Json 'complete.json' @{after=$after;error=$trialError;need_next_boot=$needNextBoot;normal_shutdown=$true;utc=[DateTime]::UtcNow.ToString('o')}
 } catch {Save-Json 'collection-failed.json' @{error=$_.Exception.Message;trial_error=$trialError;utc=[DateTime]::UtcNow.ToString('o')}}
-finally {if ($awake) {[TouchGpioAwake]::Release();$awake = $false}}
+finally {if ($awake) {[TouchGpioAwake]::Release();$awake = $false}
+    foreach ($watch in @($script:activeWatches.ToArray())) {Stop-NodeWatch $watch}}
 Save-Json 'operations.json' @($operations.ToArray())
 try {
     $task = Get-ScheduledTask -TaskName 'TimelmTouchGpioOnce' -TaskPath '\' -ErrorAction SilentlyContinue

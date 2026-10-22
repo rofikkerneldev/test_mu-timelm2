@@ -62,6 +62,25 @@ After the host starts, the existing SW42902 client verifies the product again,
 applies the reviewed scan sequence and translates156-byte reports into basic
 HID tap/swipe at1080x2460. No controller firmware is flashed.
 
+## Trial observability
+
+The trial opens Device Manager expanded in the logged-on desktop session, so the
+drivers Windows actually loaded can be read while the trial runs. A second
+Startup entry starts that helper in the interactive session, because a process
+of the SYSTEM task stays in session 0 and can never show a window. The helper
+expands the console tree through UI Automation, refreshes it after every
+hardware phase the runtime runner publishes, and records what it saw in
+`device-manager-phases.json`. It only displays: it installs nothing, changes no
+gate and never touches the boot path.
+
+The runtime runner samples the device node list around every provider restart,
+because the ACPI child of the bus host may exist for a moment before Windows
+removes it again. Each sample is one JSON line in `watch-*.jsonl`, so the
+enumeration timeline is plain text and needs no debugger. The runner also
+snapshots the rolling SetupAPI log after every install and records a live ETW
+trace of the kernel PnP and ACPI providers; the trace is converted to CSV on
+the build PC with `tracerpt`.
+
 ## Build and controlled trial
 
 - `build_geni_i2c.ps1` builds both existing transports and the GPIO path.

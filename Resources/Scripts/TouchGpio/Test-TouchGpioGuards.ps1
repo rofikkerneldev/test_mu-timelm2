@@ -7,7 +7,7 @@ foreach ($file in (Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.ps1' -Fil
     [System.Management.Automation.Language.Parser]::ParseFile($file.FullName,[ref]$tokens,[ref]$errors) | Out-Null
     if ($errors) {throw ($errors | Out-String)}
 }
-foreach ($runner in @('Launch-TouchGpioTrial.ps1','Run-TouchGpioTrial.ps1')) {
+foreach ($runner in @('Launch-TouchGpioTrial.ps1','Run-TouchGpioTrial.ps1','TouchGpioDeviceManager.ps1')) {
     $rejected = $false
     try {& (Join-Path $PSScriptRoot $runner)}
     catch {if ($_.Exception.Message -ne 'Wrong machine') {throw}; $rejected = $true}
@@ -95,6 +95,37 @@ $clockIndex = $launch.IndexOf('Set-Date')
 $registerIndex = $launch.IndexOf('Register-ScheduledTask')
 if ($clockIndex -lt 0 -or $registerIndex -lt 0 -or $clockIndex -gt $registerIndex) {throw 'The clock must be corrected before the scheduled task is registered'}
 if ($runnerText -notmatch 'Assert-Budget' -or $runnerText -notmatch 'Stopwatch') {throw 'The runtime runner must bound the trial with a monotonic budget'}
+# PnPUtil answers 259 (ERROR_NO_MORE_ITEMS) when the package is already the
+# selected driver for that device. That is a successful install, and treating
+# it as a failure aborted a real attempt before any hardware step. The exit
+# code is still recorded and the selected INF is verified separately.
+if ($runnerText -notmatch '\$code -eq 0 -or \$code -eq 259') {throw 'The runtime runner must tolerate the PnPUtil no-more-items exit code'}
+if ($runnerText -notmatch 'ERROR_NO_MORE_ITEMS') {throw 'The tolerated exit code must be documented in the runner'}
+if ($runnerText -notmatch 'phase-host-started\.json' -or $runnerText -notmatch 'phase-test-window\.json') {
+    throw 'The runtime runner must publish phase receipts for the desktop session'
+}
+# The enumeration timeline has to be recorded as plain text around every
+# provider restart, because the ACPI child of the bus host may only exist for
+# a moment. A live trace of the kernel PnP and ACPI providers is the second
+# half of that evidence.
+if ($runnerText -notmatch 'Watch-DeviceNodes\.ps1' -or $runnerText -notmatch 'watch-' -or
+    $runnerText -notmatch 'Copy-SetupApiLog') {
+    throw 'The runtime runner must record the enumeration timeline and the SetupAPI snapshots'
+}
+if ($runnerText -notmatch 'Start-LiveTrace' -or $runnerText -notmatch 'Microsoft-Windows-Kernel-Acpi') {
+    throw 'The runtime runner must record a live trace of the kernel PnP and ACPI providers'
+}
+$watcher = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Watch-DeviceNodes.ps1') -Raw
+if ($watcher -notmatch 'ConvertTo-Json' -or $watcher -notmatch 'Add-Content') {
+    throw 'The device node sampler must write plain text samples'
+}
+# The sampler is started by the runner as a separate process, so its machine
+# guard has to be checked on its own: its parameter is mandatory and the guard
+# is only reached once the parameter is bound.
+$watcherRejected = $false
+try {& (Join-Path $PSScriptRoot 'Watch-DeviceNodes.ps1') -Output (Join-Path $env:TEMP 'timelm-guard-watch.jsonl')}
+catch {if ($_.Exception.Message -ne 'Wrong machine') {throw}; $watcherRejected = $true}
+if (!$watcherRejected) {throw 'The device node sampler did not reject the PC'}
 # A gate that an earlier attempt of this bundle left enabled is restored, and
 # a gate that anybody else enabled is refused instead of reset.
 if ($runnerText -notmatch 'Pre-existing hardware gate enabled' -or $runnerText -notmatch 'gates-restored\.json') {
@@ -105,6 +136,23 @@ if ($runnerText -notmatch 'Pre-existing hardware gate enabled' -or $runnerText -
 $stage = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Stage-TouchGpioTrial.ps1') -Raw
 if ($stage -notmatch 'refusing to disarm it' -or $stage -notmatch 'refusing to rearm') {
     throw 'The staging re-arm must refuse a foreign Startup entry and a plain re-arm'
+}
+# The Device Manager helper opens the console in the desktop session and has to
+# expand it, so the drivers Windows loaded are visible while the trial runs.
+$helper = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'TouchGpioDeviceManager.ps1') -Raw
+if ($helper -notmatch 'ExpandCollapsePattern' -or $helper -notmatch 'devmgmt\.msc') {
+    throw 'The Device Manager helper must open and expand the console'
+}
+if ($helper -notmatch 'Send-Keys ''\*''' -or $helper -notmatch 'uia') {
+    throw 'The Device Manager helper must keep a keyboard fallback for the tree'
+}
+$helperCmd = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Timelm-device-manager.cmd') -Raw
+if ($helperCmd -notmatch 'TouchGpioDeviceManager\.ps1' -or $helperCmd -notmatch 'ARM64' -or $helperCmd -notmatch 'TIMELM-V60') {
+    throw 'The Device Manager startup entry must be guarded and must call the helper'
+}
+if ($stage -notmatch 'Timelm-device-manager\.cmd' -or
+    $stage -notmatch 'Device manager startup entry is not this trial own') {
+    throw 'The staging must arm the Device Manager helper and refuse a foreign entry'
 }
 if ($Artifact) {
     . (Join-Path $PSScriptRoot 'TouchGpioCommon.ps1')
