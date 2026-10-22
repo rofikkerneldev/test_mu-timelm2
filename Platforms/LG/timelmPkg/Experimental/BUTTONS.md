@@ -325,6 +325,67 @@ the receipt is in `receipts/buttons-attempt5`.
 The target of the assist key is written by the trial itself, the build PC
 has no write right on `C:\ProgramData\Timelm` either.
 
+### Attempt 7, the trial starts by itself (2026-10-22)
+
+The trial passed completely on the phone and the receipts are in
+`receipts/buttons-attempt7`.
+
+The proof that the attempt started by itself is the first line of the log of
+the trial:
+
+```
+2026-10-22 22.18.52 the trial starts, user TIMELM-V60\Administrator, session 1, elevated True
+```
+
+The trial was **armed with a Startup entry**, and the entry was removed by
+the trial itself at the end of the attempt, so the next logon of the phone
+does not start a second attempt.
+
+Two findings of the attempt are important for the next one.
+
+**The task of the scheduler never fires.**  The task file was written to
+`C:\Windows\System32\Tasks\TimelmButtonsTrial` and it was there (sha256
+`22535FB3DFBFE9F1374C25E762E19C6377F57E78895BE1A1CBD0EA39326B94DA`), but the
+scheduler never registered it: the removal of the task at the end of the
+attempt answered "ERROR: The system cannot find the file specified", and the
+task is not in the cache of the scheduler.  The Startup entry is the way
+that works.
+
+**The build PC has to be elevated for the Startup entry.**  The denial of
+the write is not a lock of the phone on the folder, it is the token of the
+shell of the build PC: a medium integrity shell cannot write into the
+Startup folder of the phone, because the deny only entry of the
+`BUILTIN\Administrators` of the phone is deny only for such a shell (UAC).
+The staging therefore has to run as an administrator of the build PC
+(`Start-Process pwsh -Verb RunAs`).  The folder
+`C:\Windows\System32\Tasks` can be written without that, because it carries
+the entry `NT AUTHORITY\Authenticated Users:(CI)(W,Rc)`.
+
+The attempt had **no button event at all**: the state of the driver stayed
+at `change_counter` 6 and `hid_reports` 0 for the whole run.  The window of
+the trial was too short for the test, the attempt was 240 seconds long.
+
+### Attempt 8, the buttons (staged)
+
+The attempt 8 is armed with a Startup entry as well, with a window of 900
+seconds, so that there is time for the test.
+
+The helper of the edges of the buttons was changed after the attempt 7, the
+reason is the log of the attempt 5: the log had 523 lines of
+
+```
+Power down ignored, the button is still locked after the last action
+```
+
+The helper marked a button as down only when the press was answered.  A
+press inside the quiet time of the last action was ignored without that
+mark, so every following sample of the held button was ignored again, and
+the time of the last press was moved forward by every sample of the held
+button, so the quiet time never ended and the button stayed locked for
+ever.  The press that is ignored marks the button as down and the long
+press as answered now, and a contact that stays closed for three seconds
+gives the lock up, the button has to be released and pressed again.
+
 ## What is still open
 
 * The **wake** of the display is the only part of the button path that is

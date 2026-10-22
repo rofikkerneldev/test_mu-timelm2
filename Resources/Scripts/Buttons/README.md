@@ -245,6 +245,53 @@ desktop of the session, which is the secure desktop of a locked session.
 The driver revision for that attempt is
 `7b35cf5d1a6760e62ff5ad9600845dc110515b9f`.
 
+### Result of the seventh attempt (2026-10-22)
+
+The trial passed completely on the phone, the receipts are in
+`receipts/buttons-attempt7`:
+
+```
+2026-10-22 22.18.52 the trial starts, user TIMELM-V60\Administrator, session 1, elevated True
+2026-10-22 22.19.29 agent started, pid 2264
+2026-10-22 22.23.29 the test window is closed
+```
+
+The trial was armed with a **Startup entry**, and the entry was removed by
+the trial itself at the end of the attempt.
+
+Two findings are important for the next attempt:
+
+* the **task of the scheduler never fires**.  The task file was written and
+  it was there, but the scheduler never registered it (the removal answered
+  "ERROR: The system cannot find the file specified").  The Startup entry
+  is the way that works.
+* the **build PC has to be elevated** for the Startup entry.  The denial of
+  the write is the token of the shell of the build PC (UAC), not a lock of
+  the phone on the folder.  The staging therefore runs as
+  `Start-Process pwsh -Verb RunAs`.
+
+The attempt had no button event at all, the window of 240 seconds was too
+short for the test.
+
+### Result of the eighth attempt (staged)
+
+The eighth attempt is armed with a Startup entry as well, with a window of
+900 seconds.
+
+The helper of the edges was changed after the seventh attempt.  The log of
+the fifth attempt had 523 lines of
+
+```
+Power down ignored, the button is still locked after the last action
+```
+
+The helper marked a button as down only when the press was answered, so a
+press inside the quiet time was ignored again and again, and the time of
+the last press was moved forward by every sample of the held button, so the
+quiet time never ended.  The press that is ignored marks the button as down
+and the long press as answered now, and a contact that stays closed for
+three seconds (`-StuckMillis`) gives the lock up.
+
 ## The assist key
 
 The assist key of the phone is bound to the **Windows key** by default, so
