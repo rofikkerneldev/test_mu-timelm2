@@ -87,7 +87,11 @@ $infName = 'TimelmButtons.inf'
 $sysName = 'TimelmButtons.sys'
 
 function Save-Json([string]$Name, $Value) {
-    $Value | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $ResultPath $Name)
+    # The value is always a variable here.  A hashtable literal that is
+    # written directly behind the parameter list is turned into a string by
+    # the argument parser, so it must never be passed that way.
+    $json = $Value | ConvertTo-Json -Depth 10
+    Set-Content -LiteralPath (Join-Path $ResultPath $Name) -Value $json -Encoding UTF8
 }
 
 function Write-Log([string]$Message) {
@@ -110,21 +114,35 @@ function Copy-SetupApiLog([string]$Label) {
 }
 
 function Get-SelectedInf([string]$DeviceId) {
-    $result = [ordered]@{ device = $DeviceId; inf = $null; class_key = $null }
-    try {
-        $driver = Get-ItemPropertyValue -LiteralPath ('HKLM:\SYSTEM\CurrentControlSet\Enum\' + $DeviceId) -Name 'Driver'
-    } catch {
-        return $result
-    }
-    if ($driver -notmatch '^\{[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\}\\[0-9a-fA-F]{4}$') {
-        return $result
-    }
-    $result.class_key = $driver
-    try {
-        $result.inf = Get-ItemPropertyValue -LiteralPath ('HKLM:\SYSTEM\CurrentControlSet\Control\Class\' + $driver) -Name 'InfPath'
-    } catch {
+    <#
+        The driver of a device instance is stored in the instance key of the
+        enumeration tree, the class key holds the INF of the driver.  The
+        instance key is the one that carries the "Driver" value.
+    #>
+    $result = [ordered]@{ device = $DeviceId; inf = $null; class_key = $null; instance = $null }
+    $enumPath = 'HKLM:\SYSTEM\CurrentControlSet\Enum\' + $DeviceId
+    if (-not (Test-Path -LiteralPath $enumPath)) { return $result }
+    foreach ($instance in @(Get-ChildItem -LiteralPath $enumPath -ErrorAction SilentlyContinue)) {
+        $value = Get-ItemProperty -LiteralPath $instance.PSPath -Name 'Driver' -ErrorAction SilentlyContinue
+        if (-not $value -or -not $value.Driver) { continue }
+        $driver = [string]$value.Driver
+        if ($driver -notmatch '^\{[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\}\\[0-9a-fA-F]{4}$') {
+            continue
+        }
+        $result.class_key = $driver
+        $result.instance = $instance.PSChildName
+        $inf = Get-ItemPropertyValue -LiteralPath ('HKLM:\SYSTEM\CurrentControlSet\Control\Class\' + $driver) -Name 'InfPath' -ErrorAction SilentlyContinue
+        if ($inf) { $result.inf = [string]$inf }
+        break
     }
     return $result
+}
+
+function Get-InfHash([string]$InfName) {
+    if (-not $InfName) { return $null }
+    $path = Join-Path $env:SystemRoot ('INF\' + $InfName)
+    if (-not (Test-Path -LiteralPath $path)) { return $null }
+    return (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
 }
 
 function Invoke-PnP([string]$Label, [string[]]$Arguments) {
@@ -201,13 +219,15 @@ if (Test-Path -LiteralPath $attemptFile) {
 }
 
 try {
-    Save-Json 'attempt.json' [ordered]@{
+    $attempt = [ordered]@{
         utc = [DateTime]::UtcNow.ToString('o')
         session = $sessionId
         user = $identity.Name
         package = $PackagePath
         seconds = $Seconds
     }
+    Save-Json 'attempt.json' $attempt
+
     Write-Log ("session {0}, user {1}" -f $sessionId, $identity.Name)
 
     # The RTC of the phone runs hours behind the build PC.  The reference time
@@ -237,12 +257,14 @@ try {
         throw ("Package incomplete in {0}" -f $PackagePath)
     }
 
-    Save-Json 'package.json' [ordered]@{
+    $packageHash = (Get-FileHash -LiteralPath $packageInf -Algorithm SHA256).Hash
+    $package = [ordered]@{
         path = $PackagePath
-        inf_sha256 = (Get-FileHash -LiteralPath $packageInf -Algorithm SHA256).Hash
+        inf_sha256 = $packageHash
         sys_sha256 = (Get-FileHash -LiteralPath $packageSys -Algorithm SHA256).Hash
         utc = [DateTime]::UtcNow.ToString('o')
     }
+    Save-Json 'package.json' $package
 
     Copy-SetupApiLog 'before'
 
@@ -258,12 +280,16 @@ try {
     }
 
     # Only one driver may own the ACPI\KONA1003 hardware id.  The driver that
-    # is selected for the device right now is the one that has to go.
+    # is selected for the device right now is the one that has to go, unless
+    # it already is this package.
     $before = Get-SelectedInf $deviceId
     Save-Json 'selected-before.json' $before
-    Write-Log ("current driver of {0}: {1}" -f $deviceId, $before.inf)
+    Write-Log ("current driver of {0}: {1} (class {2}, instance {3})" -f $deviceId, $before.inf, $before.class_key, $before.instance)
 
-    if ($before.inf -and $before.inf -ne $infName) {
+    $alreadyOurs = ($before.inf -and (Get-InfHash $before.inf) -eq $packageHash)
+    if ($alreadyOurs) {
+        Write-Log 'the node already uses this package, the driver is not removed'
+    } elseif ($before.inf) {
         $code = Invoke-PnP 'remove-previous' @('/delete-driver', $before.inf, '/uninstall')
         # 259 is ERROR_NO_MORE_ITEMS, the package was staged but no device
         # had to be updated.
@@ -284,29 +310,27 @@ try {
 
     $after = Get-SelectedInf $deviceId
     Save-Json 'selected-after.json' $after
+    Write-Log ("driver of {0} after the install: {1} (class {2}, instance {3})" -f $deviceId, $after.inf, $after.class_key, $after.instance)
 
-    $installedInf = Join-Path $env:SystemRoot ('INF\' + $after.inf)
-    $expectedHash = (Get-FileHash -LiteralPath $packageInf -Algorithm SHA256).Hash
-    $actualHash = $null
-    if ($after.inf -and (Test-Path -LiteralPath $installedInf)) {
-        $actualHash = (Get-FileHash -LiteralPath $installedInf -Algorithm SHA256).Hash
-    }
-    Save-Json 'selected-inf-check.json' [ordered]@{
+    $actualHash = Get-InfHash $after.inf
+    $check = [ordered]@{
         device = $deviceId
         class_key = $after.class_key
+        instance = $after.instance
         inf = $after.inf
         sha256 = $actualHash
-        expected_sha256 = $expectedHash
-        matches = ($actualHash -eq $expectedHash)
+        expected_sha256 = $packageHash
+        matches = ($actualHash -eq $packageHash)
         utc = [DateTime]::UtcNow.ToString('o')
     }
-    if ($actualHash -ne $expectedHash) {
+    Save-Json 'selected-inf-check.json' $check
+    if ($actualHash -ne $packageHash) {
         throw 'The installed INF of the PMIC node is not the button driver'
     }
 
     $device = Get-CimInstance Win32_PnPEntity | Where-Object { $_.PNPDeviceID -like 'ACPI\KONA1003*' } | Select-Object -First 1
     if ($device) {
-        Save-Json 'device.json' [ordered]@{
+        $deviceRecord = [ordered]@{
             pnp_device_id = $device.PNPDeviceID
             name = $device.Name
             status = $device.Status
@@ -314,6 +338,23 @@ try {
             service = $device.Service
             utc = [DateTime]::UtcNow.ToString('o')
         }
+        Save-Json 'device.json' $deviceRecord
+        Write-Log ("device status {0}, problem code {1}, service {2}" -f $device.Status, $device.ConfigManagerErrorCode, $device.Service)
+    }
+
+    $service = Get-CimInstance Win32_SystemDriver -Filter "Name='TimelmButtons'" -ErrorAction SilentlyContinue
+    if ($service) {
+        $serviceRecord = [ordered]@{
+            name = $service.Name
+            state = $service.State
+            start_mode = $service.StartMode
+            path = $service.PathName
+            utc = [DateTime]::UtcNow.ToString('o')
+        }
+        Save-Json 'service.json' $serviceRecord
+        Write-Log ("service state {0}, start mode {1}" -f $service.State, $service.StartMode)
+    } else {
+        Write-Log 'the driver service was not found'
     }
 
     # The agent runs in this interactive session, so SendInput and
@@ -344,6 +385,7 @@ try {
     $handle = [IntPtr]::Zero
     try {
         $handle = Open-TimelmButtons
+        Write-Log 'the control device is open'
         $deadline = (Get-Date).AddSeconds($Seconds)
         while ((Get-Date) -lt $deadline) {
             try {
@@ -372,20 +414,22 @@ try {
 
     Write-Log 'test window closed'
 
-    Save-Json 'complete.json' [ordered]@{
+    $complete = [ordered]@{
         error = $trialError
         seconds = $Seconds
         normal_shutdown = $true
         utc = [DateTime]::UtcNow.ToString('o')
     }
+    Save-Json 'complete.json' $complete
 }
 catch {
     $trialError = $_.Exception.Message
     Write-Log ("trial failed: {0}" -f $trialError)
-    Save-Json 'trial-error.json' [ordered]@{
+    $errorRecord = [ordered]@{
         error = $trialError
         utc = [DateTime]::UtcNow.ToString('o')
     }
+    Save-Json 'trial-error.json' $errorRecord
 }
 finally {
     if ($agentProcess) {
@@ -431,10 +475,11 @@ finally {
     } catch {
         Write-Log ("shutdown request failed: {0}" -f $_.Exception.Message)
     }
-    Save-Json 'shutdown.json' [ordered]@{
+    $shutdown = [ordered]@{
         requested = $shutdownRequested
         utc = [DateTime]::UtcNow.ToString('o')
     }
+    Save-Json 'shutdown.json' $shutdown
 }
 
 if ($trialError) {
