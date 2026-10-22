@@ -93,3 +93,45 @@ Two scripts were added for it:
 The capture is read only, it does not write to the chip and it does not
 change the boot image.  The result is the input for the host and for the
 client, so that both use the same protocol as the boot loader of the phone.
+
+### The capture runs in a recovery as well
+
+The script stays in the plain POSIX shell, so it runs on a phone with Android
+and in a recovery of AOSP or of LineageOS.  The shell of a recovery is mksh,
+it has no arrays and no bash, and the find of toybox has no -printf, so the
+list of the trace points is made with the glob of the shell.  The script was
+checked with dash and with the shell of busybox.
+
+    adb reboot recovery
+    adb root
+    adb push capture_touch_ftrace.sh /tmp/
+    adb shell
+    sh /tmp/capture_touch_ftrace.sh /data/local/tmp/touch-ftrace 60
+    adb pull /data/local/tmp/touch-ftrace
+
+The tracefs is often there but not mounted in a recovery, the script mounts it
+by itself.  The result is written to /data, both recoveries have it.  The
+analyser is a python script and runs on the build PC, the capture is pulled
+there.
+
+What a recovery gives and what it does not:
+
+- A recovery with a working touch, for example TWRP or the recovery of
+  LineageOS, reads the chip over and over again.  The trace of that traffic
+  shows the report of the chip, its length and the moment of the interrupt.
+  That is the best source for the format of the report.
+- A recovery of AOSP without a touch has almost no traffic on the address
+  0x28.  The trace is then nearly empty.
+- The driver of the touch is built into the kernel of a recovery, so its
+  probe runs while the kernel starts, before the trace can be switched on.
+  The sequence of the probe is therefore usually not in the trace of a
+  recovery.  With Android the driver can be a module, and the third argument
+  of the script loads that module again while the trace runs, so that the
+  sequence of the probe is in the trace as well:
+
+      sh capture_touch_ftrace.sh /data/local/tmp/touch-ftrace 30 sw42902
+
+  If the module is built in there as well, the log of the kernel is the
+  second source: a driver of a touch prints the chip id and often its
+  register writes.  The capture script saves that log as well.
+
