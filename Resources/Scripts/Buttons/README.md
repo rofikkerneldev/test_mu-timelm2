@@ -6,14 +6,14 @@ part lives in the `timelm_Drivers` repository (`src/Buttons`, driver
 
 ## Hardware ground truth
 
-All three buttons of the LG V60 are wired to the **PM8150 primary PMIC**
+All four buttons of the LG V60 are wired to the **PM8150 primary PMIC**
 (SPMI slave 0), not to the TLMM GPIO controller.  This is confirmed by three
 independent sources:
 
 | Source | Evidence |
 | --- | --- |
-| Live device tree (`diagnostics/recovery.dts`) | `qcom,power-on@800` in `pm8150@0`, `gpio_keys.vol_up` on `pm8150_gpios pinctrl@c000` gpio6, `pon_1` = 0x00 (KPDPWR), `pon_2` = 0x01 (RESIN) |
-| Linux runtime (`/dev/input`) | `qpnp_pon` reports `KEY_POWER` + `KEY_VOLUMEDOWN`, `gpio-keys` reports `KEY_VOLUMEUP` |
+| Live device tree (`diagnostics/recovery.dts`) | `qcom,power-on@800` in `pm8150@0`, `gpio_keys.vol_up` on `pm8150_gpios pinctrl@c000` gpio6, `gpio_keys.hot1_key` on gpio1 with `linux,code = <0x179>`, `pon_1` = 0x00 (KPDPWR), `pon_2` = 0x01 (RESIN) |
+| Linux runtime (`/dev/input`) | `qpnp_pon` reports `KEY_POWER` + `KEY_VOLUMEDOWN`, `gpio-keys` reports `KEY_VOLUMEUP` and `KEY_ASSIST` |
 | Upstream Linux | `drivers/input/misc/qpnp-power-on.c` (`QPNP_PON_RT_STS = base + 0x10`), `drivers/pinctrl/qcom/pinctrl-spmi-gpio.c` (`PMIC_GPIO_ADDRESS_RANGE 0x100`, `PMIC_MPP_REG_RT_STS 0x10`) |
 
 Resulting register map (slave 0):
@@ -23,6 +23,7 @@ Resulting register map (slave 0):
 | Power | `0x0810` (PON RT_STS) | 0 | bit is **set** |
 | Volume Down | `0x0810` (PON RT_STS) | 1 | bit is **set** |
 | Volume Up | `0xC510` (PMIC GPIO6 MPP RT_STS) | 0 | bit is **clear** (active low) |
+| Assist | `0xC010` (PMIC GPIO1 MPP RT_STS) | 0 | bit is **clear** (active low) |
 
 The GPIO pad base of gpio N is `0xC000 + (N - 1) * 0x100`; the live device
 tree confirms this through the interrupt numbers (gpio N -> `0xC0 + (N - 1)`,
@@ -33,13 +34,13 @@ gpio1 = 0xC0 ... gpio6 = 0xC5).
 ```
 TimelmButtons.sys (kernel, ACPI\KONA1003)
     -> reads the PMIC through GUID_SPMI_INTERFACE of SPMI.sys
-    -> samples the three registers every 20 ms, two sample debounce
+    -> samples the four registers every 20 ms, two sample debounce
     -> \\.\TimelmButtons  (control device)
             |
 TimelmButtonAgent.ps1 (user mode, interactive session)
     -> WAIT / GET_STATE ioctl
-    -> SendInput: TAB / ENTER / Shift+F10
-    -> lock / shutdown /s
+    -> SendInput: TAB / ENTER / Shift+F10 / Win
+    -> lock / wake the display / shutdown /s
 ```
 
 The driver is the **only** access point to the button hardware, so the agent
@@ -49,15 +50,27 @@ never touches the PMIC itself.
 
 | Code | Name | Direction |
 | --- | --- | --- |
-| `0x226000` | `GET_STATE` | out 48 byte `TIMELM_BUTTON_STATE` |
+| `0x226000` | `GET_STATE` | out 64 byte `TIMELM_BUTTON_STATE` |
 | `0x226004` | `RAW_READ` | in 16 byte `TIMELM_BUTTON_RAW_REQUEST`, out request + data (1..8 bytes) |
-| `0x22A008` | `SET_MAPPING` | in 80 byte `TIMELM_BUTTON_MAPPING` |
-| `0x22600C` | `GET_MAPPING` | out 80 byte `TIMELM_BUTTON_MAPPING` |
+| `0x22A008` | `SET_MAPPING` | in 200 byte `TIMELM_BUTTON_MAPPING` |
+| `0x22600C` | `GET_MAPPING` | out 200 byte `TIMELM_BUTTON_MAPPING` |
 | `0x226010` | `DUMP` | same as `RAW_READ` |
-| `0x226014` | `WAIT` | in 8 byte `TIMELM_BUTTON_WAIT_REQUEST`, out 48 byte `TIMELM_BUTTON_STATE` |
+| `0x226014` | `WAIT` | in 8 byte `TIMELM_BUTTON_WAIT_REQUEST`, out 64 byte `TIMELM_BUTTON_STATE` |
 
 The structures are defined in `timelm_Drivers/src/Include/TimelmButtons.h`
 and mirrored by the helpers in `TimelmButtonsCommon.ps1`.
+
+The layout is append only, so the scripts work with every driver that was
+built so far:
+
+| Version | State | Mapping | Buttons |
+| --- | --- | --- | --- |
+| 1 | 48 byte | 80 byte | power, volume up, volume down |
+| 2 | 56 byte | 152 byte | power, volume up, volume down |
+| 3 | 64 byte | 200 byte | power, volume up, volume down, assist |
+
+`Get-TimelmButtonMappingVersion` reads the version from the driver, so the
+scripts write a mapping that the installed driver understands.
 
 ## Button mapping
 
@@ -65,10 +78,15 @@ and mirrored by the helpers in `TimelmButtonsCommon.ps1`.
 | --- | --- | --- |
 | Volume Up | `TAB` | - |
 | Volume Down | `ENTER` | `Shift+F10` (800 ms) |
-| Power | lock the workstation | `shutdown /s` (1500 ms), clean shutdown |
+| Power | lock the workstation, wake the display if the session is locked | `shutdown /s` (1500 ms), clean shutdown |
+| Assist | start the program of `%ProgramData%\Timelm\assist-target.txt` | - |
 
 The long press is detected with the press duration that the driver reports,
 so it does not depend on the accuracy of the polling loop.
+
+Windows has no native lock, so the power key always belongs to the agent.
+The volume keys do have a native counterpart, the HID face of the driver can
+take them over in the mode `Hid`.
 
 ## Usage
 
@@ -137,6 +155,49 @@ literal that is written directly behind the parameter list of a function is
 turned into a string by the argument parser.  Every receipt is built in a
 variable first, and the collection on the PC removes the receipts of an
 earlier attempt before it copies the new ones.
+
+### Result of the third attempt, mode Hid (2026-10-22)
+
+The HID face of the driver works, the receipts are in `receipts/buttons-hid`:
+
+| Check | Result |
+| --- | --- |
+| Mode | `Hid`, the volume keys are answered by the HID face, the power key stays with the agent |
+| Volume | the flyout of Windows opens, the volume follows the button |
+| Power short | the session is locked, the display stays off |
+
+The driver of that attempt is the revision `4601ad6`, it has the HID face
+but not yet the fourth button and not yet the wake.
+
+### What the next attempt has to prove
+
+* the **assist key** (fourth button, PMIC gpio1 / `0xC010`) reaches the
+  agent and starts the program of `assist-target.txt`,
+* the **power key wakes** the display again when the session is locked,
+* the wake does not trigger the power menu of Windows.
+
+The driver revision for that attempt is
+`7b35cf5d1a6760e62ff5ad9600845dc110515b9f`.
+
+## The assist key
+
+The assist key is the way to give a button of the phone a function of your
+own.  The agent reads the target from a text file, so the function can be
+changed without touching the agent:
+
+```
+%ProgramData%\Timelm\assist-target.txt
+```
+
+The content is the command line that is started with the shell, for example
+`notepad.exe`.  An empty or missing file means that the agent only writes a
+note into its log.
+
+```powershell
+# PC, from the desktop session of the phone
+powershell -ExecutionPolicy Bypass -File Set-TimelmButtonMode.ps1 `
+    -Mode Agent -AssistAction LaunchTarget
+```
 
 ## Discovery
 

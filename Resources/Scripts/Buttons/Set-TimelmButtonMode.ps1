@@ -3,18 +3,21 @@
   Writes the button mapping into the driver of the phone.
 
 .DESCRIPTION
-  The mapping decides who reacts to a press of one of the three buttons.
+  The mapping decides who reacts to a press of one of the buttons.
   It can be changed while the phone is running, a new build of the driver
   is not needed.
 
-      Agent  the agent answers the short presses with TAB, ENTER and the
-             lock, the long presses with the context menu and the shutdown
-             (the behaviour that was proven on the phone)
+      Agent  the agent answers the short presses with TAB, ENTER, the assist
+             target and the lock, the long presses with the context menu and
+             the shutdown (the behaviour that was proven on the phone)
       Hid    the driver reports the button to Windows as a real HID key, so
              that the volume keys change the volume and the power key opens
              the power menu of Windows.  Only the long press is left to the
              agent.
       Both   both of them react, only useful to see the two paths at once
+
+  The version of the mapping structure is taken from the driver that is
+  installed, a driver of the second version does not know the assist key.
 
   The script has to run in the interactive session of the phone, as the
   agent does, because it writes the mapping that the agent reads.
@@ -30,7 +33,9 @@ param(
     [ValidateSet('Agent', 'Hid', 'Both')]
     [string]$Mode = 'Hid',
     [int]$PowerLongPressMillis = 1500,
-    [int]$VolumeDownLongPressMillis = 800
+    [int]$VolumeDownLongPressMillis = 800,
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu')]
+    [string]$AssistAction = 'LaunchTarget'
 )
 
 Set-StrictMode -Version 2.0
@@ -38,7 +43,7 @@ $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'TimelmButtonsCommon.ps1')
 
-$names = @('Power', 'VolumeUp', 'VolumeDown')
+$names = @('Power', 'VolumeUp', 'VolumeDown', 'Assist')
 
 function Get-TimelmActionName {
     param([int]$Action)
@@ -48,6 +53,10 @@ function Get-TimelmActionName {
         3 { return 'Shift+F10' }
         4 { return 'lock' }
         5 { return 'shutdown /s' }
+        6 { return 'wake' }
+        7 { return 'lock or wake' }
+        8 { return 'assist target' }
+        9 { return 'start menu' }
         default { return 'none' }
     }
 }
@@ -64,10 +73,14 @@ function Get-TimelmHidName {
 
 $handle = Open-TimelmButtons
 try {
+    $version = Get-TimelmButtonMappingVersion -Handle $handle
+
     $mapping = ConvertTo-TimelmButtonMapping `
         -Mode $Mode `
+        -Version $version `
         -PowerLongPressMillis $PowerLongPressMillis `
-        -VolumeDownLongPressMillis $VolumeDownLongPressMillis
+        -VolumeDownLongPressMillis $VolumeDownLongPressMillis `
+        -AssistAction $AssistAction
 
     Set-TimelmButtonMapping -Handle $handle -Mapping $mapping
 
@@ -76,13 +89,19 @@ try {
     Write-Host ("mode : {0}" -f $Mode)
     Write-Host ("mapping version : {0}" -f $readBack.Version)
 
-    for ($index = 0; $index -lt 3; $index++) {
+    for ($index = 0; $index -lt $readBack.Source.Count; $index++) {
         $source = $readBack.Source[$index]
-        $action = $readBack.Action[$index]
 
         Write-Host ''
         Write-Host ("{0} (sid {1}, address 0x{2:X}, mask 0x{3:X}, polarity {4})" -f `
             $names[$index], $source.Sid, $source.Addr, $source.Mask, $source.Polarity)
+
+        if ($index -ge $readBack.Action.Count) {
+            Write-Host '   no action in the mapping'
+            continue
+        }
+
+        $action = $readBack.Action[$index]
 
         if ($action.HidEnabled -ne 0) {
             Write-Host ("   HID        : {0}" -f (Get-TimelmHidName ([int]$action.HidAction)))

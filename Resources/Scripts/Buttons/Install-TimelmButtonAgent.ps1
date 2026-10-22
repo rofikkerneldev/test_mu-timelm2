@@ -103,7 +103,8 @@ try {
     Write-Host ("Driver ready           : {0}" -f $state.Ready)
     Write-Host ("HID face available     : {0}" -f $state.HidReady)
 
-    $mapping = ConvertTo-TimelmButtonMapping -Mode $Mode
+    $mappingVersion = Get-TimelmButtonMappingVersion -Handle $handle
+    $mapping = ConvertTo-TimelmButtonMapping -Mode $Mode -Version $mappingVersion
     Set-TimelmButtonMapping -Handle $handle -Mapping $mapping
 
     $readBack = Get-TimelmButtonMapping -Handle $handle

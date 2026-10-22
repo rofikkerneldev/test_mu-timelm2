@@ -35,7 +35,9 @@ param(
     [string]$ResultPath,
     [switch]$KeepDriver,
     [ValidateSet('Agent', 'Hid', 'Both')]
-    [string]$ButtonMode = 'Agent'
+    [string]$ButtonMode = 'Agent',
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu')]
+    [string]$AssistAction = 'StartMenu'
 )
 
 Set-StrictMode -Version 2.0
@@ -456,14 +458,21 @@ try {
         # written into the driver before the agent starts, so that both
         # paths can be tested with the same attempt.
         #
-        $mapping = ConvertTo-TimelmButtonMapping -Mode $ButtonMode
+        # The version of the mapping structure depends on the driver that is
+        # installed, a driver of the second version does not know the fourth
+        # button.
+        #
+        $mappingVersion = Get-TimelmButtonMappingVersion -Handle $handle
+        $mapping = ConvertTo-TimelmButtonMapping -Mode $ButtonMode -Version $mappingVersion -AssistAction $AssistAction
         Set-TimelmButtonMapping -Handle $handle -Mapping $mapping
         $modeRecord = [ordered]@{
             mode = $ButtonMode
+            mapping_version = $mappingVersion
+            assist_action = $AssistAction
             utc = [DateTime]::UtcNow.ToString('o')
         }
         Save-Json 'button-mode.json' $modeRecord
-        Write-Log ("button mode {0}" -f $ButtonMode)
+        Write-Log ("button mode {0}, mapping version {1}, assist action {2}" -f $ButtonMode, $mappingVersion, $AssistAction)
 
         # The agent is started after the mapping is written, so that it uses
         # the mapping of this attempt and not the one of an earlier run.

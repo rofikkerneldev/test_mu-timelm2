@@ -12,8 +12,13 @@
       Volume Up            short press            -> TAB
       Volume Down          short press            -> ENTER
       Volume Down          long press (800 ms)    -> Shift+F10 (context menu)
-      Power                short press            -> lock the workstation
+      Power                short press            -> lock the workstation,
+                                                   wake the display when
+                                                   the session is locked
       Power                long press (1500 ms)   -> shutdown /s (clean shutdown)
+      Assist               short press            -> the program of the
+                                                   target file (or the start
+                                                   menu)
 
   With the mapping in the mode "Hid" the short press is not answered by the
   agent at all.  The driver then reports the button to Windows as a real
@@ -37,6 +42,7 @@ param(
     [int]$WaitTimeoutMillis = 250,
     [int]$PowerLongPressMillis = 1500,
     [int]$VolumeDownLongPressMillis = 800,
+    [string]$AssistTargetPath = (Join-Path $env:ProgramData 'Timelm\assist-target.txt'),
     [switch]$DisableLock,
     [switch]$DisableShutdown,
     [switch]$DryRun,
@@ -114,6 +120,67 @@ function Invoke-TimelmShutdown {
     Start-Process -FilePath 'shutdown.exe' -ArgumentList '/s', '/t', '0', '/c', 'TimelmButtons long press' -WindowStyle Hidden
 }
 
+function Invoke-TimelmWake {
+    <# Turns the display on again and wakes the system out of the standby. #>
+    if ($DryRun) {
+        Write-TimelmAgentLog 'action wake (dry run)'
+        return
+    }
+
+    $locked = Test-TimelmWorkstationLocked
+    $result = Invoke-TimelmWakeDisplay
+    Write-TimelmAgentLog ('action wake (locked {0}, previous state 0x{1:X}, nudge {2})' -f $locked, $result.PreviousState, $result.NudgeResult)
+}
+
+function Invoke-TimelmLockOrWake {
+    <#
+      Locks the workstation when it is unlocked and wakes the display when
+      the session is locked.  That is the behaviour of the power key of a
+      phone.
+    #>
+    if (Test-TimelmWorkstationLocked) {
+        Invoke-TimelmWake
+        return
+    }
+
+    Invoke-TimelmLock
+}
+
+function Invoke-TimelmStartMenu {
+    <# The Windows key opens the start menu of Windows. #>
+    if ($DryRun) {
+        Write-TimelmAgentLog 'action start menu (dry run)'
+        return
+    }
+    [TimelmButtonsNative]::SendKey([uint16]0x5B, $true)
+    Write-TimelmAgentLog 'action start menu'
+}
+
+function Invoke-TimelmLaunchTarget {
+    <#
+      Starts the program of the target file.  That is the way to direct the
+      assist key to another function.  Without the file the agent only
+      writes a note into its log.
+    #>
+    if ($DryRun) {
+        Write-TimelmAgentLog 'action assist target (dry run)'
+        return
+    }
+
+    $target = $null
+    if (Test-Path -LiteralPath $AssistTargetPath) {
+        $target = (Get-Content -LiteralPath $AssistTargetPath -Raw).Trim()
+    }
+
+    if (-not $target) {
+        Write-TimelmAgentLog ('action assist target skipped (no target in {0})' -f $AssistTargetPath)
+        return
+    }
+
+    Start-Process -FilePath $env:ComSpec -ArgumentList '/c', $target -WindowStyle Hidden
+    Write-TimelmAgentLog ('action assist target started: {0}' -f $target)
+}
+
 $script:TimelmVkTab = 0x09
 $script:TimelmVkReturn = 0x0D
 
@@ -138,17 +205,30 @@ function Invoke-TimelmAgentAction {
     elseif ($Action -eq $script:TimelmAgentAction.Shutdown) {
         Invoke-TimelmShutdown
     }
+    elseif ($Action -eq $script:TimelmAgentAction.Wake) {
+        Invoke-TimelmWake
+    }
+    elseif ($Action -eq $script:TimelmAgentAction.LockOrWake) {
+        Invoke-TimelmLockOrWake
+    }
+    elseif ($Action -eq $script:TimelmAgentAction.LaunchTarget) {
+        Invoke-TimelmLaunchTarget
+    }
+    elseif ($Action -eq $script:TimelmAgentAction.StartMenu) {
+        Invoke-TimelmStartMenu
+    }
 }
 
-# Button bit -> index inside the driver state arrays (Power, VolumeUp, VolumeDown)
+# Button bit -> index inside the driver state arrays (Power, VolumeUp, VolumeDown, Assist)
 #
 # The values are the fallback for a driver of the first version, which does
 # not know the mapping.  As soon as the mapping of the driver is readable,
 # it decides what the agent does.
 $buttonTable = @(
-    [pscustomobject]@{ Bit = 1; Name = 'Power'; Index = 0; LongPress = $PowerLongPressMillis; ShortAction = $script:TimelmAgentAction.Lock; LongAction = $script:TimelmAgentAction.Shutdown },
+    [pscustomobject]@{ Bit = 1; Name = 'Power'; Index = 0; LongPress = $PowerLongPressMillis; ShortAction = $script:TimelmAgentAction.LockOrWake; LongAction = $script:TimelmAgentAction.Shutdown },
     [pscustomobject]@{ Bit = 2; Name = 'VolumeUp'; Index = 1; LongPress = 0; ShortAction = $script:TimelmAgentAction.Tab; LongAction = $script:TimelmAgentAction.None },
-    [pscustomobject]@{ Bit = 4; Name = 'VolumeDown'; Index = 2; LongPress = $VolumeDownLongPressMillis; ShortAction = $script:TimelmAgentAction.Enter; LongAction = $script:TimelmAgentAction.ShiftF10 }
+    [pscustomobject]@{ Bit = 4; Name = 'VolumeDown'; Index = 2; LongPress = $VolumeDownLongPressMillis; ShortAction = $script:TimelmAgentAction.Enter; LongAction = $script:TimelmAgentAction.ShiftF10 },
+    [pscustomobject]@{ Bit = 8; Name = 'Assist'; Index = 3; LongPress = 0; ShortAction = $script:TimelmAgentAction.LaunchTarget; LongAction = $script:TimelmAgentAction.None }
 )
 
 $handle = [IntPtr]::Zero
@@ -183,14 +263,15 @@ try {
             $mappingLoaded = $true
             try {
                 $mapping = Get-TimelmButtonMapping -Handle $handle
-                if ($mapping.Version -ge 2 -and $mapping.Action.Count -eq 3) {
+                if ($mapping.Version -ge 2 -and $mapping.Action.Count -ge 3) {
                     foreach ($button in $buttonTable) {
+                        if ($button.Index -ge $mapping.Action.Count) { continue }
                         $action = $mapping.Action[$button.Index]
                         $button.LongPress = [int]$action.LongPressMillis
                         $button.ShortAction = [int]$action.AgentShortAction
                         $button.LongAction = [int]$action.AgentLongAction
                     }
-                    Write-TimelmAgentLog ('mapping version {0} is used by the agent' -f $mapping.Version)
+                    Write-TimelmAgentLog ('mapping version {0} with {1} actions is used by the agent' -f $mapping.Version, $mapping.Action.Count)
                 } else {
                     Write-TimelmAgentLog ('the driver has the mapping version {0}, the built in behaviour is used' -f $mapping.Version)
                 }

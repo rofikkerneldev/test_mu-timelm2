@@ -17,7 +17,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$Source,
     [Parameter(Mandatory = $true)][string]$Destination,
-    [string]$ExpectedCommit = '4601ad6'
+    [string]$ExpectedCommit = '7b35cf5d1a6760e62ff5ad9600845dc110515b9f'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -66,7 +66,7 @@ $metadata = [ordered]@{
     architecture = 'ARM64'
     kmdf = '1.33'
     components = @('Buttons')
-    description = 'TimelmButtons.sys, PMIC button sampler for the LG V60 power and volume keys'
+    description = 'TimelmButtons.sys, PMIC button sampler for the LG V60 power, volume and assist keys'
 }
 $metadata | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $Destination 'source.json')
 
