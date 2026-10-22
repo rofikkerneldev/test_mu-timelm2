@@ -145,6 +145,23 @@ reached again for the log collection.
 `Stage-TimelmButtonsTrial.ps1 -Arm` writes a Startup entry as well, so that
 the trial starts by itself after the next boot.
 
+That write needs the write right on the Startup folder of the phone, and the
+folder belongs to the administrators of the phone.  Once Windows of the phone
+has applied its own rights to the ProgramData, the build PC has no write
+right there and the staging fails with "the Startup folder of the phone is
+not writable from the build PC".  The bundle is on the phone in that case
+and the trial is started by hand, the receipt of the staging carries the
+command in `manual_start`:
+
+```powershell
+# phone: Win+R, or a terminal in the session of the logged on user
+powershell.exe -ExecutionPolicy Bypass -File C:\TimelmTools\TimelmButtonsTrial\Start-TimelmButtonsTrial.ps1 -Seconds 240 -ButtonMode Agent -AssistAction StartMenu -AssistTarget "notepad.exe"
+```
+
+The target of the assist key is written by the trial itself, into
+`C:\ProgramData\Timelm\assist-target.txt`.  The build PC has no write right
+on that folder either, so it only passes the value on to the phone.
+
 ### Result of the trial on the phone (2026-10-22)
 
 The second attempt passed completely, the receipts are in

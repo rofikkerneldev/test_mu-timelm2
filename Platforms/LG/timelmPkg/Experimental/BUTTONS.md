@@ -286,7 +286,7 @@ answered with another lock.  The state of the lock is not a reliable source
 on this board, the name of the secure desktop is not always visible to the
 agent.
 
-### Attempt 5, the wake (planned)
+### Attempt 5, the wake (staged)
 
 The power key is a toggle now: the press after a lock is a wake, and the
 name of the input desktop is only the evidence for the first press and for
@@ -300,6 +300,25 @@ is the secure desktop of a locked session.
 | the press after the lock wakes the display | the log of the agent shows "action wake" and the state of the display on the phone |
 | the helper reaches the secure desktop | the log of the agent shows the exit code of the helper |
 | the wake does not open the power menu of Windows | the log of the agent shows no second action of the power key |
+
+The bundle of the attempt is on the phone, staged from the artifact of the CI
+run `39767984644` (sys sha256 `50632B6B980A1215CF2B7148BCFD2AA271C0120DAC0D150F0960678F7EB8A39E`,
+inf sha256 `2DDC311F4B833F4808977AB4EFB625D5EBBC3629388C9F576392AB4A6EAD14AD`),
+the receipt is in `receipts/buttons-attempt5`.
+
+The attempt is **not armed**.  The Startup folder of the phone belongs to its
+own administrators, and Windows of the phone applied its own rights to the
+ProgramData in the boot after the fourth attempt, so the build PC can no
+longer write the Startup entry there ("Access to the path ... is denied").
+The trial is started by hand on the phone instead, the receipt of the
+staging carries the command in `manual_start`:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File C:\TimelmTools\TimelmButtonsTrial\Start-TimelmButtonsTrial.ps1 -Seconds 240 -ButtonMode Agent -AssistAction StartMenu -AssistTarget "notepad.exe"
+```
+
+The target of the assist key is written by the trial itself, the build PC
+has no write right on `C:\ProgramData\Timelm` either.
 
 ## What is still open
 

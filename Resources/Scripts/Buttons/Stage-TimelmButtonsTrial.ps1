@@ -66,6 +66,21 @@ function Copy-Verified([string]$Source, [string]$Destination) {
     return $hash
 }
 
+function Get-Sha256Text {
+    <#
+      The hash of a text that the phone writes with
+      [IO.File]::WriteAllText, that is UTF-8 without a byte order mark.
+    #>
+    param([string]$Text)
+
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Text)))).Replace('-', '')
+    } finally {
+        $sha.Dispose()
+    }
+}
+
 try {
     if (-not (Test-Path -LiteralPath $Output -PathType Container)) { throw 'Precreate the PC receipt directory' }
     $receiptRoot = (Get-Item -LiteralPath $Output).FullName
@@ -189,18 +204,16 @@ try {
     $cmdText = $cmdText -replace '-ButtonMode\s+(Agent|Hid|Both)', ('-ButtonMode ' + $ButtonMode)
     if ($cmdText -notmatch '-AssistAction\s+\w+') { throw 'The trial launcher has no assist action' }
     $cmdText = $cmdText -replace '-AssistAction\s+\w+', ('-AssistAction ' + $AssistAction)
+    if ($cmdText -notmatch '-AssistTarget\s+"[^"]*"') { throw 'The trial launcher has no assist target' }
+    $cmdText = $cmdText -replace '-AssistTarget\s+"[^"]*"', ('-AssistTarget "{0}"' -f $AssistTarget)
     $cmdPath = Join-Path $bundle 'Timelm-buttons.cmd'
     Write-Flushed $cmdPath ([Text.Encoding]::ASCII.GetBytes($cmdText))
 
     #
-    # The target of the assist key is a text file, so the function of the
-    # key can be changed without touching the agent.
+    # The target of the assist key is a text file in the ProgramData of the
+    # phone.  The trial writes it, the build PC has no write right on that
+    # folder, the volume of the phone belongs to its own administrators.
     #
-    $targetDir = Join-Path $winRoot 'ProgramData\Timelm'
-    $null = New-Item -ItemType Directory -Force -Path $targetDir
-    $targetFile = Join-Path $targetDir 'assist-target.txt'
-    Write-Flushed $targetFile ([Text.Encoding]::ASCII.GetBytes($AssistTarget))
-
     # The reference time of the build PC.  The RTC of the phone runs hours
     # behind, the trial corrects the clock before it writes any receipt.
     $hostUtc = [DateTime]::UtcNow.ToString('o')
@@ -214,7 +227,7 @@ try {
     }
     $hashes += [ordered]@{ path = 'host-utc.txt'; sha256 = (Get-FileHash -LiteralPath (Join-Path $bundle 'host-utc.txt') -Algorithm SHA256).Hash }
     $hashes += [ordered]@{ path = 'Timelm-buttons.cmd'; sha256 = (Get-FileHash -LiteralPath $cmdPath -Algorithm SHA256).Hash }
-    $hashes += [ordered]@{ path = 'ProgramData/Timelm/assist-target.txt'; sha256 = (Get-FileHash -LiteralPath $targetFile -Algorithm SHA256).Hash }
+    $hashes += [ordered]@{ path = 'ProgramData/Timelm/assist-target.txt'; sha256 = (Get-Sha256Text -Text $AssistTarget) }
 
     $staged = [ordered]@{
         phase = 'staged'
@@ -233,6 +246,7 @@ try {
         archived = $archived
         files = $hashes
         armed = $Arm.IsPresent
+        manual_start = 'powershell.exe -ExecutionPolicy Bypass -File C:\TimelmTools\TimelmButtonsTrial\Start-TimelmButtonsTrial.ps1 -Seconds 240 -ButtonMode {0} -AssistAction {1} -AssistTarget "{2}"' -f $ButtonMode, $AssistAction, $AssistTarget
         esp_touched = $false
         bcd_changed = $false
         boot_order_changed = $false
@@ -242,7 +256,18 @@ try {
     if ($Arm) {
         $startup = Join-Path $winRoot 'ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\Timelm-buttons.cmd'
         $bytes = [IO.File]::ReadAllBytes((Join-Path $bundle 'Timelm-buttons.cmd'))
-        $stream = New-Object IO.FileStream($startup, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough)
+        try {
+            $stream = New-Object IO.FileStream($startup, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough)
+        } catch {
+            #
+            # The Startup folder of the phone belongs to its own
+            # administrators, the build PC has no write right on it once
+            # Windows of the phone applied its own rights to the
+            # ProgramData.  The trial is then started by hand on the phone,
+            # the receipt carries the command.
+            #
+            throw ("the Startup folder of the phone is not writable from the build PC ({0}), the trial has to be started by hand" -f $_.Exception.Message)
+        }
         try {
             $stream.Write($bytes, 0, $bytes.Length)
             $stream.Flush($true)

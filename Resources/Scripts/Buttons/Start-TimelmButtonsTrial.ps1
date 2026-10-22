@@ -21,7 +21,8 @@ param(
     [ValidateSet('Agent', 'Hid', 'Both')]
     [string]$ButtonMode = 'Agent',
     [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu')]
-    [string]$AssistAction = 'StartMenu'
+    [string]$AssistAction = 'StartMenu',
+    [string]$AssistTarget = 'notepad.exe'
 )
 
 Set-StrictMode -Version 2.0
@@ -33,7 +34,7 @@ $package = Join-Path $PSScriptRoot 'Drivers\Buttons'
 if (-not (Test-Path -LiteralPath $trial)) { throw 'The trial script is missing' }
 if (-not (Test-Path -LiteralPath $package)) { throw 'The button driver package is missing' }
 
-$arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -Seconds {1} -PackagePath "{2}" -ButtonMode {3} -AssistAction {4}' -f $trial, $Seconds, $package, $ButtonMode, $AssistAction
+$arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -Seconds {1} -PackagePath "{2}" -ButtonMode {3} -AssistAction {4} -AssistTarget "{5}"' -f $trial, $Seconds, $package, $ButtonMode, $AssistAction, $AssistTarget
 
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 $elevated = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)

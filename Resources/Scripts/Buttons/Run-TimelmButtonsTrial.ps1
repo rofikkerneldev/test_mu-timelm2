@@ -37,7 +37,8 @@ param(
     [ValidateSet('Agent', 'Hid', 'Both')]
     [string]$ButtonMode = 'Agent',
     [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu')]
-    [string]$AssistAction = 'StartMenu'
+    [string]$AssistAction = 'StartMenu',
+    [string]$AssistTarget = 'notepad.exe'
 )
 
 Set-StrictMode -Version 2.0
@@ -431,6 +432,17 @@ try {
     $null = New-Item -ItemType Directory -Force -Path $installDirectory
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'TimelmButtonAgent.ps1') -Destination $installDirectory -Force
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'TimelmButtonsCommon.ps1') -Destination $installDirectory -Force
+
+    #
+    # The target of the assist key is a text file, so that the function of
+    # the key can be changed without touching the agent.  The file is written
+    # here, the trial runs with the rights of the administrator of the
+    # phone.  The build PC has no write right on that folder, the volume of
+    # the phone belongs to its own administrators.
+    #
+    $assistTargetPath = Join-Path $installDirectory 'assist-target.txt'
+    [IO.File]::WriteAllText($assistTargetPath, $AssistTarget)
+    Write-Log ("the target of the assist key is {0}" -f $AssistTarget)
 
     $agentLog = Join-Path $ResultPath 'agent.log'
     $agentScript = Join-Path $installDirectory 'TimelmButtonAgent.ps1'
