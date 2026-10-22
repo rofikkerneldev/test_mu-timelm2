@@ -143,9 +143,17 @@ function, the target of the key is then a text file with a command line.
 Windows has no wake button of its own, so the wake is done by the agent: it
 calls `SetThreadExecutionState(ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED)`,
 sends `WM_SYSCOMMAND / SC_MONITORPOWER` to all windows and nudges the mouse.
+The input of `SendInput` only arrives at the desktop of the thread of the
+caller, so a helper in a short lived process moves itself to the input
+desktop of the session and sends a harmless key there.  That desktop is the
+secure desktop of a locked session, so the lock screen wakes up.
+
 Whether the session is locked is read from the name of the input desktop
 (`OpenInputDesktop` plus `GetUserObjectInformation(UOI_NAME)`); on a locked
-session the name is `Winlogon`.
+session the name is `Winlogon`.  That name is not a reliable source on this
+board (see attempt 4), so the power key is a **toggle**: the press after a
+lock is a wake, and the name of the desktop is only the evidence for the
+first press and for the log.
 
 ## Control codes
 
@@ -250,19 +258,59 @@ The HID face of the driver works, the receipts are in `receipts/buttons-hid`.
 The driver of this attempt is the revision `4601ad6`, it has the HID face
 but not yet the fourth button and not yet the wake.
 
+### Attempt 4, the assist key (2026-10-22)
+
+The assist key works.  The wake is still open.  The receipts are in
+`receipts/buttons-attempt4`.
+
+| Check | Result |
+| --- | --- |
+| Driver | revision `7b35cf5d1a6760e62ff5ad9600845dc110515b9f`, Debug, ARM64, sys sha256 `11D6C418481609792A0DCB8F2B79FD8497BA42162DF7DD91143B9708326AC214`, inf sha256 `E972A0F41A13C81A34E7B455771EA26DF06B9BF4910F088CF616FCC572717CFA` |
+| Node | `ACPI\KONA1003\0`, status OK, problem code 0, service `TimelmButtons` Running |
+| Mode | `Agent`, mapping version 3, assist action `StartMenu` |
+| Assist | 16 short presses, 16 start menus, no double answer |
+| Volume | 10 x `TAB`, 11 x `ENTER`, 2 x `Shift+F10` |
+| Power | 9 short presses, 9 x "action lock returned True", **0 wakes** |
+| Shutdown | `shutdown /s` after 240 s, the phone reached the mass storage mode again |
+
+The assist key is the fourth button of the phone, PMIC gpio1 at `0xC010`, and
+the driver reads it with the same debounce as the other three.  The bouncing
+contact of the pad (no pull up in the recovery) did not open the start menu
+twice, the quiet time of 500 ms of the agent is enough.
+
+The power key locked the workstation nine times and never woke it.  The
+reason is in the log of the attempt: the agent of that revision read the
+state of the lock from the name of the input desktop, and a name that cannot
+be read was treated as "not locked".  So every press after a lock was
+answered with another lock.  The state of the lock is not a reliable source
+on this board, the name of the secure desktop is not always visible to the
+agent.
+
+### Attempt 5, the wake (planned)
+
+The power key is a toggle now: the press after a lock is a wake, and the
+name of the input desktop is only the evidence for the first press and for
+the log.  The agent wakes the display with `SetThreadExecutionState`,
+`WM_SYSCOMMAND / SC_MONITORPOWER` and a mouse nudge, and a helper in a short
+lived process sends a harmless key to the input desktop of the session, which
+is the secure desktop of a locked session.
+
+| The agent has to prove | How it is measured |
+| --- | --- |
+| the press after the lock wakes the display | the log of the agent shows "action wake" and the state of the display on the phone |
+| the helper reaches the secure desktop | the log of the agent shows the exit code of the helper |
+| the wake does not open the power menu of Windows | the log of the agent shows no second action of the power key |
+
 ## What is still open
 
-* The **assist key** (fourth button, `0xC010`) and the **wake** of the
-  display are implemented in the driver revision
-  `7b35cf5d1a6760e62ff5ad9600845dc110515b9f` and in the scripts, they are
-  not on the phone yet.  The next trial has to prove the assist key and the
-  wake.
+* The **wake** of the display is the only part of the button path that is
+  not proven on the phone.  The assist key works (attempt 4), the lock works
+  (attempt 4), the wake is the subject of attempt 5.
 * The **capture of the touch chip** in the recovery came out empty
   (`captures/touch/f-touch`): the chip is quiet in the recovery, so the
   capture has to run in Android, not in the recovery.
 * Windows does not react to the power key with a wake, the agent has to do
-  it.  The wake is proven by the name of the input desktop, not yet by a
-  measurement on the phone.
+  it.  The wake is not proven by a measurement on the phone yet.
 
 ## Risks
 

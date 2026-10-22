@@ -186,6 +186,14 @@ $answers = Invoke-Signal -Edges $edges -Button $buttons[3] -Pressed $bouncePress
 $edgesAfter = $edges[[int]$buttons[3].Bit]
 Assert-True $edgesAfter.Locked 'the button is still locked after the bounce'
 
+Write-Host '--- the power key is a toggle ---'
+Assert-Equal 'Lock' (Resolve-TimelmPowerAction -DesktopName 'Default') 'the first press locks the screen'
+Assert-Equal 'Wake' (Resolve-TimelmPowerAction -DesktopName 'Winlogon') 'a locked session is woken'
+Assert-Equal 'Wake' (Resolve-TimelmPowerAction -DesktopName '') 'a name that cannot be read gives the wake'
+Assert-Equal 'Wake' (Resolve-TimelmPowerAction -DesktopName 'Default' -Next 'Wake') 'the press after a lock wakes'
+Assert-Equal 'Lock' (Resolve-TimelmPowerAction -DesktopName 'Default' -Next 'Lock') 'the press after a wake locks'
+Assert-Equal 'Wake' (Resolve-TimelmPowerAction -DesktopName 'Winlogon' -Next 'Lock') 'the secure desktop wins over the toggle'
+
 if ($script:Failures -gt 0) {
     Write-Host ("{0} checks failed" -f $script:Failures)
     exit 1

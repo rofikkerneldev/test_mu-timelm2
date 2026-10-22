@@ -53,6 +53,7 @@ param(
     [switch]$DisableLock,
     [switch]$DisableShutdown,
     [switch]$DryRun,
+    [switch]$WakeInput,
     [int]$RunSeconds = 0
 )
 
@@ -61,7 +62,33 @@ $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'TimelmButtonsCommon.ps1')
 
+if ($WakeInput) {
+    <#
+      The helper of the wake.  It runs in a short lived process, moves
+      itself to the input desktop of the session and sends a harmless key,
+      which wakes the lock screen.  The process ends right afterwards, so
+      the agent itself stays on the desktop of the session.
+    #>
+    $errorCode = [TimelmButtonsNative]::WakeInputDesktop()
+    $text = if ($errorCode -eq 0) { 'wake input desktop ok' } else { 'wake input desktop error {0}' -f $errorCode }
+    try {
+        $directory = Split-Path -Parent $LogPath
+        if ($directory -and -not (Test-Path -LiteralPath $directory)) {
+            New-Item -ItemType Directory -Force -Path $directory | Out-Null
+        }
+        Add-Content -LiteralPath $LogPath -Value ('{0} {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff'), $text) -Encoding UTF8
+    } catch {
+        # The log is not important for the result.
+    }
+    Write-Output $text
+    exit $errorCode
+}
+
 $script:LogFile = $LogPath
+
+# What the next short press of the power key does, 'Lock', 'Wake' or an
+# empty string when the agent does not know it yet.
+$script:TimelmPowerNext = ''
 
 function Write-TimelmAgentLog {
     param([string]$Message)
@@ -101,6 +128,17 @@ function Invoke-TimelmShiftF10 {
     Write-TimelmAgentLog 'action Shift+F10'
 }
 
+function Get-TimelmLockState {
+    <#
+      The state of the lock of the session: 'Unlocked', 'Locked' or
+      'Unknown'.  It is the answer of the name of the input desktop.
+    #>
+    $name = Get-TimelmInputDesktopName
+    if (-not $name) { return 'Unknown' }
+    if ($name -ieq 'Winlogon') { return 'Locked' }
+    return 'Unlocked'
+}
+
 function Invoke-TimelmLock {
     if ($DisableLock) {
         Write-TimelmAgentLog 'action lock skipped (disabled)'
@@ -112,6 +150,16 @@ function Invoke-TimelmLock {
     }
     $ok = [TimelmButtonsNative]::LockWorkStation()
     Write-TimelmAgentLog ('action lock returned {0}' -f $ok)
+
+    if ($ok) {
+        #
+        # The switch to the secure desktop needs a moment, so the state is
+        # read again.  It is only evidence for the log, the next press of
+        # the power key wakes in any case.
+        #
+        Start-Sleep -Milliseconds 400
+        Write-TimelmAgentLog ('after the lock the input desktop is {0}, the session is locked {1}' -f (Get-TimelmDesktopReport), (Get-TimelmLockState))
+    }
 }
 
 function Invoke-TimelmShutdown {
@@ -134,9 +182,41 @@ function Invoke-TimelmWake {
         return
     }
 
-    $locked = Test-TimelmWorkstationLocked
+    $report = Get-TimelmDesktopReport
+    $state = Get-TimelmLockState
     $result = Invoke-TimelmWakeDisplay
-    Write-TimelmAgentLog ('action wake (locked {0}, previous state 0x{1:X}, nudge {2})' -f $locked, $result.PreviousState, $result.NudgeResult)
+    Write-TimelmAgentLog ('action wake (locked {0}, desktop {1}, previous state 0x{2:X}, nudge {3})' -f $state, $report, $result.PreviousState, $result.NudgeResult)
+
+    #
+    # The lock screen only wakes up for input that arrives at the secure
+    # desktop, the helper sends it there.  The helper is harmless when the
+    # session is not locked, the input desktop is then the desktop of the
+    # session and the key is the shift key.
+    #
+    Invoke-TimelmWakeInputDesktop
+}
+
+function Invoke-TimelmWakeInputDesktop {
+    <#
+      Runs the helper of this script in a short lived process.  The helper
+      moves itself to the input desktop of the session and sends a harmless
+      key, which wakes the lock screen.
+    #>
+    $helper = $PSCommandPath
+    if (-not $helper) {
+        Write-TimelmAgentLog 'action wake input skipped (the path of the script is unknown)'
+        return
+    }
+
+    try {
+        $process = Start-Process -FilePath 'powershell.exe' `
+            -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $helper,
+                          '-WakeInput', '-LogPath', $script:LogFile `
+            -WindowStyle Hidden -Wait -PassThru
+        Write-TimelmAgentLog ('action wake input helper exited with {0}' -f $process.ExitCode)
+    } catch {
+        Write-TimelmAgentLog ('action wake input helper failed: {0}' -f $_.Exception.Message)
+    }
 }
 
 function Invoke-TimelmLockOrWake {
@@ -144,13 +224,24 @@ function Invoke-TimelmLockOrWake {
       Locks the workstation when it is unlocked and wakes the display when
       the session is locked.  That is the behaviour of the power key of a
       phone.
+
+      The power key is a toggle, the press after a lock is a wake.  The name
+      of the input desktop is only the evidence that the session is locked
+      when the agent does not know it yet, because the name cannot always
+      be read from a session that is locked.
     #>
-    if (Test-TimelmWorkstationLocked) {
-        Invoke-TimelmWake
+    $name = Get-TimelmInputDesktopName
+    $action = Resolve-TimelmPowerAction -DesktopName $name -Next $script:TimelmPowerNext
+    Write-TimelmAgentLog ('the input desktop is {0}, the power key does {1}' -f (Get-TimelmDesktopReport), $action)
+
+    if ($action -eq 'Lock') {
+        Invoke-TimelmLock
+        $script:TimelmPowerNext = 'Wake'
         return
     }
 
-    Invoke-TimelmLock
+    Invoke-TimelmWake
+    $script:TimelmPowerNext = 'Lock'
 }
 
 function Invoke-TimelmStartMenu {

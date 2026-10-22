@@ -58,7 +58,8 @@ foreach ($name in $knownReceipts) {
 $copied = foreach ($file in Get-ChildItem -LiteralPath $logs -File) {
     $destination = Join-Path $outputRoot $file.Name
     Copy-Item -LiteralPath $file.FullName -Destination $destination -Force
-    [ordered]@{ name = $file.Name; sha256 = (Get-FileHash -LiteralPath $destination).Hash; size = $destination.Length }
+    $copiedFile = Get-Item -LiteralPath $destination
+    [ordered]@{ name = $file.Name; sha256 = (Get-FileHash -LiteralPath $destination).Hash; size = $copiedFile.Length }
 }
 
 [ordered]@{

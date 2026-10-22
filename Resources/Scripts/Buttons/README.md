@@ -125,6 +125,15 @@ powershell -ExecutionPolicy Bypass -File Stage-TimelmButtonsTrial.ps1 `
 powershell -ExecutionPolicy Bypass -File E:\TimelmTools\TimelmButtonsTrial\Run-TimelmButtonsTrial.ps1 -Seconds 120
 ```
 
+The two scripts on the PC side are run with `pwsh`, the shell of the CI.  The
+Windows PowerShell of the build PC has no `Get-FileHash`, and the scripts
+need it for the hashes of the receipts.
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File Stage-TimelmButtonsTrial.ps1 `
+    -Artifact C:\artifacts\timelm-native-buttons -Output C:\receipts\buttons
+```
+
 The trial removes the driver that currently owns `ACPI\KONA1003` (`PMIC.inf`),
 installs `TimelmButtons.inf`, verifies that the selected INF of the device is
 byte for byte the INF of the package, starts the agent and samples the button
@@ -177,12 +186,34 @@ The HID face of the driver works, the receipts are in `receipts/buttons-hid`:
 The driver of that attempt is the revision `4601ad6`, it has the HID face
 but not yet the fourth button and not yet the wake.
 
+### Result of the fourth attempt, mode Agent, the assist key (2026-10-22)
+
+The assist key works, the receipts are in `receipts/buttons-attempt4`:
+
+| Check | Result |
+| --- | --- |
+| Driver | revision `7b35cf5d1a6760e62ff5ad9600845dc110515b9f`, the fourth button is in the mapping |
+| Node | `ACPI\KONA1003\0`, status **OK**, problem code **0**, service `TimelmButtons` **Running** |
+| Mapping | version 3, mode `Agent`, assist action `StartMenu` |
+| Assist | 16 short presses, 16 start menus, no double answer |
+| Volume | 10 x `TAB`, 11 x `ENTER`, 2 x `Shift+F10` |
+| Power | 9 short presses, 9 x "action lock returned True", 0 wakes |
+| Shutdown | `shutdown /s` after 240 s, the phone reached the mass storage mode again |
+
+The wake is the one part that is not proven.  The agent of that revision read
+the state of the lock from the name of the input desktop and treated a name
+that cannot be read as "not locked", so every press after a lock was
+answered with another lock.
+
 ### What the next attempt has to prove
 
-* the **assist key** (fourth button, PMIC gpio1 / `0xC010`) reaches the
-  agent and opens the start menu of Windows,
 * the **power key wakes** the display again when the session is locked,
 * the wake does not trigger the power menu of Windows.
+
+The power key is a toggle now: the press after a lock is a wake.  The name of
+the input desktop is only the evidence for the first press and for the log.
+The wake sends the display on and moves a short lived helper to the input
+desktop of the session, which is the secure desktop of a locked session.
 
 The driver revision for that attempt is
 `7b35cf5d1a6760e62ff5ad9600845dc110515b9f`.

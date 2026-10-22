@@ -90,6 +90,9 @@ public static class TimelmButtonsNative
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool CloseDesktop(IntPtr hDesktop);
 
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool SetThreadDesktop(IntPtr hDesktop);
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
 
@@ -111,6 +114,7 @@ public static class TimelmButtonsNative
     // GetUserObjectInformation
     //
     public const int UOI_NAME = 2;
+    public const uint DESKTOP_READOBJECTS = 0x0001;
     public const uint DESKTOP_SWITCHDESKTOP = 0x0100;
 
     //
@@ -275,6 +279,59 @@ public static class TimelmButtonsNative
     }
 
     //
+    // Wakes the secure desktop of a locked session.
+    //
+    // The input of SendInput only arrives at the desktop of the thread of
+    // the caller, so a key press of the agent stays in the session of the
+    // user and never reaches the lock screen.  The thread is moved to the
+    // input desktop for the moment of the key press, which is the desktop
+    // of the lock screen while the session is locked.
+    //
+    // The call has to run in a short lived process, because a thread that
+    // was moved to the secure desktop cannot be trusted to work on the
+    // desktop of the session any more.
+    //
+    // The return value is 0 when the key press was sent, otherwise it is
+    // the error of the operating system.
+    //
+    public static int WakeInputDesktop()
+    {
+        IntPtr desktop = OpenInputDesktop(0, false, DESKTOP_SWITCHDESKTOP);
+        if (desktop == IntPtr.Zero)
+        {
+            return Marshal.GetLastWin32Error();
+        }
+
+        try
+        {
+            if (!SetThreadDesktop(desktop))
+            {
+                return Marshal.GetLastWin32Error();
+            }
+
+            //
+            // A harmless key wakes the lock screen, it changes nothing else.
+            //
+            INPUT[] inputs = new INPUT[2];
+
+            inputs[0].type = INPUT_KEYBOARD;
+            inputs[0].u.ki.wVk = 0x10;   // VK_SHIFT
+
+            inputs[1].type = INPUT_KEYBOARD;
+            inputs[1].u.ki.wVk = 0x10;
+            inputs[1].u.ki.dwFlags = KEYEVENTF_KEYUP;
+
+            SendInput(2, inputs, Marshal.SizeOf(typeof(INPUT)));
+
+            return 0;
+        }
+        finally
+        {
+            CloseDesktop(desktop);
+        }
+    }
+
+    //
     // A small movement of the mouse.  It wakes the system when it is in the
     // modern standby state, where the timer of the agent does not run any
     // more.
@@ -297,37 +354,107 @@ public static class TimelmButtonsNative
     // desktop, otherwise it is the "Default" desktop of the session.
     // The name is null when the desktop cannot be opened.
     //
+    // The access rights are tried one after the other, because the right
+    // to switch the desktop is not always given to the session of the
+    // user, while the right to read the name usually is.
+    //
     public static string GetInputDesktopName()
     {
-        IntPtr desktop = OpenInputDesktop(0, false, DESKTOP_SWITCHDESKTOP);
+        uint[] rights = new uint[] {
+            DESKTOP_READOBJECTS | DESKTOP_SWITCHDESKTOP,
+            DESKTOP_READOBJECTS,
+            DESKTOP_SWITCHDESKTOP
+        };
+
+        foreach (uint right in rights)
+        {
+            IntPtr desktop = OpenInputDesktop(0, false, right);
+            if (desktop == IntPtr.Zero)
+            {
+                continue;
+            }
+
+            try
+            {
+                byte[] buffer = new byte[512];
+                uint needed;
+
+                if (!GetUserObjectInformation(desktop, UOI_NAME, buffer,
+                                              (uint)buffer.Length, out needed))
+                {
+                    continue;
+                }
+
+                int length = 0;
+                while (length < buffer.Length && buffer[length] != 0)
+                {
+                    length++;
+                }
+
+                return System.Text.Encoding.Unicode.GetString(buffer, 0, length);
+            }
+            finally
+            {
+                CloseDesktop(desktop);
+            }
+        }
+
+        return null;
+    }
+
+    //
+    // The last error of the last call of the operating system.
+    //
+    public static int GetLastError()
+    {
+        return Marshal.GetLastWin32Error();
+    }
+
+    //
+    // The name of the desktop of the session, the name of the input
+    // desktop and the last error, all in one string, so that the agent can
+    // write them into its log.
+    //
+    public static string GetInputDesktopReport()
+    {
+        IntPtr desktop = OpenInputDesktop(0, false, DESKTOP_READOBJECTS);
+        string name = "<none>";
+        uint error = 0;
+
         if (desktop == IntPtr.Zero)
         {
-            return null;
+            error = (uint)Marshal.GetLastWin32Error();
         }
-
-        try
+        else
         {
-            byte[] buffer = new byte[512];
-            uint needed;
-
-            if (!GetUserObjectInformation(desktop, UOI_NAME, buffer,
-                                          (uint)buffer.Length, out needed))
+            try
             {
-                return null;
-            }
+                byte[] buffer = new byte[512];
+                uint needed;
 
-            int length = 0;
-            while (length < buffer.Length && buffer[length] != 0)
+                if (GetUserObjectInformation(desktop, UOI_NAME, buffer,
+                                            (uint)buffer.Length, out needed))
+                {
+                    int length = 0;
+                    while (length < buffer.Length && buffer[length] != 0)
+                    {
+                        length++;
+                    }
+                    name = System.Text.Encoding.Unicode.GetString(buffer, 0, length);
+                }
+                else
+                {
+                    error = (uint)Marshal.GetLastWin32Error();
+                    name = "<error>";
+                }
+            }
+            finally
             {
-                length++;
+                CloseDesktop(desktop);
             }
+        }
 
-            return System.Text.Encoding.Unicode.GetString(buffer, 0, length);
-        }
-        finally
-        {
-            CloseDesktop(desktop);
-        }
+        return string.Format("{0}|{1}", name, error);
     }
 }
 '@
@@ -889,6 +1016,9 @@ function Test-TimelmWorkstationLocked {
       True when the workstation is locked.  While the session is locked the
       desktop that has the input focus is the "Winlogon" desktop of the
       secure desktop, otherwise it is the "Default" desktop of the session.
+
+      The function returns $null when the state cannot be found, so that the
+      caller can decide what to do with an unknown state.
     #>
     $name = $null
     try {
@@ -898,10 +1028,68 @@ function Test-TimelmWorkstationLocked {
     }
 
     if (-not $name) {
-        return $false
+        return $null
     }
 
     return ($name -ieq 'Winlogon')
+}
+
+function Get-TimelmDesktopReport {
+    <#
+      The name of the input desktop and the last error, for the log.
+    #>
+    try {
+        return [TimelmButtonsNative]::GetInputDesktopReport()
+    } catch {
+        return ('<exception>|0')
+    }
+}
+
+function Get-TimelmInputDesktopName {
+    <#
+      The name of the input desktop of the session, or $null when the name
+      cannot be read.
+    #>
+    try {
+        return [TimelmButtonsNative]::GetInputDesktopName()
+    } catch {
+        return $null
+    }
+}
+
+function Resolve-TimelmPowerAction {
+    <#
+      What the next short press of the power key does: 'Lock' or 'Wake'.
+
+      The name of the input desktop is the evidence of the state of the
+      session: 'Winlogon' is the secure desktop of a locked session,
+      'Default' is the desktop of an unlocked session.
+
+      The answer of the last press is stronger than the name of the desktop,
+      because the name of the desktop cannot always be read: the agent runs
+      on the desktop of the session, and a session that is locked does not
+      always answer with the name of the secure desktop.  The power key of a
+      phone is a toggle anyway, the first press locks the screen and the
+      next one wakes it up.
+
+      A name that says 'Winlogon' wins over the toggle, because that is the
+      proof that the session is locked.  A name that cannot be read and no
+      earlier press gives the wake, because a wake in an unlocked session
+      only switches the display on, while a lock in a locked session does
+      nothing at all.
+
+      The function is pure, it only reads its two arguments.
+    #>
+    param(
+        [string]$DesktopName,
+        [string]$Next = ''
+    )
+
+    if ($DesktopName -ieq 'Winlogon') { return 'Wake' }
+    if ($Next -eq 'Lock') { return 'Lock' }
+    if ($Next -eq 'Wake') { return 'Wake' }
+    if ($DesktopName -ieq 'Default') { return 'Lock' }
+    return 'Wake'
 }
 
 function Invoke-TimelmWakeDisplay {
