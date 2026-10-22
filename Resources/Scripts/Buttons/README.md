@@ -429,6 +429,21 @@ ExitWindowsEx(EWX_SHUTDOWN or EWX_FORCE, 0)
 The trial ends with the same request (`shutdown /s /t 30 /f`) and writes the
 exit code into the log.
 
+The event log of the phone (read offline from the collection of the fifth
+touch trial) names the reason of a slow shutdown of this phone:
+
+```
+2026-10-22 08.16.22 id=1074 The process C:\Windows\System32\shutdown.exe
+    (TIMELM-V60) has initiated the shutdown of computer TIMELM-V60
+    on behalf of user NT AUTHORITY\SYSTEM ...
+2026-10-22 08.16.57 id=100  Process C:\Users\Administrator\AppData\Local\
+    Microsoft\OneDrive\OneDrive.exe is delaying system shutdown after
+    5031 milliseconds.
+```
+
+The request is made by `shutdown.exe` and accepted, but a program of the
+session holds it back.  The `/f` closes the programs that would do that.
+
 ```powershell
 # PC, stage the attempt with the mapping
 pwsh -NoProfile -ExecutionPolicy Bypass -File Stage-TimelmButtonsTrial.ps1 `

@@ -518,6 +518,21 @@ The agent now measures the request:
 * if the helper is refused, `ExitWindowsEx` asks for the same shutdown and
   its answer is logged too.
 
+The event log of the phone names the program that held the shutdown back in
+the earlier attempts (read offline from the collection of the fifth touch
+trial):
+
+```
+2026-10-22 08.16.22 id=1074 The process C:\Windows\System32\shutdown.exe
+    (TIMELM-V60) has initiated the shutdown of computer TIMELM-V60
+    on behalf of user NT AUTHORITY\SYSTEM ...
+2026-10-22 08.16.57 id=100  Process ...\Microsoft\OneDrive\OneDrive.exe is
+    delaying system shutdown after 5031 milliseconds.
+```
+
+So the request is made and accepted; a program of the session holds it back.
+The `/f` closes those programs.
+
 The trial ends with the same request (`shutdown /s /t 30 /f`) and writes the
 exit code into the log.
 
