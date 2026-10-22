@@ -102,7 +102,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: rofikkerneldev/timelm_Drivers
-          ref: a0dcddd
+          # The full commit is used, a short revision would be read as a
+          # branch name by the checkout action.
+          ref: a0dcdddd3f1835208fafdebd3116909c55028442
           path: buttons-source
       - shell: pwsh
         run: ./Resources/Scripts/Buttons/build_timelm_buttons.ps1 -Source ./buttons-source -Destination ./buttons-packages
