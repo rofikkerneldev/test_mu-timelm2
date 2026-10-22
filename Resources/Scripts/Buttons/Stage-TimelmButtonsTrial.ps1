@@ -504,7 +504,14 @@ try {
         }
 
         $staged.armed = $true
-        $staged.arm_method = 'scheduled-task'
+        if ($staged.arm_method -eq 'startup-entry' -or $staged.arm_method -eq 'startup-entry-user') {
+            # Both ways to start the trial are armed, the Startup entry of the
+            # phone and the task of the scheduler.  The receipt names both of
+            # them, so that the next boot is covered by two of them.
+            $staged.arm_method = '{0}+scheduled-task' -f $staged.arm_method
+        } else {
+            $staged.arm_method = 'scheduled-task'
+        }
         $staged.task_path = 'C:\Windows\System32\Tasks\TimelmButtonsTrial'
         $staged.task_sha256 = (Get-FileHash -LiteralPath $taskFile -Algorithm SHA256).Hash
         $staged | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $receiptRoot 'stage-status.json')
