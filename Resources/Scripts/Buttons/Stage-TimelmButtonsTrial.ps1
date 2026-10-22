@@ -365,6 +365,14 @@ try {
     $hashes += [ordered]@{ path = 'Timelm-buttons.cmd'; sha256 = (Get-FileHash -LiteralPath $cmdPath -Algorithm SHA256).Hash }
     $hashes += [ordered]@{ path = 'ProgramData/Timelm/assist-target.txt'; sha256 = (Get-Sha256Text -Text $AssistTarget) }
 
+    #
+    # The manifest of the bundle names the files with the path that they
+    # have inside the bundle, so that the bundle on the phone can be
+    # checked on its own without the artifact of the CI.
+    #
+    $bundleManifest = Join-Path $bundle 'bundle-sha256.json'
+    $hashes | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $bundleManifest -Encoding UTF8
+
     $staged = [ordered]@{
         phase = 'staged'
         utc = [DateTime]::UtcNow.ToString('o')
