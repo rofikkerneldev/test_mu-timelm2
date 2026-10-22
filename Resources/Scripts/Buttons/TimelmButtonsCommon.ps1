@@ -9,15 +9,20 @@
   The following control codes are supported (identical to the ones in
   timelm_Drivers/src/Include/TimelmButtons.h):
 
-    0x226000  GET_STATE     out: 48 byte TIMELM_BUTTON_STATE
+    0x226000  GET_STATE     out: 56 byte TIMELM_BUTTON_STATE
     0x226004  RAW_READ      in : 16 byte TIMELM_BUTTON_RAW_REQUEST
                              out: request + data bytes
-    0x22A008  SET_MAPPING   in : 80 byte TIMELM_BUTTON_MAPPING
-    0x22600C  GET_MAPPING   out: 80 byte TIMELELM_BUTTON_MAPPING
+    0x22A008  SET_MAPPING   in : 152 byte TIMELM_BUTTON_MAPPING
+    0x22600C  GET_MAPPING   out: 152 byte TIMELM_BUTTON_MAPPING
     0x226010  DUMP          in : 16 byte TIMELM_BUTTON_RAW_REQUEST
                              out: request + data bytes
     0x226014  WAIT          in :  8 byte TIMELM_BUTTON_WAIT_REQUEST
-                             out: 48 byte TIMELM_BUTTON_STATE
+                             out: 56 byte TIMELM_BUTTON_STATE
+
+  The driver of the first version used a 48 byte state and an 80 byte
+  mapping.  Both are still understood, the first bytes of the structures
+  did not change, so this script works with an old driver and with the
+  driver that knows the HID face.
 
   Everything here is Windows PowerShell 5.1 compatible so that it can run on
   the phone without any extra tooling.
@@ -217,6 +222,26 @@ $script:TimelmButtonNames = @{
     4 = 'VolumeDown'
 }
 
+#
+# The action ids of the mapping, they are the same in the driver
+# (timelm_Drivers/src/Include/TimelmButtons.h).
+#
+$script:TimelmHidAction = @{
+    None            = 0
+    VolumeIncrement = 1
+    VolumeDecrement = 2
+    PowerDown       = 3
+}
+
+$script:TimelmAgentAction = @{
+    None     = 0
+    Tab      = 1
+    Enter    = 2
+    ShiftF10 = 3
+    Lock     = 4
+    Shutdown = 5
+}
+
 function Get-TimelmButtonName {
     param([int]$Bit)
     if ($script:TimelmButtonNames.ContainsKey($Bit)) {
@@ -238,7 +263,7 @@ function Close-TimelmButtons {
 }
 
 function ConvertFrom-TimelmButtonState {
-    <# Decodes the 48 byte TIMELM_BUTTON_STATE structure. #>
+    <# Decodes the TIMELM_BUTTON_STATE structure (56 byte, 48 byte is the first version). #>
     param([byte[]]$Buffer)
 
     $state = [ordered]@{
@@ -257,7 +282,14 @@ function ConvertFrom-TimelmButtonState {
             [BitConverter]::ToUInt32($Buffer, 36)
         )
         LastEdgeMillis = [BitConverter]::ToUInt32($Buffer, 40)
-        Reserved      = [BitConverter]::ToUInt32($Buffer, 44)
+        HidReady      = [BitConverter]::ToUInt32($Buffer, 44)
+        HidReportCount = 0
+        Reserved      = 0
+    }
+
+    if ($Buffer.Length -ge 56) {
+        $state.HidReportCount = [BitConverter]::ToUInt32($Buffer, 48)
+        $state.Reserved = [BitConverter]::ToUInt32($Buffer, 52)
     }
 
     return [pscustomobject]$state
@@ -265,7 +297,7 @@ function ConvertFrom-TimelmButtonState {
 
 function Get-TimelmButtonState {
     param([IntPtr]$Handle)
-    $buffer = [TimelmButtonsNative]::Ioctl($Handle, [TimelmButtonsNative]::IOCTL_GET_STATE, $null, 48)
+    $buffer = [TimelmButtonsNative]::Ioctl($Handle, [TimelmButtonsNative]::IOCTL_GET_STATE, $null, 56)
     return ConvertFrom-TimelmButtonState $buffer
 }
 
@@ -279,13 +311,55 @@ function Wait-TimelmButtonState {
     $request = New-Object byte[] 8
     [void][BitConverter]::GetBytes([uint32]$TimeoutMillis).CopyTo($request, 0)
 
-    $buffer = [TimelmButtonsNative]::Ioctl($Handle, [TimelmButtonsNative]::IOCTL_WAIT, $request, 48)
+    $buffer = [TimelmButtonsNative]::Ioctl($Handle, [TimelmButtonsNative]::IOCTL_WAIT, $request, 56)
     return ConvertFrom-TimelmButtonState $buffer
+}
+
+function ConvertFrom-TimelmButtonMapping {
+    <# Decodes the TIMELM_BUTTON_MAPPING structure (152 byte, 80 byte is the first version). #>
+    param([byte[]]$Buffer)
+
+    $sources = @()
+    $actions = @()
+
+    for ($index = 0; $index -lt 3; $index++) {
+        $offset = 8 + ($index * 24)
+        $sources += [pscustomobject][ordered]@{
+            Index    = $index
+            Sid      = [BitConverter]::ToUInt32($Buffer, $offset + 0)
+            Addr     = [BitConverter]::ToUInt32($Buffer, $offset + 4)
+            Mask     = [BitConverter]::ToUInt32($Buffer, $offset + 8)
+            Polarity = [BitConverter]::ToUInt32($Buffer, $offset + 12)
+            Enabled  = [BitConverter]::ToUInt32($Buffer, $offset + 16)
+        }
+    }
+
+    if ($Buffer.Length -ge 152) {
+        for ($index = 0; $index -lt 3; $index++) {
+            $offset = 80 + ($index * 24)
+            $actions += [pscustomobject][ordered]@{
+                Index            = $index
+                HidAction        = [BitConverter]::ToUInt32($Buffer, $offset + 0)
+                LongPressMillis = [BitConverter]::ToUInt32($Buffer, $offset + 4)
+                AgentShortAction = [BitConverter]::ToUInt32($Buffer, $offset + 8)
+                AgentLongAction  = [BitConverter]::ToUInt32($Buffer, $offset + 12)
+                HidEnabled       = [BitConverter]::ToUInt32($Buffer, $offset + 16)
+            }
+        }
+    }
+
+    return [pscustomobject][ordered]@{
+        Version = [BitConverter]::ToUInt32($Buffer, 0)
+        Count   = [BitConverter]::ToUInt32($Buffer, 4)
+        Source  = $sources
+        Action  = $actions
+    }
 }
 
 function Get-TimelmButtonMapping {
     param([IntPtr]$Handle)
-    return [TimelmButtonsNative]::Ioctl($Handle, [TimelmButtonsNative]::IOCTL_GET_MAPPING, $null, 80)
+    $buffer = [TimelmButtonsNative]::Ioctl($Handle, [TimelmButtonsNative]::IOCTL_GET_MAPPING, $null, 152)
+    return ConvertFrom-TimelmButtonMapping $buffer
 }
 
 function Set-TimelmButtonMapping {
@@ -293,8 +367,8 @@ function Set-TimelmButtonMapping {
         [IntPtr]$Handle,
         [byte[]]$Mapping
     )
-    if ($Mapping.Length -ne 80) {
-        throw 'The mapping structure must be 80 bytes long.'
+    if ($Mapping.Length -ne 152 -and $Mapping.Length -ne 80) {
+        throw 'The mapping structure must be 152 bytes long (80 bytes for the first version).'
     }
     [void][TimelmButtonsNative]::Ioctl($Handle, [TimelmButtonsNative]::IOCTL_SET_MAPPING, $Mapping, 0)
 }
@@ -322,7 +396,16 @@ function Read-TimelmPmicRegister {
 }
 
 function ConvertTo-TimelmButtonMapping {
-    <# Builds a 80 byte TIMELM_BUTTON_MAPPING structure. #>
+    <#
+      Builds a 152 byte TIMELM_BUTTON_MAPPING structure.
+
+      The mode decides who reacts to a short press:
+
+        Agent  the agent answers with TAB, ENTER and the lock (the default)
+        Hid    the driver reports a native volume or power key, the agent
+               only answers a long press
+        Both   both of them react, only useful to see the two paths at once
+    #>
     param(
         [int]$PowerSid = 0,
         [int]$PowerAddress = 0x810,
@@ -335,11 +418,15 @@ function ConvertTo-TimelmButtonMapping {
         [int]$VolumeDownSid = 0,
         [int]$VolumeDownAddress = 0x810,
         [int]$VolumeDownMask = 0x02,
-        [int]$VolumeDownPolarity = 0
+        [int]$VolumeDownPolarity = 0,
+        [ValidateSet('Agent', 'Hid', 'Both')]
+        [string]$Mode = 'Agent',
+        [int]$PowerLongPressMillis = 1500,
+        [int]$VolumeDownLongPressMillis = 800
     )
 
-    $mapping = New-Object byte[] 80
-    [void][BitConverter]::GetBytes([uint32]1).CopyTo($mapping, 0)      # version
+    $mapping = New-Object byte[] 152
+    [void][BitConverter]::GetBytes([uint32]2).CopyTo($mapping, 0)      # version
     [void][BitConverter]::GetBytes([uint32]3).CopyTo($mapping, 4)      # count
 
     $sources = @(
@@ -355,6 +442,41 @@ function ConvertTo-TimelmButtonMapping {
         [void][BitConverter]::GetBytes([uint32]$sources[$index][2]).CopyTo($mapping, $offset + 8)
         [void][BitConverter]::GetBytes([uint32]$sources[$index][3]).CopyTo($mapping, $offset + 12)
         [void][BitConverter]::GetBytes([uint32]$sources[$index][4]).CopyTo($mapping, $offset + 16)
+    }
+
+    #
+    # The actions of the three buttons: power, volume up, volume down.
+    #
+    $actions = @(
+        @($script:TimelmHidAction.PowerDown, $PowerLongPressMillis, $script:TimelmAgentAction.Lock, $script:TimelmAgentAction.Shutdown),
+        @($script:TimelmHidAction.VolumeIncrement, 0, $script:TimelmAgentAction.Tab, $script:TimelmAgentAction.None),
+        @($script:TimelmHidAction.VolumeDecrement, $VolumeDownLongPressMillis, $script:TimelmAgentAction.Enter, $script:TimelmAgentAction.ShiftF10)
+    )
+
+    $useHid = ($Mode -eq 'Hid' -or $Mode -eq 'Both')
+    $useAgent = ($Mode -eq 'Agent' -or $Mode -eq 'Both')
+
+    for ($index = 0; $index -lt 3; $index++) {
+        $offset = 80 + ($index * 24)
+
+        $hidAction = 0
+        $hidEnabled = 0
+        $agentShort = 0
+        $agentLong = $actions[$index][3]
+
+        if ($useHid) {
+            $hidAction = $actions[$index][0]
+            $hidEnabled = 1
+        }
+        if ($useAgent) {
+            $agentShort = $actions[$index][2]
+        }
+
+        [void][BitConverter]::GetBytes([uint32]$hidAction).CopyTo($mapping, $offset + 0)
+        [void][BitConverter]::GetBytes([uint32]$actions[$index][1]).CopyTo($mapping, $offset + 4)
+        [void][BitConverter]::GetBytes([uint32]$agentShort).CopyTo($mapping, $offset + 8)
+        [void][BitConverter]::GetBytes([uint32]$agentLong).CopyTo($mapping, $offset + 12)
+        [void][BitConverter]::GetBytes([uint32]$hidEnabled).CopyTo($mapping, $offset + 16)
     }
 
     return $mapping

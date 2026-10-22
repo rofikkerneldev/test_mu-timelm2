@@ -33,7 +33,9 @@ param(
     [string]$PackagePath,
     [int]$Seconds = 120,
     [string]$ResultPath,
-    [switch]$KeepDriver
+    [switch]$KeepDriver,
+    [ValidateSet('Agent', 'Hid', 'Both')]
+    [string]$ButtonMode = 'Agent'
 )
 
 Set-StrictMode -Version 2.0
@@ -439,10 +441,6 @@ try {
         '-DisableShutdown'
     )
 
-    $agentProcess = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
-        -ArgumentList $agentArguments -WindowStyle Hidden -PassThru
-    Write-Log ("agent started, pid {0}" -f $agentProcess.Id)
-
     # Sample the driver state during the test window, the trace is the
     # evidence of what the buttons actually did.
     $trace = Join-Path $ResultPath 'button-state.jsonl'
@@ -450,6 +448,29 @@ try {
     try {
         $handle = Open-TimelmButtons
         Write-Log 'the control device is open'
+
+        #
+        # The mapping decides who reacts to a press.  The agent answers with
+        # TAB, ENTER and the lock, the HID face of the driver reports the
+        # button to Windows as a native volume or power key.  The mode is
+        # written into the driver before the agent starts, so that both
+        # paths can be tested with the same attempt.
+        #
+        $mapping = ConvertTo-TimelmButtonMapping -Mode $ButtonMode
+        Set-TimelmButtonMapping -Handle $handle -Mapping $mapping
+        $modeRecord = [ordered]@{
+            mode = $ButtonMode
+            utc = [DateTime]::UtcNow.ToString('o')
+        }
+        Save-Json 'button-mode.json' $modeRecord
+        Write-Log ("button mode {0}" -f $ButtonMode)
+
+        # The agent is started after the mapping is written, so that it uses
+        # the mapping of this attempt and not the one of an earlier run.
+        $agentProcess = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+            -ArgumentList $agentArguments -WindowStyle Hidden -PassThru
+        Write-Log ("agent started, pid {0}" -f $agentProcess.Id)
+
         $deadline = (Get-Date).AddSeconds($Seconds)
         while ((Get-Date) -lt $deadline) {
             try {
@@ -465,6 +486,8 @@ try {
                 change_counter = $state.ChangeCounter
                 held = $state.HeldMillis
                 press_count = $state.PressCount
+                hid_ready = $state.HidReady
+                hid_reports = $state.HidReportCount
             }
             Add-Content -LiteralPath $trace -Value ($entry | ConvertTo-Json -Compress) -Encoding UTF8
         }

@@ -17,7 +17,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$Source,
     [Parameter(Mandatory = $true)][string]$Destination,
-    [string]$ExpectedCommit = 'a0dcddd'
+    [string]$ExpectedCommit = '4601ad6'
 )
 
 $ErrorActionPreference = 'Stop'

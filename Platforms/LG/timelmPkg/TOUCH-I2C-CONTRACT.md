@@ -68,3 +68,28 @@ The first hardware check must enumerate the host, read the B3W68TIM product ID,
 and show interrupt increments. Only then test HID coordinates, ten contacts,
 all-up, cold boot and resume. Host decoder tests and WDK builds cannot answer
 these hardware questions.
+
+## The wire protocol of the chip comes from ftrace
+
+The maintainer of the G8 touch, who made the touch of that phone work, gets
+everything the chip needs from a trace.  The trace shows the bytes that
+really go over the bus, so the register map, the init sequence and the
+report format of the chip do not have to be guessed.
+
+That is the missing piece on the Windows side.  The host of the prototype
+still does not know the protocol of the SW42902: the register width, the
+order of the init writes and the length of a report.
+
+Two scripts were added for it:
+
+- `Resources/Scripts/TouchFtrace/capture_touch_ftrace.sh` runs on the phone
+  with Android and root.  It turns on the i2c trace points of the kernel,
+  traces the transfers of the address 0x28 and saves the trace next to the
+  log of the kernel.
+- `Resources/Scripts/TouchFtrace/analyze_touch_ftrace.py` turns such a
+  capture into a register map, an init sequence and the length of the read
+  reports.  It writes `touch-ftrace.json` and `touch-ftrace.md`.
+
+The capture is read only, it does not write to the chip and it does not
+change the boot image.  The result is the input for the host and for the
+client, so that both use the same protocol as the boot loader of the phone.

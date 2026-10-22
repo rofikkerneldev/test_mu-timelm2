@@ -4,13 +4,22 @@
 
 .DESCRIPTION
   Reads the state of the three physical buttons from TimelmButtons.sys
-  (\\.\TimelmButtons) and translates them into Windows input:
+  (\\.\TimelmButtons) and translates them into Windows input.
+
+  What happens with a button is decided by the mapping of the driver, so
+  the behaviour can be changed at run time without a new build:
 
       Volume Up            short press            -> TAB
       Volume Down          short press            -> ENTER
       Volume Down          long press (800 ms)    -> Shift+F10 (context menu)
       Power                short press            -> lock the workstation
       Power                long press (1500 ms)   -> shutdown /s (clean shutdown)
+
+  With the mapping in the mode "Hid" the short press is not answered by the
+  agent at all.  The driver then reports the button to Windows as a real
+  HID key, so that the volume keys change the volume and the power key
+  opens the power menu of Windows.  Only the long press is left to the
+  agent.
 
   The agent has to run inside the interactive user session, otherwise
   SendInput would be delivered to the wrong session and the lock / shutdown
@@ -105,19 +114,47 @@ function Invoke-TimelmShutdown {
     Start-Process -FilePath 'shutdown.exe' -ArgumentList '/s', '/t', '0', '/c', 'TimelmButtons long press' -WindowStyle Hidden
 }
 
-$VK_TAB = 0x09
-$VK_RETURN = 0x0D
+$script:TimelmVkTab = 0x09
+$script:TimelmVkReturn = 0x0D
+
+#
+# Performs one action of the mapping.
+#
+function Invoke-TimelmAgentAction {
+    param([int]$Action)
+
+    if ($Action -eq $script:TimelmAgentAction.Tab) {
+        Invoke-TimelmKey -Name 'TAB' -VirtualKey $script:TimelmVkTab
+    }
+    elseif ($Action -eq $script:TimelmAgentAction.Enter) {
+        Invoke-TimelmKey -Name 'ENTER' -VirtualKey $script:TimelmVkReturn
+    }
+    elseif ($Action -eq $script:TimelmAgentAction.ShiftF10) {
+        Invoke-TimelmShiftF10
+    }
+    elseif ($Action -eq $script:TimelmAgentAction.Lock) {
+        Invoke-TimelmLock
+    }
+    elseif ($Action -eq $script:TimelmAgentAction.Shutdown) {
+        Invoke-TimelmShutdown
+    }
+}
 
 # Button bit -> index inside the driver state arrays (Power, VolumeUp, VolumeDown)
+#
+# The values are the fallback for a driver of the first version, which does
+# not know the mapping.  As soon as the mapping of the driver is readable,
+# it decides what the agent does.
 $buttonTable = @(
-    [pscustomobject]@{ Bit = 1; Name = 'Power'; Index = 0; LongPress = $PowerLongPressMillis },
-    [pscustomobject]@{ Bit = 2; Name = 'VolumeUp'; Index = 1; LongPress = 0 },
-    [pscustomobject]@{ Bit = 4; Name = 'VolumeDown'; Index = 2; LongPress = $VolumeDownLongPressMillis }
+    [pscustomobject]@{ Bit = 1; Name = 'Power'; Index = 0; LongPress = $PowerLongPressMillis; ShortAction = $script:TimelmAgentAction.Lock; LongAction = $script:TimelmAgentAction.Shutdown },
+    [pscustomobject]@{ Bit = 2; Name = 'VolumeUp'; Index = 1; LongPress = 0; ShortAction = $script:TimelmAgentAction.Tab; LongAction = $script:TimelmAgentAction.None },
+    [pscustomobject]@{ Bit = 4; Name = 'VolumeDown'; Index = 2; LongPress = $VolumeDownLongPressMillis; ShortAction = $script:TimelmAgentAction.Enter; LongAction = $script:TimelmAgentAction.ShiftF10 }
 )
 
 $handle = [IntPtr]::Zero
 $down = @{}
 $longHandled = @{}
+$mappingLoaded = $false
 foreach ($button in $buttonTable) {
     $down[$button.Bit] = $false
     $longHandled[$button.Bit] = $false
@@ -142,12 +179,33 @@ try {
             }
         }
 
+        if (-not $mappingLoaded) {
+            $mappingLoaded = $true
+            try {
+                $mapping = Get-TimelmButtonMapping -Handle $handle
+                if ($mapping.Version -ge 2 -and $mapping.Action.Count -eq 3) {
+                    foreach ($button in $buttonTable) {
+                        $action = $mapping.Action[$button.Index]
+                        $button.LongPress = [int]$action.LongPressMillis
+                        $button.ShortAction = [int]$action.AgentShortAction
+                        $button.LongAction = [int]$action.AgentLongAction
+                    }
+                    Write-TimelmAgentLog ('mapping version {0} is used by the agent' -f $mapping.Version)
+                } else {
+                    Write-TimelmAgentLog ('the driver has the mapping version {0}, the built in behaviour is used' -f $mapping.Version)
+                }
+            } catch {
+                Write-TimelmAgentLog ('the mapping could not be read: {0}' -f $_.Exception.Message)
+            }
+        }
+
         try {
             $state = Wait-TimelmButtonState -Handle $handle -TimeoutMillis $WaitTimeoutMillis
         } catch {
             Write-TimelmAgentLog ('ioctl failed, closing device: {0}' -f $_.Exception.Message)
             Close-TimelmButtons -Handle $handle
             $handle = [IntPtr]::Zero
+            $mappingLoaded = $false
             Start-Sleep -Milliseconds 500
             continue
         }
@@ -165,34 +223,28 @@ try {
                 $longHandled[$button.Bit] = $false
                 Write-TimelmAgentLog ('{0} down' -f $button.Name)
 
-                if ($button.Name -eq 'VolumeUp') {
-                    Invoke-TimelmKey -Name 'TAB' -VirtualKey $VK_TAB
+                #
+                # A button without a long press answers at once, a button
+                # with a long press has to wait for the release, otherwise
+                # the long press would answer twice.
+                #
+                if ($button.LongPress -le 0 -and $button.ShortAction -ne 0) {
+                    Invoke-TimelmAgentAction $button.ShortAction
                 }
             }
             elseif ($pressed -and $down[$button.Bit] -and -not $longHandled[$button.Bit]) {
                 if ($button.LongPress -gt 0 -and $held -ge $button.LongPress) {
                     $longHandled[$button.Bit] = $true
                     Write-TimelmAgentLog ('{0} long press ({1} ms)' -f $button.Name, $held)
-
-                    if ($button.Name -eq 'Power') {
-                        Invoke-TimelmShutdown
-                    }
-                    elseif ($button.Name -eq 'VolumeDown') {
-                        Invoke-TimelmShiftF10
-                    }
+                    Invoke-TimelmAgentAction $button.LongAction
                 }
             }
             elseif (-not $pressed -and $down[$button.Bit]) {
                 $down[$button.Bit] = $false
                 Write-TimelmAgentLog ('{0} up after {1} ms' -f $button.Name, $held)
 
-                if (-not $longHandled[$button.Bit]) {
-                    if ($button.Name -eq 'Power') {
-                        Invoke-TimelmLock
-                    }
-                    elseif ($button.Name -eq 'VolumeDown') {
-                        Invoke-TimelmKey -Name 'ENTER' -VirtualKey $VK_RETURN
-                    }
+                if (-not $longHandled[$button.Bit] -and $button.LongPress -gt 0 -and $button.ShortAction -ne 0) {
+                    Invoke-TimelmAgentAction $button.ShortAction
                 }
             }
         }
