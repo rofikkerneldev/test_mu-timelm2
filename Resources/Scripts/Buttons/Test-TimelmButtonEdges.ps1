@@ -301,22 +301,46 @@ $mapping = ConvertTo-TimelmButtonMapping -Mode Agent -Version 3
 $decoded = ConvertFrom-TimelmButtonMapping $mapping
 Assert-Equal 4 $decoded.Action.Count 'the mapping has four buttons'
 Assert-Equal 1500 $decoded.Action[0].LongPressMillis 'the power key has a long press'
-Assert-Equal 10 $decoded.Action[0].AgentShortAction 'the short press of the power key turns the display off and on'
+Assert-Equal 9 $decoded.Action[0].AgentShortAction 'the short press of the power key opens the start menu'
 Assert-Equal 5 $decoded.Action[0].AgentLongAction 'the long press of the power key shuts the phone down'
-Assert-Equal 1500 $decoded.Action[1].LongPressMillis 'the volume up key has a long press'
-Assert-Equal 1 $decoded.Action[1].AgentShortAction 'the short press of the volume up key answers with TAB'
-Assert-Equal 11 $decoded.Action[1].AgentLongAction 'the long press of the volume up key opens the lock screen'
+Assert-Equal 800 $decoded.Action[1].LongPressMillis 'the volume up key has a long press'
+Assert-Equal 13 $decoded.Action[1].AgentShortAction 'the short press of the volume up key moves the cursor up'
+Assert-Equal 14 $decoded.Action[1].AgentLongAction 'the long press of the volume up key moves the cursor right'
 Assert-Equal 800 $decoded.Action[2].LongPressMillis 'the volume down key has a long press'
-Assert-Equal 2 $decoded.Action[2].AgentShortAction 'the short press of the volume down key answers with ENTER'
-Assert-Equal 3 $decoded.Action[2].AgentLongAction 'the long press of the volume down key answers with Shift+F10'
-Assert-Equal 1500 $decoded.Action[3].LongPressMillis 'the assist key has a long press'
-Assert-Equal 9 $decoded.Action[3].AgentShortAction 'the short press of the assist key opens the start menu'
-Assert-Equal 12 $decoded.Action[3].AgentLongAction 'the long press of the assist key closes the window'
+Assert-Equal 15 $decoded.Action[2].AgentShortAction 'the short press of the volume down key moves the cursor down'
+Assert-Equal 16 $decoded.Action[2].AgentLongAction 'the long press of the volume down key moves the cursor left'
+Assert-Equal 800 $decoded.Action[3].LongPressMillis 'the assist key has a long press'
+Assert-Equal 2 $decoded.Action[3].AgentShortAction 'the short press of the assist key answers with ENTER'
+Assert-Equal 1 $decoded.Action[3].AgentLongAction 'the long press of the assist key answers with TAB'
+
+Write-Host '--- every action of the mapping can be chosen ---'
+$custom = ConvertTo-TimelmButtonMapping -Mode Agent -Version 3 `
+    -PowerAction 'Tab' -PowerLongAction 'Lock' -PowerLongPressMillis 2000 `
+    -VolumeUpAction 'Enter' -VolumeUpLongAction 'ShiftF10' -VolumeUpLongPressMillis 900 `
+    -VolumeDownAction 'Tab' -VolumeDownLongAction 'Enter' -VolumeDownLongPressMillis 700 `
+    -AssistAction 'StartMenu' -AssistLongAction 'Close' -AssistLongPressMillis 1100
+$customDecoded = ConvertFrom-TimelmButtonMapping $custom
+Assert-Equal 1 $customDecoded.Action[0].AgentShortAction 'the short press of the power key is TAB'
+Assert-Equal 4 $customDecoded.Action[0].AgentLongAction 'the long press of the power key locks'
+Assert-Equal 2000 $customDecoded.Action[0].LongPressMillis 'the power key waits for the long press'
+Assert-Equal 2 $customDecoded.Action[1].AgentShortAction 'the short press of the volume up key is ENTER'
+Assert-Equal 3 $customDecoded.Action[1].AgentLongAction 'the long press of the volume up key is Shift+F10'
+Assert-Equal 900 $customDecoded.Action[1].LongPressMillis 'the volume up key waits for the long press'
+Assert-Equal 1 $customDecoded.Action[2].AgentShortAction 'the short press of the volume down key is TAB'
+Assert-Equal 2 $customDecoded.Action[2].AgentLongAction 'the long press of the volume down key is ENTER'
+Assert-Equal 700 $customDecoded.Action[2].LongPressMillis 'the volume down key waits for the long press'
+Assert-Equal 9 $customDecoded.Action[3].AgentShortAction 'the short press of the assist key opens the start menu'
+Assert-Equal 12 $customDecoded.Action[3].AgentLongAction 'the long press of the assist key closes the window'
+Assert-Equal 1100 $customDecoded.Action[3].LongPressMillis 'the assist key waits for the long press'
 
 Write-Host '--- the names of the new actions are known ---'
 Assert-Equal 'DisplayToggle' (Get-TimelmAgentActionName 10) 'the display toggle has a name'
 Assert-Equal 'Unlock' (Get-TimelmAgentActionName 11) 'the unlock has a name'
 Assert-Equal 'Close' (Get-TimelmAgentActionName 12) 'the close has a name'
+Assert-Equal 'Up' (Get-TimelmAgentActionName 13) 'the up arrow has a name'
+Assert-Equal 'Right' (Get-TimelmAgentActionName 14) 'the right arrow has a name'
+Assert-Equal 'Down' (Get-TimelmAgentActionName 15) 'the down arrow has a name'
+Assert-Equal 'Left' (Get-TimelmAgentActionName 16) 'the left arrow has a name'
 
 if ($script:Failures -gt 0) {
     Write-Host ("{0} checks failed" -f $script:Failures)

@@ -36,9 +36,28 @@ param(
     [switch]$KeepDriver,
     [ValidateSet('Agent', 'Hid', 'Both')]
     [string]$ButtonMode = 'Agent',
-    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close')]
-    [string]$AssistAction = 'StartMenu',
-    [string]$AssistTarget = 'notepad.exe'
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+    [string]$PowerAction = 'StartMenu',
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+    [string]$PowerLongAction = 'Shutdown',
+    [int]$PowerLongPressMillis = 1500,
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+    [string]$VolumeUpAction = 'Up',
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+    [string]$VolumeUpLongAction = 'Right',
+    [int]$VolumeUpLongPressMillis = 800,
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+    [string]$VolumeDownAction = 'Down',
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+    [string]$VolumeDownLongAction = 'Left',
+    [int]$VolumeDownLongPressMillis = 800,
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+    [string]$AssistAction = 'Enter',
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+    [string]$AssistLongAction = 'Tab',
+    [int]$AssistLongPressMillis = 800,
+    [string]$AssistTarget = 'notepad.exe',
+    [switch]$DisableShutdownAction
 )
 
 Set-StrictMode -Version 2.0
@@ -509,9 +528,18 @@ try {
         '-ExecutionPolicy', 'Bypass',
         '-File', $agentScript,
         '-LogPath', $agentLog,
-        '-RunSeconds', [string]($Seconds + 30),
-        '-DisableShutdown'
+        '-RunSeconds', [string]($Seconds + 30)
     )
+
+    #
+    # The shutdown of the agent is only switched off when the attempt asks
+    # for it.  The long press of the power key is a part of the mapping that
+    # has to be proven, so it is allowed by default.
+    #
+    if ($DisableShutdownAction) {
+        $agentArguments += '-DisableShutdown'
+        Write-Log 'the shutdown of the agent is switched off'
+    }
 
     # Sample the driver state during the test window, the trace is the
     # evidence of what the buttons actually did.
@@ -533,13 +561,33 @@ try {
         # button.
         #
         $mappingVersion = Get-TimelmButtonMappingVersion -Handle $handle
-        $mapping = ConvertTo-TimelmButtonMapping -Mode $ButtonMode -Version $mappingVersion -AssistAction $AssistAction
+        $mapping = ConvertTo-TimelmButtonMapping `
+            -Mode $ButtonMode `
+            -Version $mappingVersion `
+            -PowerAction $PowerAction `
+            -PowerLongAction $PowerLongAction `
+            -PowerLongPressMillis $PowerLongPressMillis `
+            -VolumeUpAction $VolumeUpAction `
+            -VolumeUpLongAction $VolumeUpLongAction `
+            -VolumeUpLongPressMillis $VolumeUpLongPressMillis `
+            -VolumeDownAction $VolumeDownAction `
+            -VolumeDownLongAction $VolumeDownLongAction `
+            -VolumeDownLongPressMillis $VolumeDownLongPressMillis `
+            -AssistAction $AssistAction `
+            -AssistLongAction $AssistLongAction `
+            -AssistLongPressMillis $AssistLongPressMillis
         Set-TimelmButtonMapping -Handle $handle -Mapping $mapping
         $readBack = Get-TimelmButtonMapping -Handle $handle
         $modeRecord = [ordered]@{
             mode = $ButtonMode
             mapping_version = $mappingVersion
             assist_action = $AssistAction
+            requested = [ordered]@{
+                power = [ordered]@{ short = $PowerAction; long = $PowerLongAction; long_press_ms = $PowerLongPressMillis }
+                volume_up = [ordered]@{ short = $VolumeUpAction; long = $VolumeUpLongAction; long_press_ms = $VolumeUpLongPressMillis }
+                volume_down = [ordered]@{ short = $VolumeDownAction; long = $VolumeDownLongAction; long_press_ms = $VolumeDownLongPressMillis }
+                assist = [ordered]@{ short = $AssistAction; long = $AssistLongAction; long_press_ms = $AssistLongPressMillis }
+            }
             actions = @(
                 foreach ($action in $readBack.Action) {
                     [ordered]@{

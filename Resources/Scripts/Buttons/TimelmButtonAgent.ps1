@@ -49,9 +49,9 @@ param(
     [string]$LogPath = (Join-Path $env:ProgramData 'Timelm\button-agent.log'),
     [int]$WaitTimeoutMillis = 250,
     [int]$PowerLongPressMillis = 1500,
-    [int]$VolumeUpLongPressMillis = 1500,
+    [int]$VolumeUpLongPressMillis = 800,
     [int]$VolumeDownLongPressMillis = 800,
-    [int]$AssistLongPressMillis = 1500,
+    [int]$AssistLongPressMillis = 800,
     [string]$AssistTargetPath = (Join-Path $env:ProgramData 'Timelm\assist-target.txt'),
     [string]$UnlockPassword = '',
     [int]$QuietMillis = 500,
@@ -377,6 +377,10 @@ function Invoke-TimelmLaunchTarget {
 
 $script:TimelmVkTab = 0x09
 $script:TimelmVkReturn = 0x0D
+$script:TimelmVkLeft = 0x25
+$script:TimelmVkUp = 0x26
+$script:TimelmVkRight = 0x27
+$script:TimelmVkDown = 0x28
 
 #
 # Performs one action of the mapping.
@@ -420,6 +424,18 @@ function Invoke-TimelmAgentAction {
     elseif ($Action -eq $script:TimelmAgentAction.Close) {
         Invoke-TimelmClose
     }
+    elseif ($Action -eq $script:TimelmAgentAction.Up) {
+        Invoke-TimelmKey -Name 'UP' -VirtualKey $script:TimelmVkUp -Extended $true
+    }
+    elseif ($Action -eq $script:TimelmAgentAction.Right) {
+        Invoke-TimelmKey -Name 'RIGHT' -VirtualKey $script:TimelmVkRight -Extended $true
+    }
+    elseif ($Action -eq $script:TimelmAgentAction.Down) {
+        Invoke-TimelmKey -Name 'DOWN' -VirtualKey $script:TimelmVkDown -Extended $true
+    }
+    elseif ($Action -eq $script:TimelmAgentAction.Left) {
+        Invoke-TimelmKey -Name 'LEFT' -VirtualKey $script:TimelmVkLeft -Extended $true
+    }
 }
 
 # Button bit -> index inside the driver state arrays (Power, VolumeUp, VolumeDown, Assist)
@@ -428,10 +444,10 @@ function Invoke-TimelmAgentAction {
 # not know the mapping.  As soon as the mapping of the driver is readable,
 # it decides what the agent does.
 $buttonTable = @(
-    [pscustomobject]@{ Bit = 1; Name = 'Power'; Index = 0; LongPress = $PowerLongPressMillis; ShortAction = $script:TimelmAgentAction.DisplayToggle; LongAction = $script:TimelmAgentAction.Shutdown },
-    [pscustomobject]@{ Bit = 2; Name = 'VolumeUp'; Index = 1; LongPress = $VolumeUpLongPressMillis; ShortAction = $script:TimelmAgentAction.Tab; LongAction = $script:TimelmAgentAction.Unlock },
-    [pscustomobject]@{ Bit = 4; Name = 'VolumeDown'; Index = 2; LongPress = $VolumeDownLongPressMillis; ShortAction = $script:TimelmAgentAction.Enter; LongAction = $script:TimelmAgentAction.ShiftF10 },
-    [pscustomobject]@{ Bit = 8; Name = 'Assist'; Index = 3; LongPress = $AssistLongPressMillis; ShortAction = $script:TimelmAgentAction.StartMenu; LongAction = $script:TimelmAgentAction.Close }
+    [pscustomobject]@{ Bit = 1; Name = 'Power'; Index = 0; LongPress = $PowerLongPressMillis; ShortAction = $script:TimelmAgentAction.StartMenu; LongAction = $script:TimelmAgentAction.Shutdown },
+    [pscustomobject]@{ Bit = 2; Name = 'VolumeUp'; Index = 1; LongPress = $VolumeUpLongPressMillis; ShortAction = $script:TimelmAgentAction.Up; LongAction = $script:TimelmAgentAction.Right },
+    [pscustomobject]@{ Bit = 4; Name = 'VolumeDown'; Index = 2; LongPress = $VolumeDownLongPressMillis; ShortAction = $script:TimelmAgentAction.Down; LongAction = $script:TimelmAgentAction.Left },
+    [pscustomobject]@{ Bit = 8; Name = 'Assist'; Index = 3; LongPress = $AssistLongPressMillis; ShortAction = $script:TimelmAgentAction.Enter; LongAction = $script:TimelmAgentAction.Tab }
 )
 
 $handle = [IntPtr]::Zero

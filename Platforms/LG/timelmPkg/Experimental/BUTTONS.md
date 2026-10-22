@@ -93,15 +93,21 @@ as well and is retried while `SPMI.sys` is not up yet.
 
 | Button | Short press | Long press |
 | --- | --- | --- |
-| Volume Up | `TAB` | open the lock screen (1500 ms) |
-| Volume Down | `ENTER` | `Shift+F10` (800 ms) |
-| Power | display off, press again for display on | `shutdown /s` (1500 ms), clean shutdown |
-| Assist | the Windows key, the start menu opens | `Alt+F4`, close the window that has the focus (1500 ms) |
+| Volume Up | `UP` (the cursor moves up) | `RIGHT` (800 ms) |
+| Volume Down | `DOWN` (the cursor moves down) | `LEFT` (800 ms) |
+| Power | the Windows key, the start menu opens | `shutdown /s` (1500 ms), clean shutdown |
+| Assist | `ENTER` | `TAB` (800 ms) |
 
 The long press is detected with the press duration that the driver reports,
 so it does not depend on the accuracy of the polling loop. The power long
 press is the only path that ends the session, and it uses `shutdown /s`, so
 Windows still shuts down cleanly.
+
+The mapping was changed after the attempt 9, the user asked for a mapping
+that is easier to use: the volume keys move the cursor, the assist key
+answers with `ENTER` and `TAB` and the power key opens the start menu and
+shuts the phone down.  Every action of the mapping can be changed with the
+parameters of `ConvertTo-TimelmButtonMapping` and of the trial.
 
 The power key does **not** lock the session.  A lock without a way to open
 it again is a trap on this phone: the touch screen does not work and there
@@ -143,10 +149,14 @@ The mode is written into the driver, so it can be changed while Windows runs
 | 10 | Display toggle | the display of the phone goes off, the next press brings it back |
 | 11 | Unlock | open the lock screen of a locked session |
 | 12 | Close | `Alt+F4`, close the window that has the focus |
+| 13 | Up | the cursor moves up |
+| 14 | Right | the cursor moves right |
+| 15 | Down | the cursor moves down |
+| 16 | Left | the cursor moves left |
 
 The driver does not check the numbers, it only carries them from the mapping
-of the tool into the agent, so the three new actions need no new build of
-the driver.  The action 4 and the action 7 stay in the table, they are the
+of the tool into the agent, so the new actions need no new build of the
+driver.  The action 4 and the action 7 stay in the table, they are the
 answer to a session that was locked by Windows itself.
 
 The display is turned off with `WM_SYSCOMMAND / SC_MONITORPOWER` and the
@@ -441,12 +451,44 @@ of the phone is behind one of them), the controllers of the class I2C, the
 entries of `Enum\PCI` and `Enum\ACPI` and the entries of the system log
 that talk about `PCI`, `PCIe`, `WHEA`, `ACPI`, `I2C` or the touch.
 
+### Attempt 9, the display of the power key (2026-10-22)
+
+The attempt 9 ran with the mapping of the attempt 8 (the power key turns the
+display off and on, the volume up key opens the lock screen, the assist key
+closes the window).  The report of the user:
+
+* the **short press** of the power key did not show a lock screen.  That is
+  the mapping that was armed: the power key turns the display off and on
+  again and it does not lock the session at all.
+* the **long press** of the power key did not shut the phone down.  The
+  trial ran the agent with `-DisableShutdown`, so the action was skipped on
+  purpose (`action shutdown skipped (disabled)`).  The shutdown of the
+  agent is allowed now, the attempt asks for it with
+  `-DisableShutdownAction`.
+
+The log of the attempt 9 is still on the phone, it is read with the next
+staging (the staging archives the log of the phone into
+`previous-trial-logs` of the receipt).
+
+### Attempt 10, the mapping for the daily use (staged)
+
+The user asked for a mapping that is easier to use, and the mapping is now
+a parameter of the trial and of the tool:
+
+| Button | Short press | Long press |
+| --- | --- | --- |
+| Volume Up | `UP` | `RIGHT` (800 ms) |
+| Volume Down | `DOWN` | `LEFT` (800 ms) |
+| Assist | `ENTER` | `TAB` (800 ms) |
+| Power | the start menu | `shutdown /s` (1500 ms) |
+
+The four arrow keys are new actions of the agent (13, 14, 15 and 16).  The
+driver carries the number of the action without looking at it, so no new
+build of the driver is needed for them.
+
 ## What is still open
 
-* The **display** of the power key and the **unlock** of the volume up key
-  are the parts of the new mapping that are not proven on the phone yet.
-  The unlock cannot be tested while the session stays open, it needs a
-  session that was locked by Windows itself.
+* The **new mapping** of the attempt 10 is not proven on the phone yet.
 * The **capture of the touch chip** in the recovery came out empty
   (`captures/touch/f-touch`): the chip is quiet in the recovery, so the
   capture has to run in Android, not in the recovery.
@@ -457,8 +499,9 @@ that talk about `PCI`, `PCIe`, `WHEA`, `ACPI`, `I2C` or the touch.
 
 * Windows itself may react to the power key through the ACPI button driver,
   which can produce a shutdown prompt in addition to the action of the
-  agent. The trial runs the agent with the shutdown action disabled and
-  ends with one controlled `shutdown /s`.
+  agent. The trial ends with one controlled `shutdown /s`, and the long
+  press of the power key may shut the phone down in the middle of the
+  attempt (`-DisableShutdownAction` switches that off).
 * The button package replaces the PMIC driver on that node. If the button
   driver does not start, the node stays without a working driver, which is
   the state the board was in before this path.

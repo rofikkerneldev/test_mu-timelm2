@@ -33,17 +33,25 @@ param(
     [ValidateSet('Agent', 'Hid', 'Both')]
     [string]$Mode = 'Hid',
     [int]$PowerLongPressMillis = 1500,
-    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close')]
-    [string]$PowerAction = 'DisplayToggle',
-    [int]$VolumeUpLongPressMillis = 1500,
-    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close')]
-    [string]$VolumeUpLongAction = 'Unlock',
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+    [string]$PowerAction = 'StartMenu',
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+    [string]$PowerLongAction = 'Shutdown',
+    [int]$VolumeUpLongPressMillis = 800,
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+    [string]$VolumeUpAction = 'Up',
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+    [string]$VolumeUpLongAction = 'Right',
     [int]$VolumeDownLongPressMillis = 800,
-    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close')]
-    [string]$AssistAction = 'StartMenu',
-    [int]$AssistLongPressMillis = 1500,
-    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close')]
-    [string]$AssistLongAction = 'Close'
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+    [string]$VolumeDownAction = 'Down',
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+    [string]$VolumeDownLongAction = 'Left',
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+    [string]$AssistAction = 'Enter',
+    [int]$AssistLongPressMillis = 800,
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+    [string]$AssistLongAction = 'Tab'
 )
 
 Set-StrictMode -Version 2.0
@@ -68,6 +76,10 @@ function Get-TimelmActionName {
         10 { return 'display off / on' }
         11 { return 'unlock' }
         12 { return 'close (Alt+F4)' }
+        13 { return 'up arrow' }
+        14 { return 'right arrow' }
+        15 { return 'down arrow' }
+        16 { return 'left arrow' }
         default { return 'none' }
     }
 }
@@ -91,9 +103,13 @@ try {
         -Version $version `
         -PowerLongPressMillis $PowerLongPressMillis `
         -PowerAction $PowerAction `
+        -PowerLongAction $PowerLongAction `
         -VolumeUpLongPressMillis $VolumeUpLongPressMillis `
+        -VolumeUpAction $VolumeUpAction `
         -VolumeUpLongAction $VolumeUpLongAction `
         -VolumeDownLongPressMillis $VolumeDownLongPressMillis `
+        -VolumeDownAction $VolumeDownAction `
+        -VolumeDownLongAction $VolumeDownLongAction `
         -AssistAction $AssistAction `
         -AssistLongPressMillis $AssistLongPressMillis `
         -AssistLongAction $AssistLongAction

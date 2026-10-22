@@ -20,8 +20,26 @@ param(
     [int]$Seconds = 120,
     [ValidateSet('Agent', 'Hid', 'Both')]
     [string]$ButtonMode = 'Agent',
-    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close')]
-    [string]$AssistAction = 'StartMenu',
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+    [string]$PowerAction = 'StartMenu',
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+    [string]$PowerLongAction = 'Shutdown',
+    [int]$PowerLongPressMillis = 1500,
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+    [string]$VolumeUpAction = 'Up',
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+    [string]$VolumeUpLongAction = 'Right',
+    [int]$VolumeUpLongPressMillis = 800,
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+    [string]$VolumeDownAction = 'Down',
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+    [string]$VolumeDownLongAction = 'Left',
+    [int]$VolumeDownLongPressMillis = 800,
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+    [string]$AssistAction = 'Enter',
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+    [string]$AssistLongAction = 'Tab',
+    [int]$AssistLongPressMillis = 800,
     [string]$AssistTarget = 'notepad.exe'
 )
 
@@ -34,7 +52,10 @@ $package = Join-Path $PSScriptRoot 'Drivers\Buttons'
 if (-not (Test-Path -LiteralPath $trial)) { throw 'The trial script is missing' }
 if (-not (Test-Path -LiteralPath $package)) { throw 'The button driver package is missing' }
 
-$arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -Seconds {1} -PackagePath "{2}" -ButtonMode {3} -AssistAction {4} -AssistTarget "{5}"' -f $trial, $Seconds, $package, $ButtonMode, $AssistAction, $AssistTarget
+$arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -Seconds {1} -PackagePath "{2}" -ButtonMode {3} -PowerAction {4} -PowerLongAction {5} -PowerLongPressMillis {6} -VolumeUpAction {7} -VolumeUpLongAction {8} -VolumeUpLongPressMillis {9} -VolumeDownAction {10} -VolumeDownLongAction {11} -VolumeDownLongPressMillis {12} -AssistAction {13} -AssistLongAction {14} -AssistLongPressMillis {15} -AssistTarget "{16}"' -f `
+    $trial, $Seconds, $package, $ButtonMode, $PowerAction, $PowerLongAction, $PowerLongPressMillis, `
+    $VolumeUpAction, $VolumeUpLongAction, $VolumeUpLongPressMillis, $VolumeDownAction, $VolumeDownLongAction, `
+    $VolumeDownLongPressMillis, $AssistAction, $AssistLongAction, $AssistLongPressMillis, $AssistTarget
 
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 $elevated = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)

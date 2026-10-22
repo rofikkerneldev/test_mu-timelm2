@@ -33,8 +33,26 @@ param(
     [Parameter(Mandatory = $true)][string]$Output,
     [ValidateSet('Agent', 'Hid', 'Both')]
     [string]$ButtonMode = 'Agent',
-    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close')]
-    [string]$AssistAction = 'StartMenu',
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+    [string]$AssistAction = 'Enter',
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+    [string]$AssistLongAction = 'Tab',
+    [int]$AssistLongPressMillis = 800,
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+    [string]$PowerAction = 'StartMenu',
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+    [string]$PowerLongAction = 'Shutdown',
+    [int]$PowerLongPressMillis = 1500,
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+    [string]$VolumeUpAction = 'Up',
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+    [string]$VolumeUpLongAction = 'Right',
+    [int]$VolumeUpLongPressMillis = 800,
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+    [string]$VolumeDownAction = 'Down',
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+    [string]$VolumeDownLongAction = 'Left',
+    [int]$VolumeDownLongPressMillis = 800,
     [string]$AssistTarget = 'notepad.exe',
     [int]$Seconds = 240,
     [string]$UserProfile = 'Administrator',
@@ -346,6 +364,35 @@ try {
     $cmdText = $cmdText -replace '-AssistTarget\s+"[^"]*"', ('-AssistTarget "{0}"' -f $AssistTarget)
     if ($cmdText -notmatch '-Seconds\s+\d+') { throw 'The trial launcher has no time' }
     $cmdText = $cmdText -replace '-Seconds\s+\d+', ('-Seconds {0}' -f $Seconds)
+
+    #
+    # The mapping of the buttons is written into the launcher as well, so
+    # that the receipt of the attempt shows the mapping that was armed and
+    # not only the one that the trial wrote into the driver.
+    #
+    $mapping = [ordered]@{
+        'PowerAction' = $PowerAction
+        'PowerLongAction' = $PowerLongAction
+        'VolumeUpAction' = $VolumeUpAction
+        'VolumeUpLongAction' = $VolumeUpLongAction
+        'VolumeDownAction' = $VolumeDownAction
+        'VolumeDownLongAction' = $VolumeDownLongAction
+        'AssistLongAction' = $AssistLongAction
+    }
+    foreach ($entry in $mapping.GetEnumerator()) {
+        if ($cmdText -notmatch ('-{0}\s+\w+' -f $entry.Key)) { throw ('The trial launcher has no {0}' -f $entry.Key) }
+        $cmdText = $cmdText -replace ('-{0}\s+\w+' -f $entry.Key), ('-{0} {1}' -f $entry.Key, $entry.Value)
+    }
+    $millis = [ordered]@{
+        'PowerLongPressMillis' = $PowerLongPressMillis
+        'VolumeUpLongPressMillis' = $VolumeUpLongPressMillis
+        'VolumeDownLongPressMillis' = $VolumeDownLongPressMillis
+        'AssistLongPressMillis' = $AssistLongPressMillis
+    }
+    foreach ($entry in $millis.GetEnumerator()) {
+        if ($cmdText -notmatch ('-{0}\s+\d+' -f $entry.Key)) { throw ('The trial launcher has no {0}' -f $entry.Key) }
+        $cmdText = $cmdText -replace ('-{0}\s+\d+' -f $entry.Key), ('-{0} {1}' -f $entry.Key, $entry.Value)
+    }
     $cmdPath = Join-Path $bundle 'Timelm-buttons.cmd'
     Write-Flushed $cmdPath ([Text.Encoding]::ASCII.GetBytes($cmdText))
 
@@ -391,6 +438,12 @@ try {
         button_mode = $ButtonMode
         assist_action = $AssistAction
         assist_target = $AssistTarget
+        mapping = [ordered]@{
+            power = [ordered]@{ short = $PowerAction; long = $PowerLongAction; long_press_ms = $PowerLongPressMillis }
+            volume_up = [ordered]@{ short = $VolumeUpAction; long = $VolumeUpLongAction; long_press_ms = $VolumeUpLongPressMillis }
+            volume_down = [ordered]@{ short = $VolumeDownAction; long = $VolumeDownLongAction; long_press_ms = $VolumeDownLongPressMillis }
+            assist = [ordered]@{ short = $AssistAction; long = $AssistLongAction; long_press_ms = $AssistLongPressMillis }
+        }
         seconds = $Seconds
         archived = $archived
         files = $hashes

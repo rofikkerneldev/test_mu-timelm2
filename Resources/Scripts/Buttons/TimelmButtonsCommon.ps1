@@ -924,6 +924,10 @@ $script:TimelmAgentAction = @{
     DisplayToggle = 10
     Unlock        = 11
     Close         = 12
+    Up            = 13
+    Right         = 14
+    Down          = 15
+    Left          = 16
 }
 
 function Get-TimelmAgentActionName {
@@ -1350,15 +1354,17 @@ function ConvertTo-TimelmButtonMapping {
         Both   both of them react, only useful to see the two paths at once
 
       The short press of the power key always belongs to the agent, Windows
-      has no native lock and would show its power menu instead.  It turns
-      the display of the phone off and on again, the session stays open.
-      A lock without a way to open it again would be a trap, the phone has
-      no working touch screen and no keyboard.
+      has no native lock and would show its power menu instead.  It opens
+      the start menu of Windows, the session stays open.  A lock without a
+      way to open it again would be a trap, the phone has no working touch
+      screen and no keyboard.
 
-      The long press of the power key shuts the phone down, the long press
-      of the volume up key opens the lock screen of a locked session and
-      the long press of the assist key closes the window that has the
-      focus.
+      The long press of the power key shuts the phone down.  The volume
+      keys move the cursor with the arrow keys, the short press of the
+      assist key answers with ENTER and its long press with TAB.  Every
+      action of the mapping can be changed with the parameters below, the
+      driver does not check the numbers of the actions, it only carries
+      them from the mapping of the tool into the agent.
 
       The version decides the size of the structure: 200 byte for the current
       driver with four buttons, 152 byte for the driver of the second
@@ -1380,23 +1386,31 @@ function ConvertTo-TimelmButtonMapping {
         [ValidateSet('Agent', 'Hid', 'Both')]
         [string]$Mode = 'Agent',
         [int]$PowerLongPressMillis = 1500,
-        [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close')]
-        [string]$PowerAction = 'DisplayToggle',
-        [int]$VolumeUpLongPressMillis = 1500,
-        [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close')]
-        [string]$VolumeUpLongAction = 'Unlock',
+        [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+        [string]$PowerAction = 'StartMenu',
+        [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+        [string]$PowerLongAction = 'Shutdown',
+        [int]$VolumeUpLongPressMillis = 800,
+        [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+        [string]$VolumeUpAction = 'Up',
+        [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+        [string]$VolumeUpLongAction = 'Right',
         [int]$VolumeDownLongPressMillis = 800,
+        [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+        [string]$VolumeDownAction = 'Down',
+        [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+        [string]$VolumeDownLongAction = 'Left',
         [ValidateSet(1, 2, 3)]
         [int]$Version = 3,
         [int]$AssistSid = 0,
         [int]$AssistAddress = 0xC010,
         [int]$AssistMask = 0x01,
         [int]$AssistPolarity = 1,
-        [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close')]
-        [string]$AssistAction = 'StartMenu',
-        [int]$AssistLongPressMillis = 1500,
-        [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close')]
-        [string]$AssistLongAction = 'Close'
+        [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+        [string]$AssistAction = 'Enter',
+        [int]$AssistLongPressMillis = 800,
+        [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close', 'Up', 'Right', 'Down', 'Left')]
+        [string]$AssistLongAction = 'Tab'
     )
 
     $size = 200
@@ -1430,9 +1444,9 @@ function ConvertTo-TimelmButtonMapping {
         # The actions of the three buttons: power, volume up, volume down.
         #
         $actions = @(
-            @($script:TimelmHidAction.PowerDown, $PowerLongPressMillis, $script:TimelmAgentAction[$PowerAction], $script:TimelmAgentAction.Shutdown),
-            @($script:TimelmHidAction.VolumeIncrement, $VolumeUpLongPressMillis, $script:TimelmAgentAction.Tab, $script:TimelmAgentAction[$VolumeUpLongAction]),
-            @($script:TimelmHidAction.VolumeDecrement, $VolumeDownLongPressMillis, $script:TimelmAgentAction.Enter, $script:TimelmAgentAction.ShiftF10)
+            @($script:TimelmHidAction.PowerDown, $PowerLongPressMillis, $script:TimelmAgentAction[$PowerAction], $script:TimelmAgentAction[$PowerLongAction]),
+            @($script:TimelmHidAction.VolumeIncrement, $VolumeUpLongPressMillis, $script:TimelmAgentAction[$VolumeUpAction], $script:TimelmAgentAction[$VolumeUpLongAction]),
+            @($script:TimelmHidAction.VolumeDecrement, $VolumeDownLongPressMillis, $script:TimelmAgentAction[$VolumeDownAction], $script:TimelmAgentAction[$VolumeDownLongAction])
         )
 
         #

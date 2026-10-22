@@ -84,19 +84,22 @@ scripts write a mapping that the installed driver understands.
 
 | Button | Short press | Long press |
 | --- | --- | --- |
-| Volume Up | `TAB` | open the lock screen of a locked session (1500 ms) |
-| Volume Down | `ENTER` | `Shift+F10` (800 ms) |
-| Power | display off, the next press brings the display back | `shutdown /s` (1500 ms), clean shutdown |
-| Assist | the Windows key, the start menu opens | `Alt+F4`, close the window that has the focus (1500 ms) |
+| Volume Up | `UP` (the cursor moves up) | `RIGHT` (800 ms) |
+| Volume Down | `DOWN` (the cursor moves down) | `LEFT` (800 ms) |
+| Power | the Windows key, the start menu opens | `shutdown /s` (1500 ms), clean shutdown |
+| Assist | `ENTER` | `TAB` (800 ms) |
 
 The long press is detected with the press duration that the driver reports,
 so it does not depend on the accuracy of the polling loop.
 
+Every action of the mapping is a parameter, the mapping of the trial is
+written into the driver before the agent starts and it is read back into
+`button-mode.json` of the receipt.
+
 The **power key does not lock the session**.  A lock without a way to open
 it again is a trap on this phone: the touch screen does not work and there
 is no keyboard, so the lock screen would be the end of the session.  The
-eighth attempt showed exactly that.  A session that was locked by Windows
-itself is opened with the long press of the volume up key.
+eighth attempt showed exactly that.
 
 The mode is written into the driver, so it can be changed while Windows runs
 (`Set-TimelmButtonMode.ps1`).
@@ -118,10 +121,14 @@ The mode is written into the driver, so it can be changed while Windows runs
 | 10 | Display toggle | the display of the phone goes off, the next press brings it back |
 | 11 | Unlock | open the lock screen of a locked session |
 | 12 | Close | `Alt+F4`, close the window that has the focus |
+| 13 | Up | the cursor moves up |
+| 14 | Right | the cursor moves right |
+| 15 | Down | the cursor moves down |
+| 16 | Left | the cursor moves left |
 
 The driver does **not** check the numbers, it only carries them from the
-mapping of the tool into the agent, so the three new actions (10, 11 and 12)
-need no new build of the driver.
+mapping of the tool into the agent, so the new actions need no new build of
+the driver.
 
 The display is turned off with `WM_SYSCOMMAND / SC_MONITORPOWER` and the
 value 0, it is turned on again with the value 1 and a small movement of the
@@ -353,6 +360,49 @@ ninth attempt is therefore different:
   session that was locked by Windows itself,
 * the long press of the **assist** key closes the window that has the
   focus (`Alt+F4`).
+
+### Result of the ninth attempt (2026-10-22)
+
+The ninth attempt ran with the mapping of the eighth attempt (the power key
+turns the display off and on, the volume up key opens the lock screen, the
+assist key closes the window).  The report of the user:
+
+* the **short press** of the power key did not show a lock screen.  That is
+  the mapping that was armed: the power key turns the display off and on
+  again, it does not lock the session.
+* the **long press** of the power key did not shut the phone down.  The
+  trial ran the agent with `-DisableShutdown`, so the action was skipped on
+  purpose.  The shutdown of the agent is allowed now, the trial switches it
+  off only with `-DisableShutdownAction`.
+
+The log of the attempt is still on the phone, the next staging archives it
+into `previous-trial-logs` of the receipt.
+
+### Result of the tenth attempt, the mapping for the daily use
+
+The user asked for a mapping that is easier to use, and the mapping is now
+a parameter of the trial and of the tool:
+
+| Button | Short press | Long press |
+| --- | --- | --- |
+| Volume Up | `UP` | `RIGHT` (800 ms) |
+| Volume Down | `DOWN` | `LEFT` (800 ms) |
+| Assist | `ENTER` | `TAB` (800 ms) |
+| Power | the start menu | `shutdown /s` (1500 ms) |
+
+The four arrow keys are new actions of the agent (13, 14, 15 and 16).  The
+driver carries the number of the action without looking at it, so no new
+build of the driver is needed for them.
+
+```powershell
+# PC, stage the attempt with the mapping
+pwsh -NoProfile -ExecutionPolicy Bypass -File Stage-TimelmButtonsTrial.ps1 `
+    -Artifact C:\artifacts\timelm-native-buttons -Output C:\receipts\buttons `
+    -ButtonMode Agent -PowerAction StartMenu -PowerLongAction Shutdown `
+    -VolumeUpAction Up -VolumeUpLongAction Right `
+    -VolumeDownAction Down -VolumeDownLongAction Left `
+    -AssistAction Enter -AssistLongAction Tab -Seconds 900 -Arm
+```
 
 ## The status of the buses
 
