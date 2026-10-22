@@ -338,6 +338,24 @@ public static class TouchGpioAwake {
     Stop-NodeWatch $watchHost
     Copy-SetupApiLog 'after-host-restart'
     if ($hostDevice.ConfigManagerErrorCode -ne 0 -or $hostDevice.Service -ine 'kona_geni') {throw 'GPIO I2C host did not start; inspect product/ACK diagnostics'}
+    # The record of the driver itself is the proof that the bitbang path was
+    # entered: the stage 1 is the first action of the prepare.  Without that
+    # value the host stayed in the legacy path, whatever the gates say.
+    $hostParameters = Get-ItemProperty -LiteralPath $hostKey -ErrorAction SilentlyContinue
+    $hostNames = @()
+    if ($hostParameters) { $hostNames = @($hostParameters.PSObject.Properties.Name) }
+    $bitbangStage = 0
+    if ($hostNames -contains 'TimelmBitbangStage') { $bitbangStage = [int]$hostParameters.TimelmBitbangStage }
+    $hostStatus = -1
+    if ($hostNames -contains 'TimelmHostStatus') { $hostStatus = [int]$hostParameters.TimelmHostStatus }
+    $bitbangStatus = -1
+    if ($hostNames -contains 'TimelmBitbangStatus') { $bitbangStatus = [int]$hostParameters.TimelmBitbangStatus }
+    Save-Json 'host-parameters.json' $hostParameters
+    Save-Json 'host-bitbang.json' @{bitbang_stage=$bitbangStage;host_status=$hostStatus;
+        bitbang_status=$bitbangStatus;utc=[DateTime]::UtcNow.ToString('o')}
+    if ($bitbangStage -lt 1) {
+        throw 'the host did not enter the bitbang path, the driver wrote no TimelmBitbangStage'
+    }
     Save-Json 'phase-host-started.json' @{phase='host-started';device=$hostId;service=$hostDevice.Service;
         code=$hostDevice.ConfigManagerErrorCode;utc=[DateTime]::UtcNow.ToString('o')}
     Assert-Budget 'install-touch'

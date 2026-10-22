@@ -93,3 +93,47 @@ runner only to prove its very first machine guard rejects the PC. It also runs
 `Test-TouchGpioPackage.ps1`, which builds a synthetic bundle to prove the
 builder accepts a correct package and rejects a wrong hardware ID, a wrong
 catalog, a mismatched trial hash and an existing output directory.
+
+## What the phone shows about the failing stage (23.10.2026)
+
+The build that is installed on the phone was identified by the hash of the
+files in the driver store, not by the name of the folder:
+
+| Node | INF | Driver store | File | SHA-256 |
+| --- | --- | --- | --- | --- |
+| `ACPI\TIML0001\E` | `oem153.inf` (DriverVer 10/22/2026,2.50.18.606) | `kona_geni.inf_arm64_acad333869a973e5` | `kona_geni.sys` 93624 bytes | `5FE2FEEC01053F50CC33C93102BFAA449A12D487D77D6AA2CA472A8EF671C89C` |
+| `ACPI\KONA1001\0` | `oem152.inf` (DriverVer 10/22/2026,2.50.19.609) | `gpio.inf_arm64_895fd6fa0c8d01ca` | `GPIO.sys` 48208 bytes | `9A34626BF80FD15DD7C2CEA70DF209D57CE35682BDF9FA1CFDEDCEB5C3BA4A32` |
+
+Both files are the pair of `artifacts/LGV60-touch-GPIO-ad746ba`: the host is
+the bitbang build (it holds `TimelmBitbangStage`, `TimelmBitbangPinCount`
+and `TimelmBitbangStatus` and queries `GUID_TIMELM_TOUCH_BUS_V3`), the
+provider registers `GUID_TIMELM_TOUCH_BUS` (version 2) and
+`GUID_TIMELM_TOUCH_BUS_V3` (version 3).  The query of the interface at
+`bitbang_windows.c:119` can therefore be answered.
+
+**`BbWindowsPrepare` was never entered on the phone.**  Its first action is
+`GeniRecord(device, L"TimelmBitbangStage", 1)`, and the device parameters of
+`ACPI\TIML0001\E` hold no `TimelmBitbangStage`, no `TimelmBitbangPinCount`
+and no `TimelmBitbangStatus` (read on 22.10. 01:16, 22.10. 03:31 and
+23.10.).
+
+The `TimelmHostStatus` of that node is `3221225635` (`0xC0000003`,
+`STATUS_INVALID_INFO_CLASS`).  The current source cannot write that value on
+a path that leaves `TimelmBitbangStage` away:
+
+* `driver.c:186` writes the answer of `BbWindowsPrepare`, so the stage value
+  would be there,
+* `driver.c:199` writes `0xC00000A3` (`STATUS_DEVICE_NOT_READY`),
+* `driver.c:275`, `:297` and `:311` write the answer of the start of a device
+  that was prepared successfully,
+* `probe_windows.c:90` writes `0xC00000A3`.
+
+The value is therefore left over from an older build, and the host did not
+run the prepare at all after the last gate was set.  The last GPIO trial
+stops exactly one step before that: `operations.json` of the fifth trial of
+the 22.10. holds `install-GPIO`, `restart-GPIO` and `install-Host`, but no
+`restart-Host`, and `gates-before.json` shows all gates at `0`.
+
+The runner now proves the step instead of assuming it: after the restart of
+the host it writes `host-parameters.json` and `host-bitbang.json` and stops
+the trial when the driver wrote no `TimelmBitbangStage`.
