@@ -159,6 +159,17 @@ try {
         if (!(Test-Path -LiteralPath ($espRoot+$rel))) {Write-Flushed ($espRoot+$rel) $original}
         if ((Get-FileHash -LiteralPath ($espRoot+$rel)).Hash -ne $expectedWindowsHash) {throw 'Restoration backup readback failed'}
     }
+    # The host gate is armed in the phone hive before the trial boot. The host
+    # driver reads NativeGpioI2cEnabled when the device starts, and that start
+    # happens in the very boot that carries the trial SSDT. A device that failed
+    # to start keeps the PnP lock of its parameters key, so the value can not be
+    # written while the phone runs: the hive is edited here instead, with the
+    # phone off. Every other gate stays zero, the bitbang path refuses to run
+    # when one of them is set.
+    $gateReceipt = Join-Path $receiptRoot 'host-gate.json'
+    $gateOutput = & (Join-Path $PSScriptRoot 'Arm-TouchGpioHostGate.ps1') -WindowsRoot $winRoot -Receipt $gateReceipt 2>&1
+    $gateArmed = Test-Path -LiteralPath $gateReceipt
+    if (!$gateArmed) {throw "Host gate arming failed: $gateOutput"}
     $null = New-Item -ItemType Directory -Path $bundle
     $sources = @(
         @{source=(Join-Path $PSScriptRoot 'Launch-TouchGpioTrial.ps1');relative='Launch-TouchGpioTrial.ps1'},
@@ -216,7 +227,7 @@ try {
         test_seconds=120;automatic_reboot=$false;normal_shutdown=$true;flushed_and_dismounted=$true;
         rearm=$ReArm.IsPresent;disarmed_startup=$disarmedStartup;archived_leftovers=$archived;
         device_manager_startup='Timelm-device-manager.cmd';device_manager_startup_sha256=$devMgrStartupHash;
-        disarmed_device_manager_startup=$devMgrDisarmed} |
+        disarmed_device_manager_startup=$devMgrDisarmed;host_gate=$gateArmed;host_gate_receipt='host-gate.json'} |
         ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $receiptRoot 'stage-status.json')
 } catch {
     $failure = $_.Exception.Message; $rollback = @()
