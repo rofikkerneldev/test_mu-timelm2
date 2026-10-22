@@ -402,9 +402,12 @@ function ConvertTo-TimelmButtonMapping {
       The mode decides who reacts to a short press:
 
         Agent  the agent answers with TAB, ENTER and the lock (the default)
-        Hid    the driver reports a native volume or power key, the agent
-               only answers a long press
+        Hid    the driver reports a native volume key, the agent only
+               answers a long press and the short press of the power key
         Both   both of them react, only useful to see the two paths at once
+
+      The short press of the power key always belongs to the agent, Windows
+      has no native lock and would show its power menu instead.
     #>
     param(
         [int]$PowerSid = 0,
@@ -453,6 +456,17 @@ function ConvertTo-TimelmButtonMapping {
         @($script:TimelmHidAction.VolumeDecrement, $VolumeDownLongPressMillis, $script:TimelmAgentAction.Enter, $script:TimelmAgentAction.ShiftF10)
     )
 
+    #
+    # The mode decides who answers a short press.  The volume keys have a
+    # native counterpart in Windows, so the HID face of the driver takes them
+    # over in the mode Hid.  The power key has no native lock, Windows would
+    # show its power menu instead, so the agent keeps the short press of the
+    # power key in every mode.  The mode Both shows both paths at once, it is
+    # only good for a test.
+    #
+    # A long press always belongs to the agent, only the agent knows the long
+    # actions.
+    #
     $useHid = ($Mode -eq 'Hid' -or $Mode -eq 'Both')
     $useAgent = ($Mode -eq 'Agent' -or $Mode -eq 'Both')
 
@@ -466,10 +480,16 @@ function ConvertTo-TimelmButtonMapping {
 
         if ($useHid) {
             $hidAction = $actions[$index][0]
-            $hidEnabled = 1
+            # In the mode Hid the power key keeps the agent, Windows has no
+            # native lock.  The mode Both lets the HID face show its report
+            # of the power key as well.
+            if (($index -ne 0) -or ($Mode -eq 'Both')) { $hidEnabled = 1 }
         }
         if ($useAgent) {
             $agentShort = $actions[$index][2]
+        }
+        if (($Mode -eq 'Hid') -and ($index -eq 0)) {
+            $agentShort = $actions[0][2]
         }
 
         [void][BitConverter]::GetBytes([uint32]$hidAction).CopyTo($mapping, $offset + 0)
