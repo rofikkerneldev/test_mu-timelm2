@@ -575,17 +575,32 @@ finally {
 
     # The Startup entry is disarmed after the attempt, so that the trial does
     # not run again on the next boot.  Only an entry that is byte for byte the
-    # staged one may be removed.
+    # staged one may be removed.  The entry of the common folder and the one
+    # of the profile of the user are both removed, the staging writes the one
+    # that the build PC is allowed to write.
     try {
-        $startup = Join-Path $env:SystemDrive 'ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\Timelm-buttons.cmd'
         $staged = Join-Path $PSScriptRoot 'Timelm-buttons.cmd'
-        if ((Test-Path -LiteralPath $startup) -and (Test-Path -LiteralPath $staged)) {
-            if ((Get-FileHash -LiteralPath $startup -Algorithm SHA256).Hash -eq
-                (Get-FileHash -LiteralPath $staged -Algorithm SHA256).Hash) {
+        $stagedHash = $null
+        if (Test-Path -LiteralPath $staged) {
+            $stagedHash = (Get-FileHash -LiteralPath $staged -Algorithm SHA256).Hash
+        }
+
+        $entries = @(
+            (Join-Path $env:SystemDrive 'ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\Timelm-buttons.cmd'),
+            (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup\Timelm-buttons.cmd')
+        )
+
+        foreach ($startup in $entries) {
+            if (-not (Test-Path -LiteralPath $startup)) { continue }
+            if (-not $stagedHash) {
+                Write-Log ('a startup entry is there but the staged one is not: ' + $startup)
+                continue
+            }
+            if ((Get-FileHash -LiteralPath $startup -Algorithm SHA256).Hash -eq $stagedHash) {
                 Remove-Item -LiteralPath $startup -Force
-                Write-Log 'the startup entry of this trial was removed'
+                Write-Log ('the startup entry of this trial was removed: ' + $startup)
             } else {
-                Write-Log 'the startup entry does not belong to this trial, it stays'
+                Write-Log ('the startup entry does not belong to this trial, it stays: ' + $startup)
             }
         }
     } catch {

@@ -37,6 +37,7 @@ param(
     [string]$AssistAction = 'StartMenu',
     [string]$AssistTarget = 'notepad.exe',
     [int]$Seconds = 240,
+    [string]$UserProfile = 'Administrator',
     [switch]$Arm,
     [switch]$ArmTask,
     [switch]$Replace
@@ -249,6 +250,7 @@ try {
     $bundle = Join-Path $winRoot 'TimelmTools\TimelmButtonsTrial'
     $logDir = Join-Path $winRoot 'TimelmLogs\TimelmButtonsTrial'
     $startup = Join-Path $winRoot 'ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\Timelm-buttons.cmd'
+    $startupUser = Join-Path $winRoot ('Users\{0}\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\Timelm-buttons.cmd' -f $UserProfile)
     $taskFile = Join-Path $winRoot 'Windows\System32\Tasks\TimelmButtonsTrial'
 
     #
@@ -277,6 +279,10 @@ try {
         if (Test-Path -LiteralPath $startup) {
             Remove-Item -LiteralPath $startup -Force
             $archived += 'Startup\Timelm-buttons.cmd'
+        }
+        if (Test-Path -LiteralPath $startupUser) {
+            Remove-Item -LiteralPath $startupUser -Force
+            $archived += 'Startup\Timelm-buttons.cmd (user profile)'
         }
         if (Test-Path -LiteralPath $taskFile) {
             if (Remove-TimelmTaskFile $taskFile) {
@@ -366,32 +372,64 @@ try {
     $staged | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $receiptRoot 'stage-status.json')
 
     if ($Arm) {
-        $startup = Join-Path $winRoot 'ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\Timelm-buttons.cmd'
-        $bytes = [IO.File]::ReadAllBytes((Join-Path $bundle 'Timelm-buttons.cmd'))
-        try {
-            $stream = New-Object IO.FileStream($startup, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough)
-        } catch {
-            #
-            # The Startup folder of the phone belongs to its own
-            # administrators, the build PC has no write right on it once
-            # Windows of the phone applied its own rights to the
-            # ProgramData.  The trial is then started by hand on the phone,
-            # the receipt carries the command.
-            #
-            throw ("the Startup folder of the phone is not writable from the build PC ({0}), the trial has to be started by hand" -f $_.Exception.Message)
+        #
+        # The Startup entry of the phone starts the trial at the logon.  The
+        # common folder of the Startup belongs to the administrators of the
+        # phone since Windows applied its own rights to the ProgramData, so
+        # the folder of the user of the phone is used when the common one
+        # cannot be written.  Both are read by Windows at the logon of the
+        # user, without any service of the phone.
+        #
+        $cmdBytes = [IO.File]::ReadAllBytes((Join-Path $bundle 'Timelm-buttons.cmd'))
+        $cmdHash = (Get-FileHash -LiteralPath (Join-Path $bundle 'Timelm-buttons.cmd') -Algorithm SHA256).Hash
+
+        $candidates = @(
+            [pscustomobject]@{
+                kind = 'startup-entry'
+                path = (Join-Path $winRoot 'ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\Timelm-buttons.cmd')
+            },
+            [pscustomobject]@{
+                kind = 'startup-entry-user'
+                path = (Join-Path $winRoot ('Users\{0}\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\Timelm-buttons.cmd' -f $UserProfile))
+            }
+        )
+
+        $armed = $false
+        $failures = @()
+        foreach ($candidate in $candidates) {
+            try {
+                $directory = Split-Path -Parent $candidate.path
+                if (-not (Test-Path -LiteralPath $directory)) {
+                    New-Item -ItemType Directory -Path $directory -Force | Out-Null
+                }
+
+                $stream = New-Object IO.FileStream($candidate.path, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough)
+                try {
+                    $stream.Write($cmdBytes, 0, $cmdBytes.Length)
+                    $stream.Flush($true)
+                } finally {
+                    $stream.Dispose()
+                }
+
+                if ((Get-FileHash -LiteralPath $candidate.path -Algorithm SHA256).Hash -ne $cmdHash) {
+                    throw 'Startup readback failed'
+                }
+
+                $staged.armed = $true
+                $staged.arm_method = $candidate.kind
+                $staged.startup_path = $candidate.path
+                $staged.startup_sha256 = $cmdHash
+                $armed = $true
+                break
+            } catch {
+                $failures += ('{0}: {1}' -f $candidate.kind, $_.Exception.Message)
+            }
         }
-        try {
-            $stream.Write($bytes, 0, $bytes.Length)
-            $stream.Flush($true)
-        } finally {
-            $stream.Dispose()
+
+        if (-not $armed) {
+            throw ("no Startup entry of the phone could be written ({0}), the trial has to be started by hand" -f ($failures -join '; '))
         }
-        if ((Get-FileHash -LiteralPath $startup -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath (Join-Path $bundle 'Timelm-buttons.cmd') -Algorithm SHA256).Hash) {
-            throw 'Startup readback failed'
-        }
-        $staged.armed = $true
-        $staged.startup_sha256 = (Get-FileHash -LiteralPath $startup -Algorithm SHA256).Hash
-        $staged.arm_method = 'startup-entry'
+
         $staged | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $receiptRoot 'stage-status.json')
     }
 
