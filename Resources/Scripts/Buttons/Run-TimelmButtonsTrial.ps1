@@ -145,6 +145,57 @@ function Get-InfHash([string]$InfName) {
     return (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
 }
 
+function Get-NodeStatus {
+    <# The state of the PMIC node in the device tree of the phone. #>
+    $status = [ordered]@{
+        pnp_device_id = $null
+        name = $null
+        status = $null
+        config_manager_error_code = $null
+        service = $null
+        present = $false
+    }
+    try {
+        $device = Get-CimInstance Win32_PnPEntity -ErrorAction Stop |
+            Where-Object { $_.PNPDeviceID -like ($deviceId + '*') } |
+            Select-Object -First 1
+        if ($device) {
+            $status.pnp_device_id = $device.PNPDeviceID
+            $status.name = $device.Name
+            $status.status = $device.Status
+            $status.config_manager_error_code = $device.ConfigManagerErrorCode
+            $status.service = $device.Service
+            $status.present = $true
+        }
+    } catch {
+    }
+    return $status
+}
+
+function Find-InstalledPackage([string]$PackageHash) {
+    <#
+        The copy of the package in the driver store of the phone.  The
+        enumeration tree is the first source, the driver store is scanned as
+        the second one, so that a missing instance key does not stop the
+        trial.
+    #>
+    $selected = Get-SelectedInf $deviceId
+    if ($selected.inf) {
+        $hash = Get-InfHash $selected.inf
+        if ($hash -eq $PackageHash) {
+            return [ordered]@{ inf = $selected.inf; source = 'enumeration'; selected = $selected }
+        }
+    }
+    $infDirectory = Join-Path $env:SystemRoot 'INF'
+    foreach ($file in @(Get-ChildItem -LiteralPath $infDirectory -Filter 'oem*.inf' -File -ErrorAction SilentlyContinue)) {
+        $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
+        if ($hash -eq $PackageHash) {
+            return [ordered]@{ inf = $file.Name; source = 'driver-store'; selected = $selected }
+        }
+    }
+    return $null
+}
+
 function Invoke-PnP([string]$Label, [string[]]$Arguments) {
     $stdout = Join-Path $ResultPath ($Label + '-stdout.txt')
     $stderr = Join-Path $ResultPath ($Label + '-stderr.txt')
@@ -312,34 +363,47 @@ try {
     Save-Json 'selected-after.json' $after
     Write-Log ("driver of {0} after the install: {1} (class {2}, instance {3})" -f $deviceId, $after.inf, $after.class_key, $after.instance)
 
-    $actualHash = Get-InfHash $after.inf
+    $installedCopy = Find-InstalledPackage $packageHash
+    $actualHash = $null
+    if ($installedCopy) {
+        $actualHash = Get-InfHash $installedCopy.inf
+    }
     $check = [ordered]@{
         device = $deviceId
         class_key = $after.class_key
         instance = $after.instance
-        inf = $after.inf
+        inf = if ($installedCopy) { $installedCopy.inf } else { $null }
+        found_in = if ($installedCopy) { $installedCopy.source } else { $null }
         sha256 = $actualHash
         expected_sha256 = $packageHash
         matches = ($actualHash -eq $packageHash)
         utc = [DateTime]::UtcNow.ToString('o')
     }
     Save-Json 'selected-inf-check.json' $check
-    if ($actualHash -ne $packageHash) {
-        throw 'The installed INF of the PMIC node is not the button driver'
+    if (-not $installedCopy -or $actualHash -ne $packageHash) {
+        throw 'The button driver package is not the one that is installed for the PMIC node'
     }
 
-    $device = Get-CimInstance Win32_PnPEntity | Where-Object { $_.PNPDeviceID -like 'ACPI\KONA1003*' } | Select-Object -First 1
-    if ($device) {
-        $deviceRecord = [ordered]@{
-            pnp_device_id = $device.PNPDeviceID
-            name = $device.Name
-            status = $device.Status
-            config_manager_error_code = $device.ConfigManagerErrorCode
-            service = $device.Service
-            utc = [DateTime]::UtcNow.ToString('o')
-        }
-        Save-Json 'device.json' $deviceRecord
-        Write-Log ("device status {0}, problem code {1}, service {2}" -f $device.Status, $device.ConfigManagerErrorCode, $device.Service)
+    $node = Get-NodeStatus
+    $nodeRecord = [ordered]@{
+        pnp_device_id = $node.pnp_device_id
+        name = $node.name
+        status = $node.status
+        config_manager_error_code = $node.config_manager_error_code
+        service = $node.service
+        present = $node.present
+        utc = [DateTime]::UtcNow.ToString('o')
+    }
+    Save-Json 'device.json' $nodeRecord
+    if (-not $node.present) {
+        throw 'The PMIC node is not present in the device tree of the phone'
+    }
+    Write-Log ("node status {0}, problem code {1}, service {2}" -f $node.status, $node.config_manager_error_code, $node.service)
+    if ($node.service -and $node.service -ne 'TimelmButtons') {
+        throw ('The PMIC node still belongs to the driver ' + $node.service)
+    }
+    if ($node.config_manager_error_code -and $node.config_manager_error_code -ne 0) {
+        throw ('The PMIC node has the problem code ' + $node.config_manager_error_code)
     }
 
     $service = Get-CimInstance Win32_SystemDriver -Filter "Name='TimelmButtons'" -ErrorAction SilentlyContinue
