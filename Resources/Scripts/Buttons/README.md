@@ -110,6 +110,34 @@ reached again for the log collection.
 `Stage-TimelmButtonsTrial.ps1 -Arm` writes a Startup entry as well, so that
 the trial starts by itself after the next boot.
 
+### Result of the trial on the phone (2026-10-22)
+
+The second attempt passed completely, the receipts are in
+`receipts/buttons-attempt2` on the build PC.
+
+| Check | Result |
+| --- | --- |
+| Node | `ACPI\KONA1003\0`, name "Timelm Volume and Power Buttons", status **OK**, problem code **0**, service `TimelmButtons` |
+| Selected INF | `oem154.inf`, sha256 `350C942F34D29C8D82A56AB301EC3DE037511E82D29313565F7110B3C50D0CE4`, byte for byte the INF of the package |
+| Service | `TimelmButtons`, state **Running**, start mode Manual |
+| Control device | `\\.\TimelmButtons` opened, `ready` = 1 in every one of the 2314 samples |
+| State trace | 2314 samples in 120 s, change counter 0 -> 288, all three buttons seen (bitmask 1, 2, 4 and 7) |
+| Agent | Volume Up -> `TAB`, Volume Down -> `ENTER`, Volume Down > 800 ms -> `Shift+F10`, Power short -> lock, Power > 1500 ms -> the shutdown path |
+| Shutdown | `shutdown /s` requested, the phone reached the mass storage mode again |
+
+The shutdown action itself was disabled during the attempt
+(`-DisableShutdown`), so the trial could not end in the middle of the test.
+The long press of the power button was detected at 1517 ms to 1522 ms, the
+long press of volume down at 821 ms to 826 ms.
+
+Two defects of the first attempt are fixed in the trial script: the driver of
+a device instance is stored in the **instance** key of the enumeration tree
+(`Enum\ACPI\KONA1003\0`), not in the key of the hardware id, and a hashtable
+literal that is written directly behind the parameter list of a function is
+turned into a string by the argument parser.  Every receipt is built in a
+variable first, and the collection on the PC removes the receipts of an
+earlier attempt before it copies the new ones.
+
 ## Discovery
 
 If the default mapping does not react, the real register layout can be

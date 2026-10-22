@@ -39,6 +39,22 @@ if (-not (Test-Path -LiteralPath $logs)) { throw 'The trial did not write any lo
 if (-not (Test-Path -LiteralPath $Output -PathType Container)) { throw 'Precreate the PC result directory' }
 $outputRoot = (Get-Item -LiteralPath $Output).FullName
 
+$knownReceipts = @(
+    'attempt.json', 'agent.log', 'button-state.jsonl', 'certificate.json', 'collect-status.json',
+    'complete.json', 'device.json', 'install-buttons-stderr.txt', 'install-buttons-stdout.txt',
+    'package.json', 'selected-after.json', 'selected-before.json', 'selected-inf-check.json',
+    'service.json', 'setupapi-after-install.log', 'setupapi-before.log', 'setupapi-final.log',
+    'shutdown.json', 'trial-error.json', 'trial.log'
+)
+
+# A receipt of an earlier attempt must not stay in the folder, otherwise it
+# looks like a part of the current one.  Only the names of the trial are
+# removed, anything else in the folder stays untouched.
+foreach ($name in $knownReceipts) {
+    $stale = Join-Path $outputRoot $name
+    if (Test-Path -LiteralPath $stale) { Remove-Item -LiteralPath $stale -Force }
+}
+
 $copied = foreach ($file in Get-ChildItem -LiteralPath $logs -File) {
     $destination = Join-Path $outputRoot $file.Name
     Copy-Item -LiteralPath $file.FullName -Destination $destination -Force

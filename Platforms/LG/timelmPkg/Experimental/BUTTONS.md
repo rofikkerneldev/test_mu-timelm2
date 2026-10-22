@@ -122,6 +122,29 @@ The acceptance order is: driver started, node `ACPI\KONA1003` without a
 problem code, `\\.\TimelmButtons` reachable, state changes on a press, then
 the input reaction (TAB, ENTER, Shift+F10, lock, clean shutdown).
 
+## Trial result
+
+The trial passed completely on the phone on 2026-10-22.  The receipts of the
+attempt are in `receipts/buttons-attempt2` on the build PC.
+
+| Check | Result |
+| --- | --- |
+| Node | `ACPI\KONA1003\0`, "Timelm Volume and Power Buttons", status OK, problem code 0, service `TimelmButtons` |
+| Selected INF | `oem154.inf`, sha256 `350C942F34D29C8D82A56AB301EC3DE037511E82D29313565F7110B3C50D0CE4`, identical with the INF of the package |
+| Service | `TimelmButtons`, state Running, start mode Manual |
+| Control device | `\\.\TimelmButtons` open, `ready` = 1 in every sample |
+| State trace | 2314 samples in 120 s, change counter 0 -> 288, all three buttons seen |
+| Agent | TAB, ENTER, Shift+F10 after 821 ms, lock after a short power press, the shutdown path after 1517 ms |
+| Shutdown | `shutdown /s` requested, the mass storage mode was reached again |
+
+The shutdown action was disabled during the attempt, the trial ends with one
+controlled shutdown of its own.  The first attempt failed before the agent
+was started: the driver of a device instance is stored in the instance key
+of the enumeration tree, not in the key of the hardware id, and a hashtable
+literal that is written directly behind a parameter list becomes a string.
+Both are fixed, the receipts of the failed attempt are kept in
+`receipts/buttons-attempt1`.
+
 ## Risks
 
 * Windows itself may react to the power key through the ACPI button driver,
