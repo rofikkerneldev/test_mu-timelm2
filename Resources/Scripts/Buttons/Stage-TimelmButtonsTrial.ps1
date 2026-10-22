@@ -178,7 +178,7 @@ function Get-TimelmTaskXml {
         '    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>'
         '    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>'
         '    <AllowHardTerminate>true</AllowHardTerminate>'
-        '    <StartWhenAvailable>false</StartWhenAvailable>'
+        '    <StartWhenAvailable>true</StartWhenAvailable>'
         '    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>'
         '    <IdleSettings>'
         '      <StopOnIdleEnd>false</StopOnIdleEnd>'
