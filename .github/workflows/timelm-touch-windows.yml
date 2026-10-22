@@ -108,6 +108,9 @@ jobs:
           path: buttons-source
       - shell: pwsh
         run: ./Resources/Scripts/Buttons/build_timelm_buttons.ps1 -Source ./buttons-source -Destination ./buttons-packages
+      - name: Test the edge logic of the button agent
+        shell: pwsh
+        run: ./Resources/Scripts/Buttons/Test-TimelmButtonEdges.ps1
       - uses: actions/upload-artifact@v4
         if: always()
         with:

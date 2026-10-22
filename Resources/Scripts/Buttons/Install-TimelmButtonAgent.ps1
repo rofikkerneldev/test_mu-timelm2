@@ -43,7 +43,7 @@ param(
     [ValidateSet('Agent', 'Hid', 'Both')]
     [string]$Mode = 'Agent',
     [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu')]
-    [string]$AssistAction = 'LaunchTarget',
+    [string]$AssistAction = 'StartMenu',
     [switch]$StartNow,
     [switch]$Uninstall
 )

@@ -3,7 +3,7 @@
   User mode agent for the LG V60 (timelm) hardware buttons.
 
 .DESCRIPTION
-  Reads the state of the three physical buttons from TimelmButtons.sys
+  Reads the state of the four physical buttons from TimelmButtons.sys
   (\\.\TimelmButtons) and translates them into Windows input.
 
   What happens with a button is decided by the mapping of the driver, so
@@ -16,9 +16,9 @@
                                                    wake the display when
                                                    the session is locked
       Power                long press (1500 ms)   -> shutdown /s (clean shutdown)
-      Assist               short press            -> the program of the
-                                                   target file (or the start
-                                                   menu)
+      Assist               short press            -> the Windows key (the
+                                                   start menu), or the
+                                                   program of the target file
 
   With the mapping in the mode "Hid" the short press is not answered by the
   agent at all.  The driver then reports the button to Windows as a real
@@ -33,6 +33,12 @@
   The long press detection uses the press duration that the driver reports,
   so it does not depend on the accuracy of the polling loop.
 
+  A press is only answered when the button was quiet for the quiet time
+  (500 ms by default).  The contact of the assist key of the phone can
+  bounce, its pad has no pull up in the device tree of the gpio keys node,
+  and a bouncing contact would otherwise open the start menu dozens of
+  times.
+
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File TimelmButtonAgent.ps1
 #>
@@ -43,6 +49,7 @@ param(
     [int]$PowerLongPressMillis = 1500,
     [int]$VolumeDownLongPressMillis = 800,
     [string]$AssistTargetPath = (Join-Path $env:ProgramData 'Timelm\assist-target.txt'),
+    [int]$QuietMillis = 500,
     [switch]$DisableLock,
     [switch]$DisableShutdown,
     [switch]$DryRun,
@@ -228,17 +235,17 @@ $buttonTable = @(
     [pscustomobject]@{ Bit = 1; Name = 'Power'; Index = 0; LongPress = $PowerLongPressMillis; ShortAction = $script:TimelmAgentAction.LockOrWake; LongAction = $script:TimelmAgentAction.Shutdown },
     [pscustomobject]@{ Bit = 2; Name = 'VolumeUp'; Index = 1; LongPress = 0; ShortAction = $script:TimelmAgentAction.Tab; LongAction = $script:TimelmAgentAction.None },
     [pscustomobject]@{ Bit = 4; Name = 'VolumeDown'; Index = 2; LongPress = $VolumeDownLongPressMillis; ShortAction = $script:TimelmAgentAction.Enter; LongAction = $script:TimelmAgentAction.ShiftF10 },
-    [pscustomobject]@{ Bit = 8; Name = 'Assist'; Index = 3; LongPress = 0; ShortAction = $script:TimelmAgentAction.LaunchTarget; LongAction = $script:TimelmAgentAction.None }
+    [pscustomobject]@{ Bit = 8; Name = 'Assist'; Index = 3; LongPress = 0; ShortAction = $script:TimelmAgentAction.StartMenu; LongAction = $script:TimelmAgentAction.None }
 )
 
 $handle = [IntPtr]::Zero
-$down = @{}
-$longHandled = @{}
 $mappingLoaded = $false
-foreach ($button in $buttonTable) {
-    $down[$button.Bit] = $false
-    $longHandled[$button.Bit] = $false
-}
+
+#
+# The edges of the buttons, the helper keeps the state of every button and
+# decides what has to be done with it.
+#
+$edges = New-TimelmButtonEdges -ButtonTable $buttonTable
 
 try {
     $deadline = [DateTime]::UtcNow.AddSeconds($RunSeconds)
@@ -299,33 +306,32 @@ try {
             $pressed = ($state.Buttons -band $button.Bit) -ne 0
             $held = [int]$state.HeldMillis[$button.Index]
 
-            if ($pressed -and -not $down[$button.Bit]) {
-                $down[$button.Bit] = $true
-                $longHandled[$button.Bit] = $false
-                Write-TimelmAgentLog ('{0} down' -f $button.Name)
+            $decision = Get-TimelmButtonDecision `
+                -Edges $edges `
+                -Button $button `
+                -Pressed $pressed `
+                -Held $held `
+                -QuietMillis $QuietMillis
 
-                #
-                # A button without a long press answers at once, a button
-                # with a long press has to wait for the release, otherwise
-                # the long press would answer twice.
-                #
-                if ($button.LongPress -le 0 -and $button.ShortAction -ne 0) {
-                    Invoke-TimelmAgentAction $button.ShortAction
-                }
-            }
-            elseif ($pressed -and $down[$button.Bit] -and -not $longHandled[$button.Bit]) {
-                if ($button.LongPress -gt 0 -and $held -ge $button.LongPress) {
-                    $longHandled[$button.Bit] = $true
-                    Write-TimelmAgentLog ('{0} long press ({1} ms)' -f $button.Name, $held)
-                    Invoke-TimelmAgentAction $button.LongAction
-                }
-            }
-            elseif (-not $pressed -and $down[$button.Bit]) {
-                $down[$button.Bit] = $false
-                Write-TimelmAgentLog ('{0} up after {1} ms' -f $button.Name, $held)
+            if (-not $decision) { continue }
 
-                if (-not $longHandled[$button.Bit] -and $button.LongPress -gt 0 -and $button.ShortAction -ne 0) {
-                    Invoke-TimelmAgentAction $button.ShortAction
+            switch ($decision.Kind) {
+                'Ignored' {
+                    Write-TimelmAgentLog ('{0} down ignored, {1}' -f $button.Name, $decision.Reason)
+                }
+                'Down' {
+                    Write-TimelmAgentLog ('{0} down' -f $button.Name)
+                }
+                'Up' {
+                    Write-TimelmAgentLog ('{0} up after {1} ms' -f $button.Name, $held)
+                }
+                'Short' {
+                    Write-TimelmAgentLog ('{0} short press' -f $button.Name)
+                    Invoke-TimelmAgentAction $decision.Action
+                }
+                'Long' {
+                    Write-TimelmAgentLog ('{0} {1}' -f $button.Name, $decision.Reason)
+                    Invoke-TimelmAgentAction $decision.Action
                 }
             }
         }

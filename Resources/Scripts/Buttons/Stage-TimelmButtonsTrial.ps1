@@ -34,7 +34,7 @@ param(
     [ValidateSet('Agent', 'Hid', 'Both')]
     [string]$ButtonMode = 'Agent',
     [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu')]
-    [string]$AssistAction = 'LaunchTarget',
+    [string]$AssistAction = 'StartMenu',
     [string]$AssistTarget = 'notepad.exe',
     [switch]$Arm,
     [switch]$Replace

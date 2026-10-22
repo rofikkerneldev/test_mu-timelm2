@@ -383,6 +383,146 @@ function Get-TimelmButtonName {
     return ('Bit{0}' -f $Bit)
 }
 
+function New-TimelmButtonEdges {
+    <#
+      The state of the edges of every button, the agent keeps one such
+      table.  It holds whether the button is down, whether its long press
+      was already answered, the time of the last sample that saw the button
+      pressed and whether the button is locked after an action.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$ButtonTable,
+        [datetime]$Now = [datetime]::UtcNow
+    )
+
+    $edges = @{}
+    foreach ($button in $ButtonTable) {
+        $edges[[int]$button.Bit] = @{
+            Down        = $false
+            LongHandled = $false
+            LastPressed = $Now
+            Locked      = $false
+        }
+    }
+    return $edges
+}
+
+function Get-TimelmButtonDecision {
+    <#
+      Decides what happens with one sample of one button.
+
+      The function is pure, it only changes the table of the edges, so the
+      behaviour of the agent can be tested without the phone.
+
+      A press is answered only when the button was not locked.  A button
+      is locked after an action and it is unlocked again when it was seen
+      released for the quiet time.  The contact of the assist key of the
+      phone bounces, and a bouncing contact would otherwise answer dozens
+      of times.
+
+      The return value is $null when nothing has to be done, otherwise it
+      is an object with the kind of the event (Down, Up, Short, Long,
+      Ignored), the action of the agent and a reason for the log.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Edges,
+        [Parameter(Mandatory = $true)]$Button,
+        [Parameter(Mandatory = $true)][bool]$Pressed,
+        [int]$Held = 0,
+        [int]$QuietMillis = 500,
+        [datetime]$Now = [datetime]::UtcNow
+    )
+
+    $bit = [int]$Button.Bit
+    if (-not $Edges.ContainsKey($bit)) {
+        $Edges[$bit] = @{
+            Down        = $false
+            LongHandled = $false
+            LastPressed = $Now
+            Locked      = $false
+        }
+    }
+    $edge = $Edges[$bit]
+
+    if ($Pressed) {
+        #
+        # The time of the last sample that saw the button pressed.  The
+        # quiet time is the time since then, so a button that keeps
+        # bouncing never becomes quiet.
+        #
+        $edge.LastPressed = $Now
+
+        if (-not $edge.Down) {
+            if ($edge.Locked) {
+                return [pscustomobject]@{
+                    Kind   = 'Ignored'
+                    Action = 0
+                    Reason = 'the button is still locked after the last action'
+                }
+            }
+
+            $edge.Down = $true
+            $edge.LongHandled = $false
+
+            if ($Button.LongPress -le 0 -and $Button.ShortAction -ne 0) {
+                $edge.Locked = $true
+                return [pscustomobject]@{
+                    Kind   = 'Short'
+                    Action = $Button.ShortAction
+                    Reason = 'short press'
+                }
+            }
+
+            return [pscustomobject]@{
+                Kind   = 'Down'
+                Action = 0
+                Reason = 'down'
+            }
+        }
+
+        if (-not $edge.LongHandled -and $Button.LongPress -gt 0 -and $Held -ge $Button.LongPress) {
+            $edge.LongHandled = $true
+            $edge.Locked = $true
+            return [pscustomobject]@{
+                Kind   = 'Long'
+                Action = $Button.LongAction
+                Reason = ('long press ({0} ms)' -f $Held)
+            }
+        }
+
+        return $null
+    }
+
+    if ($edge.Down) {
+        $edge.Down = $false
+        if (-not $edge.LongHandled -and $Button.LongPress -gt 0 -and $Button.ShortAction -ne 0) {
+            $edge.Locked = $true
+            return [pscustomobject]@{
+                Kind   = 'Short'
+                Action = $Button.ShortAction
+                Reason = 'short press'
+            }
+        }
+
+        return [pscustomobject]@{
+            Kind   = 'Up'
+            Action = 0
+            Reason = 'up'
+        }
+    }
+
+    #
+    # The button is released and quiet for long enough, it may answer
+    # again.
+    #
+    $quiet = ($Now - $edge.LastPressed).TotalMilliseconds
+    if ($edge.Locked -and $quiet -ge $QuietMillis) {
+        $edge.Locked = $false
+    }
+
+    return $null
+}
+
 function Open-TimelmButtons {
     <# Opens \\.\TimelmButtons and returns the native handle. #>
     return [TimelmButtonsNative]::OpenDevice()
@@ -638,7 +778,7 @@ function ConvertTo-TimelmButtonMapping {
         [int]$AssistMask = 0x01,
         [int]$AssistPolarity = 1,
         [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu')]
-        [string]$AssistAction = 'LaunchTarget',
+        [string]$AssistAction = 'StartMenu',
         [int]$AssistLongPressMillis = 0
     )
 

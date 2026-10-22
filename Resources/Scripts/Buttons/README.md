@@ -13,7 +13,8 @@ independent sources:
 | Source | Evidence |
 | --- | --- |
 | Live device tree (`diagnostics/recovery.dts`) | `qcom,power-on@800` in `pm8150@0`, `gpio_keys.vol_up` on `pm8150_gpios pinctrl@c000` gpio6, `gpio_keys.hot1_key` on gpio1 with `linux,code = <0x179>`, `pon_1` = 0x00 (KPDPWR), `pon_2` = 0x01 (RESIN) |
-| Linux runtime (`/dev/input`) | `qpnp_pon` reports `KEY_POWER` + `KEY_VOLUMEDOWN`, `gpio-keys` reports `KEY_VOLUMEUP` and `KEY_ASSIST` |
+| Linux runtime (`/dev/input`) | `qpnp_pon` reports `KEY_POWER` + `KEY_VOLUMEDOWN`, `gpio-keys` reports `KEY_VOLUMEUP` (0x73) and `KEY_TV` (0x179) |
+| ROM key layout | `configs/keylayout/gpio-keys.kl` of the ROM: `key 377 ASSIST`, so Android names the raw code of the kernel ASSIST |
 | Upstream Linux | `drivers/input/misc/qpnp-power-on.c` (`QPNP_PON_RT_STS = base + 0x10`), `drivers/pinctrl/qcom/pinctrl-spmi-gpio.c` (`PMIC_GPIO_ADDRESS_RANGE 0x100`, `PMIC_MPP_REG_RT_STS 0x10`) |
 
 Resulting register map (slave 0):
@@ -28,6 +29,13 @@ Resulting register map (slave 0):
 The GPIO pad base of gpio N is `0xC000 + (N - 1) * 0x100`; the live device
 tree confirms this through the interrupt numbers (gpio N -> `0xC0 + (N - 1)`,
 gpio1 = 0xC0 ... gpio6 = 0xC5).
+
+The pad of gpio1 has no pull up in the pinctrl of the `gpio-keys` node, the
+pull up is in `key_home_default`, the pinctrl of the `qcom,qbt_handler` node
+that uses the same pin as `qcom,finger-detect-gpio`. In the recovery that
+driver does not run, the contact of the assist key bounces with a period of
+about 130 ms. The agent answers a press only after the button was quiet for
+the quiet time (`-QuietMillis`, 500 ms by default).
 
 ## Architecture
 
@@ -79,7 +87,7 @@ scripts write a mapping that the installed driver understands.
 | Volume Up | `TAB` | - |
 | Volume Down | `ENTER` | `Shift+F10` (800 ms) |
 | Power | lock the workstation, wake the display if the session is locked | `shutdown /s` (1500 ms), clean shutdown |
-| Assist | start the program of `%ProgramData%\Timelm\assist-target.txt` | - |
+| Assist | the Windows key, the start menu opens | - |
 
 The long press is detected with the press duration that the driver reports,
 so it does not depend on the accuracy of the polling loop.
@@ -172,7 +180,7 @@ but not yet the fourth button and not yet the wake.
 ### What the next attempt has to prove
 
 * the **assist key** (fourth button, PMIC gpio1 / `0xC010`) reaches the
-  agent and starts the program of `assist-target.txt`,
+  agent and opens the start menu of Windows,
 * the **power key wakes** the display again when the session is locked,
 * the wake does not trigger the power menu of Windows.
 
@@ -181,9 +189,17 @@ The driver revision for that attempt is
 
 ## The assist key
 
-The assist key is the way to give a button of the phone a function of your
-own.  The agent reads the target from a text file, so the function can be
-changed without touching the agent:
+The assist key of the phone is bound to the **Windows key** by default, so
+that a press opens the start menu of Windows.
+
+```powershell
+# PC, from the desktop session of the phone
+powershell -ExecutionPolicy Bypass -File Set-TimelmButtonMode.ps1 `
+    -Mode Agent -AssistAction StartMenu
+```
+
+For every other function the agent reads the target from a text file, so the
+function can be changed without touching the agent:
 
 ```
 %ProgramData%\Timelm\assist-target.txt
@@ -194,7 +210,6 @@ The content is the command line that is started with the shell, for example
 note into its log.
 
 ```powershell
-# PC, from the desktop session of the phone
 powershell -ExecutionPolicy Bypass -File Set-TimelmButtonMode.ps1 `
     -Mode Agent -AssistAction LaunchTarget
 ```

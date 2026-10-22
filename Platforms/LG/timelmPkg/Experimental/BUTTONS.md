@@ -16,7 +16,7 @@ which the phone no longer boots Windows.
 All four buttons are wired to the **PM8150 primary PMIC** (SPMI slave 0), not
 to the TLMM GPIO controller. The evidence is the live device tree
 (`diagnostics/recovery.dts`), the Linux runtime (`/dev/input` reports
-`KEY_POWER`, `KEY_VOLUMEDOWN`, `KEY_VOLUMEUP` and `KEY_ASSIST`) and the
+`KEY_POWER`, `KEY_VOLUMEDOWN`, `KEY_VOLUMEUP` and `KEY_TV`) and the
 upstream Linux drivers (`qpnp-power-on.c`, `pinctrl-qcom-pinctrl-spmi-gpio.c`).
 
 | Button | Register | Bit | Pressed when |
@@ -33,9 +33,30 @@ gpio6 = 0xC5).
 
 The assist key is the `hot1_key` node of the live device tree
 (`gpios = <0x661 0x01 0x01>`, `linux,code = <0x179>`, flags 0x01 = active
-low). It is the same gpio1 that the kernel uses for `KEY_ASSIST`, so the
-register address above is not a guess but the address the Linux driver of the
-board uses.
+low). It is the same gpio1 that the kernel uses for that key, so the
+register address above is not a guess but the address the Linux driver of
+the board uses.
+
+The kernel reports the key with the raw code `0x179` (377), which is
+`KEY_TV` in the kernel. Android gives it the name of the assist key with a
+key layout file, the ROM of this phone carries
+`configs/keylayout/gpio-keys.kl` with the line `key 377 ASSIST`. The
+Windows driver does not use the key code at all, it reads the register, so
+the name does not matter there.
+
+### The pull up of the assist key
+
+The pinctrl of the `gpio-keys` node covers gpio6 only
+(`key_vol_up_default` with `bias-pull-up`). The pull up of gpio1 sits in
+`key_home_default`, the pinctrl of the `qcom,qbt_handler` node, which uses
+the same pin as `qcom,finger-detect-gpio`. In the recovery that driver does
+not run, the pad of the assist key hangs free and the contact bounces with
+a period of about 130 ms (154 events in 43 s, measured on the phone).
+
+The agent therefore answers a press only when the button was quiet for the
+quiet time (500 ms by default), so that a bouncing contact opens the start
+menu once and not dozens of times. The PMIC is only read, the driver does
+not change the pad, so the assist key keeps the behaviour of the firmware.
 
 ## Ownership of the hardware
 
@@ -75,7 +96,7 @@ as well and is retried while `SPMI.sys` is not up yet.
 | Volume Up | `TAB` | - |
 | Volume Down | `ENTER` | `Shift+F10` (800 ms) |
 | Power | lock the workstation, wake the display if the session is locked | `shutdown /s` (1500 ms), clean shutdown |
-| Assist | start the program of `assist-target.txt` (or the start menu) | - |
+| Assist | the Windows key, the start menu opens | - |
 
 The long press is detected with the press duration that the driver reports,
 so it does not depend on the accuracy of the polling loop. The power long
@@ -113,7 +134,11 @@ The mode is written into the driver, so it can be changed while Windows runs
 | 6 | Wake | turn the display on again |
 | 7 | Lock or wake | lock when the session is open, wake when it is locked |
 | 8 | Assist target | start the program of `%ProgramData%\Timelm\assist-target.txt` |
-| 9 | Start menu | the Windows key |
+| 9 | Start menu | the Windows key, the start menu of Windows opens |
+
+The assist key uses the action 9 by default, so that the button of the
+phone opens the start menu of Windows. The action 8 exists for every other
+function, the target of the key is then a text file with a command line.
 
 Windows has no wake button of its own, so the wake is done by the agent: it
 calls `SetThreadExecutionState(ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED)`,

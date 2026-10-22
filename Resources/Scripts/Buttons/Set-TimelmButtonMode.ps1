@@ -35,7 +35,7 @@ param(
     [int]$PowerLongPressMillis = 1500,
     [int]$VolumeDownLongPressMillis = 800,
     [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu')]
-    [string]$AssistAction = 'LaunchTarget'
+    [string]$AssistAction = 'StartMenu'
 )
 
 Set-StrictMode -Version 2.0
