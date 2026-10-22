@@ -49,6 +49,7 @@ $script:Report = [ordered]@{
     pci = @()
     problems = @()
     acpi = @()
+    acpi_without_driver = @()
     i2c = @()
     registry = [ordered]@{}
     events = @()
@@ -278,18 +279,29 @@ foreach ($record in $records) {
 
 #
 # The devices of the class ACPI, the touch controller of the phone is behind
-# one of them.
+# one of them.  The class of a device of the ACPI is not always ACPI, a
+# device with a function driver of its own shows up as a device of the class
+# System, so the name of the instance is used.
 #
 foreach ($record in $records) {
-    if ($record.class -ne 'ACPI') { continue }
+    if (-not $record.instance_id.StartsWith('ACPI\')) { continue }
     $script:Report.acpi += $record
+    #
+    # A device of the ACPI without a driver of its own is a device that
+    # nothing answers for.  The touch controller of the phone is one of
+    # them, it has no driver and no service.
+    #
+    if (-not $record.service) {
+        $script:Report.acpi_without_driver += $record
+    }
 }
 
 #
-# The controllers of the class I2C and the devices on them.
+# The controllers of the class I2C and the devices on them.  The same
+# reason as above, the name of the instance is the reliable sign.
 #
 foreach ($record in $records) {
-    if ($record.class -ne 'I2C') { continue }
+    if (($record.class -ne 'I2C') -and (-not $record.instance_id.StartsWith('I2C\'))) { continue }
     $script:Report.i2c += $record
 }
 
@@ -438,6 +450,11 @@ foreach ($record in $script:Report.problems) {
 $lines.Add('')
 $lines.Add('--- the devices of the class ACPI ---')
 foreach ($record in $script:Report.acpi) {
+    $lines.Add(('{0} | {1} | status {2} | problem {3} | service {4}' -f $record.instance_id, $record.name, $record.status, $record.problem_code, $record.service))
+}
+$lines.Add('')
+$lines.Add('--- the devices of the ACPI without a driver ---')
+foreach ($record in $script:Report.acpi_without_driver) {
     $lines.Add(('{0} | {1} | status {2} | problem {3}' -f $record.instance_id, $record.name, $record.status, $record.problem_code))
 }
 $lines.Add('')
