@@ -27,6 +27,22 @@ are armed. BCD and boot partitions are not modified. Any staging failure rolls
 back changed EFI entries and this trial's startup file; copied helper files
 remain unarmed for inspection. Existing trial directories are never rearmed.
 
+The trial SSDT only exists in the one boot that passes the trial EFI: the EFI
+restores the original Windows boot manager first and then installs the SSDT, so
+the table is gone again on every later boot. The staging therefore arms two
+things that must meet in the *same* boot: the trial EFI on the ESP, and the
+Startup entry that starts the runner at the next logon. The order is:
+
+1. the phone is in mass storage (Windows stopped) and the staging runs,
+2. the phone is powered off completely and powered on again,
+3. that boot passes the trial EFI, the SSDT is present, the auto logon fires the
+   Startup entry and the runner finds the SSDT in its baseline.
+
+If the phone logs on without having been rebooted after the staging, the
+runner aborts with `Expected GPIO-only trial SSDT missing`; that is a lost
+trial, not a driver fault, and the fix is to re-stage and to reboot the phone
+rather than to change the drivers.
+
 The artifact contains `TouchGpioOnce.efi`, `touch-gpio.json`, `TouchGpio.aml`,
 `package.json` and `Drivers/{GPIO,Host,Touch}` with exactly four files per package
 (INF/CAT/SYS/CER). `package.json` schema1 has trial `touch-gpio-v1`, SSDT SHA256,
