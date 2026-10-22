@@ -118,13 +118,20 @@ function Get-TimelmTaskXml {
       when its service starts, so a task that is put there runs at the next
       boot.
 
+      The task does not name the user of the phone.  The first version of the
+      task carried the security identifier of the administrator of the phone,
+      but that identifier belonged to another installation, so the trigger of
+      the logon never matched and the trial never started.  The principal is
+      now the group of the administrators, which is the same on every
+      installation, and the trigger of the logon does not name a user either.
+
       The task is removed by the trial itself at the end of the attempt.
     #>
     param(
         [string]$Command,
         [string]$Arguments,
         [string]$WorkingDirectory,
-        [string]$UserSid = 'S-1-5-21-2900457808-1833740068-2038273949-500',
+        [string]$AdministratorsSid = 'S-1-5-32-544',
         [string]$TaskName = 'TimelmButtonsTrial'
     )
 
@@ -141,14 +148,17 @@ function Get-TimelmTaskXml {
         ('    <URI>\{0}</URI>' -f $TaskName)
         '  </RegistrationInfo>'
         '  <Triggers>'
+        '    <BootTrigger>'
+        '      <Enabled>true</Enabled>'
+        '      <Delay>PT30S</Delay>'
+        '    </BootTrigger>'
         '    <LogonTrigger>'
         '      <Enabled>true</Enabled>'
-        ('      <UserId>{0}</UserId>' -f $UserSid)
         '    </LogonTrigger>'
         '  </Triggers>'
         '  <Principals>'
         '    <Principal id="Author">'
-        ('      <UserId>{0}</UserId>' -f $UserSid)
+        ('      <UserId>{0}</UserId>' -f $AdministratorsSid)
         '      <LogonType>InteractiveToken</LogonType>'
         '      <RunLevel>HighestAvailable</RunLevel>'
         '    </Principal>'
@@ -427,10 +437,21 @@ try {
         }
 
         if (-not $armed) {
-            throw ("no Startup entry of the phone could be written ({0}), the trial has to be started by hand" -f ($failures -join '; '))
+            if ($ArmTask.IsPresent) {
+                #
+                # The task of the scheduler is the second way to start the
+                # trial, a Startup entry that cannot be written is only a
+                # note in the receipt then.
+                #
+                $staged.startup_failures = $failures
+                $staged | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $receiptRoot 'stage-status.json')
+                Write-Warning ("no Startup entry of the phone could be written ({0}), the task of the scheduler arms the trial" -f ($failures -join '; '))
+            } else {
+                throw ("no Startup entry of the phone could be written ({0}), the trial has to be started by hand" -f ($failures -join '; '))
+            }
+        } else {
+            $staged | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $receiptRoot 'stage-status.json')
         }
-
-        $staged | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $receiptRoot 'stage-status.json')
     }
 
     if ($ArmTask) {

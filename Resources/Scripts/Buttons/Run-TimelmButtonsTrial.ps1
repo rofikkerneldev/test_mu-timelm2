@@ -66,12 +66,37 @@ if ($setup.SystemSetupInProgress -ne 0 -or $setup.OOBEInProgress -ne 0) {
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = New-Object Security.Principal.WindowsPrincipal($identity)
-if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+$elevated = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+$sessionId = (Get-Process -Id $PID).SessionId
+
+#
+# The receipt of the attempt is written before the trial is checked, so that
+# a trial that stops early leaves a trace on the phone.  Without it a failure
+# of the arming cannot be told apart from a trial that never started.
+#
+if (-not $ResultPath) {
+    $ResultPath = Join-Path $env:SystemDrive 'TimelmLogs\TimelmButtonsTrial'
+}
+$null = New-Item -ItemType Directory -Force -Path $ResultPath
+
+function Write-Log([string]$Message) {
+    $line = '{0} {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff'), $Message
+    Write-Host $line
+    try {
+        Add-Content -LiteralPath (Join-Path $ResultPath 'trial.log') -Value $line -Encoding UTF8
+    } catch {
+    }
+}
+
+Write-Log ('the trial starts, user {0}, session {1}, elevated {2}' -f $identity.Name, $sessionId, $elevated)
+
+if (-not $elevated) {
+    Write-Log 'the shell is not elevated'
     throw 'An elevated shell in the interactive session is required'
 }
 
-$sessionId = (Get-Process -Id $PID).SessionId
 if ($sessionId -le 0) {
+    Write-Log 'the shell is not in a session of a user'
     throw 'The trial has to run in the interactive session'
 }
 
@@ -100,11 +125,6 @@ if (-not $PackagePath) {
 }
 $PackagePath = (Resolve-Path -LiteralPath $PackagePath).Path
 
-if (-not $ResultPath) {
-    $ResultPath = Join-Path $env:SystemDrive 'TimelmLogs\TimelmButtonsTrial'
-}
-$null = New-Item -ItemType Directory -Force -Path $ResultPath
-
 $deviceId = 'ACPI\KONA1003'
 $infName = 'TimelmButtons.inf'
 $sysName = 'TimelmButtons.sys'
@@ -115,15 +135,6 @@ function Save-Json([string]$Name, $Value) {
     # the argument parser, so it must never be passed that way.
     $json = $Value | ConvertTo-Json -Depth 10
     Set-Content -LiteralPath (Join-Path $ResultPath $Name) -Value $json -Encoding UTF8
-}
-
-function Write-Log([string]$Message) {
-    $line = '{0} {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff'), $Message
-    Write-Host $line
-    try {
-        Add-Content -LiteralPath (Join-Path $ResultPath 'trial.log') -Value $line -Encoding UTF8
-    } catch {
-    }
 }
 
 function Copy-SetupApiLog([string]$Label) {
