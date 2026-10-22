@@ -89,7 +89,12 @@ function Remove-TimelmTaskFile([string]$Path) {
       Removes a task file of a previous trial.  The file was written by the
       build PC, so the build PC is the owner of it and may take the rights
       that it needs for the removal.  The volume of the phone answers the
-      first removal with a denial now and then.
+      first removal with a denial now and then, and the folder of the tasks
+      of the phone does not always allow the removal at all.
+
+      A task file that stays is not a problem: the staging of the next trial
+      writes its own task over the old one, and the trial removes the task
+      at the end of the attempt.
     #>
     if (-not (Test-Path -LiteralPath $Path)) { return $false }
 
@@ -98,12 +103,14 @@ function Remove-TimelmTaskFile([string]$Path) {
             Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
             return $true
         } catch {
-            & icacls.exe $Path /setowner $env:USERNAME | Out-Null
-            Start-Sleep -Milliseconds 500
+            & takeown.exe /f $Path 2>&1 | Out-Null
+            & icacls.exe $Path /setowner $env:USERNAME 2>&1 | Out-Null
+            & icacls.exe $Path /grant ('{0}:F' -f $env:USERNAME) 2>&1 | Out-Null
+            Start-Sleep -Milliseconds 700
         }
     }
 
-    throw ("the task file of a previous trial could not be removed: {0}" -f $Path)
+    return $false
 }
 
 function Get-TimelmTaskXml {
@@ -297,6 +304,8 @@ try {
         if (Test-Path -LiteralPath $taskFile) {
             if (Remove-TimelmTaskFile $taskFile) {
                 $archived += 'Tasks\TimelmButtonsTrial'
+            } else {
+                $archived += 'Tasks\TimelmButtonsTrial (the new task is written over it)'
             }
         }
         $modified = $true
