@@ -125,20 +125,21 @@ function Get-TimelmTaskXml {
       when its service starts, so a task that is put there runs at the next
       boot.
 
-      The task does not name the user of the phone.  The first version of the
-      task carried the security identifier of the administrator of the phone,
-      but that identifier belonged to another installation, so the trigger of
-      the logon never matched and the trial never started.  The principal is
-      now the group of the administrators, which is the same on every
-      installation, and the trigger of the logon does not name a user either.
+      The task names the built-in administrator of the phone by its security
+      identifier.  The identifier is the one that the phone wrote into its own
+      log of the first desktop, the machine of the phone was installed more
+      than once and the identifier of an earlier installation does not match.
 
-      The task is removed by the trial itself at the end of the attempt.
+      The task is started when it may be started as well: a trigger whose
+      moment has passed while the scheduler was still loading the task starts
+      the task anyway, otherwise a task that is read after the logon of the
+      phone would never run.
     #>
     param(
         [string]$Command,
         [string]$Arguments,
         [string]$WorkingDirectory,
-        [string]$AdministratorsSid = 'S-1-5-32-544',
+        [string]$UserSid = 'S-1-5-21-2900457808-1833740068-2038273949-500',
         [string]$TaskName = 'TimelmButtonsTrial'
     )
 
@@ -148,7 +149,7 @@ function Get-TimelmTaskXml {
 
     $lines = @(
         '<?xml version="1.0" encoding="UTF-16"?>'
-        '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">'
+        '<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">'
         '  <RegistrationInfo>'
         '    <Author>timelm</Author>'
         '    <Description>TimelmButtons trial</Description>'
@@ -157,15 +158,17 @@ function Get-TimelmTaskXml {
         '  <Triggers>'
         '    <BootTrigger>'
         '      <Enabled>true</Enabled>'
-        '      <Delay>PT30S</Delay>'
+        '      <Delay>PT60S</Delay>'
+        '      <StartBoundary>2026-01-01T00:00:00</StartBoundary>'
         '    </BootTrigger>'
         '    <LogonTrigger>'
         '      <Enabled>true</Enabled>'
+        ('      <UserId>{0}</UserId>' -f $UserSid)
         '    </LogonTrigger>'
         '  </Triggers>'
         '  <Principals>'
         '    <Principal id="Author">'
-        ('      <UserId>{0}</UserId>' -f $AdministratorsSid)
+        ('      <UserId>{0}</UserId>' -f $UserSid)
         '      <LogonType>InteractiveToken</LogonType>'
         '      <RunLevel>HighestAvailable</RunLevel>'
         '    </Principal>'
@@ -464,7 +467,15 @@ try {
                 $staged | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $receiptRoot 'stage-status.json')
                 Write-Warning ("no Startup entry of the phone could be written ({0}), the task of the scheduler arms the trial" -f ($failures -join '; '))
             } else {
-                throw ("no Startup entry of the phone could be written ({0}), the trial has to be started by hand" -f ($failures -join '; '))
+                #
+                # The Startup folder of the phone belongs to the
+                # administrators of the phone.  A build PC that runs with a
+                # filtered token does not belong to that group, and the
+                # filter of the token turns the right of the group into a
+                # denial.  The staging therefore has to run with the full
+                # token of an administrator of the build PC.
+                #
+                throw ("no Startup entry of the phone could be written ({0}). The Startup folder of the phone belongs to the administrators of the phone: run the staging with the full token of an administrator of the build PC, or start the trial by hand" -f ($failures -join '; '))
             }
         } else {
             $staged | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $receiptRoot 'stage-status.json')
