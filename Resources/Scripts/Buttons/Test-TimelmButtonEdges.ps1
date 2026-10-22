@@ -68,6 +68,7 @@ function Invoke-Signal {
         [int[]]$Held,
         [int]$StepMillis = 20,
         [int]$QuietMillis = 500,
+        [int]$StuckMillis = 3000,
         [datetime]$Start = [datetime]'2026-01-01T00:00:00Z'
     )
 
@@ -78,7 +79,7 @@ function Invoke-Signal {
         $now = $now.AddMilliseconds($StepMillis)
         $hold = 0
         if ($Held -and $i -lt $Held.Count) { $hold = $Held[$i] }
-        $decision = Get-TimelmButtonDecision -Edges $Edges -Button $Button -Pressed $Pressed[$i] -Held $hold -QuietMillis $QuietMillis -Now $now
+        $decision = Get-TimelmButtonDecision -Edges $Edges -Button $Button -Pressed $Pressed[$i] -Held $hold -QuietMillis $QuietMillis -StuckMillis $StuckMillis -Now $now
         if ($decision) { [void]$answers.Add($decision) }
     }
 
@@ -193,6 +194,56 @@ Assert-Equal 'Wake' (Resolve-TimelmPowerAction -DesktopName '') 'a name that can
 Assert-Equal 'Wake' (Resolve-TimelmPowerAction -DesktopName 'Default' -Next 'Wake') 'the press after a lock wakes'
 Assert-Equal 'Lock' (Resolve-TimelmPowerAction -DesktopName 'Default' -Next 'Lock') 'the press after a wake locks'
 Assert-Equal 'Wake' (Resolve-TimelmPowerAction -DesktopName 'Winlogon' -Next 'Lock') 'the secure desktop wins over the toggle'
+
+Write-Host '--- a contact that stays closed does not lock the button for ever ---'
+#
+# The contact of a button of the phone can stay closed.  The button was
+# locked by the last action, the button must not stay locked for ever, and
+# the button must not answer again while it is held down.
+#
+$edges = New-TimelmButtonEdges -ButtonTable $buttons -Now ([datetime]'2026-01-01T00:00:00Z')
+$pressed = New-Object System.Collections.ArrayList
+$held = New-Object System.Collections.ArrayList
+[void]$pressed.Add($false)
+[void]$held.Add(0)
+for ($i = 0; $i -lt 20; $i++) { [void]$pressed.Add($true); [void]$held.Add(0) }   # a press that answers
+for ($i = 0; $i -lt 300; $i++) { [void]$pressed.Add($true); [void]$held.Add(0) }  # the contact stays closed
+$answers = Invoke-Signal -Edges $edges -Button $buttons[1] -Pressed $pressed.ToArray() -Held $held.ToArray() -StepMillis 20
+$actions = Get-Actions $answers
+Assert-Equal 1 $actions.Count 'the held button answers only once'
+Assert-True (-not $edges[[int]$buttons[1].Bit].Locked) 'the lock of the button is given up'
+
+Write-Host '--- a button that was held down answers again after a new press ---'
+$edges = New-TimelmButtonEdges -ButtonTable $buttons -Now ([datetime]'2026-01-01T00:00:00Z')
+$pressed = New-Object System.Collections.ArrayList
+$held = New-Object System.Collections.ArrayList
+for ($i = 0; $i -lt 250; $i++) { [void]$pressed.Add($true); [void]$held.Add(0) }   # the contact stays closed
+for ($i = 0; $i -lt 30; $i++) { [void]$pressed.Add($false); [void]$held.Add(0) }   # released
+for ($i = 0; $i -lt 10; $i++) { [void]$pressed.Add($true); [void]$held.Add(0) }    # a new press
+for ($i = 0; $i -lt 10; $i++) { [void]$pressed.Add($false); [void]$held.Add(0) }
+$answers = Invoke-Signal -Edges $edges -Button $buttons[1] -Pressed $pressed.ToArray() -Held $held.ToArray() -StepMillis 20
+$actions = Get-Actions $answers
+Assert-Equal 2 $actions.Count 'the first press and the new press are answered'
+Assert-Equal 1 $actions[1].Action 'the new press answers with the tab'
+
+Write-Host '--- a second press of the power key wakes the screen ---'
+#
+# The first press of the power key locks the screen, the next one wakes it
+# up.  Both presses have to be answered.
+#
+$edges = New-TimelmButtonEdges -ButtonTable $buttons -Now ([datetime]'2026-01-01T00:00:00Z')
+$pressed = New-Object System.Collections.ArrayList
+$held = New-Object System.Collections.ArrayList
+foreach ($value in @($false, $true, $true, $false)) { [void]$pressed.Add($value); [void]$held.Add(0) }
+for ($i = 0; $i -lt 30; $i++) { [void]$pressed.Add($false); [void]$held.Add(0) }
+foreach ($value in @($true, $true, $false)) { [void]$pressed.Add($value); [void]$held.Add(0) }
+for ($i = 0; $i -lt 30; $i++) { [void]$pressed.Add($false); [void]$held.Add(0) }
+$answers = Invoke-Signal -Edges $edges -Button $buttons[0] -Pressed $pressed.ToArray() -Held $held.ToArray() -StepMillis 20
+$actions = Get-Actions $answers
+Assert-Equal 2 $actions.Count 'both presses of the power key are answered'
+Assert-Equal 7 $actions[0].Action 'the first press is the lock or wake'
+Assert-Equal 7 $actions[1].Action 'the second press is the lock or wake'
+Assert-True (-not $edges[[int]$buttons[0].Bit].Locked) 'the lock of the power key is released by the quiet time'
 
 if ($script:Failures -gt 0) {
     Write-Host ("{0} checks failed" -f $script:Failures)

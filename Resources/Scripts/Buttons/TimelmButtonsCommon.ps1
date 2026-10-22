@@ -529,6 +529,9 @@ function New-TimelmButtonEdges {
             LongHandled = $false
             LastPressed = $Now
             Locked      = $false
+            LockedSince = $Now
+            PressSince  = $Now
+            Stuck       = $false
         }
     }
     return $edges
@@ -557,6 +560,7 @@ function Get-TimelmButtonDecision {
         [Parameter(Mandatory = $true)][bool]$Pressed,
         [int]$Held = 0,
         [int]$QuietMillis = 500,
+        [int]$StuckMillis = 3000,
         [datetime]$Now = [datetime]::UtcNow
     )
 
@@ -567,6 +571,9 @@ function Get-TimelmButtonDecision {
             LongHandled = $false
             LastPressed = $Now
             Locked      = $false
+            LockedSince = $Now
+            PressSince  = $Now
+            Stuck       = $false
         }
     }
     $edge = $Edges[$bit]
@@ -580,7 +587,23 @@ function Get-TimelmButtonDecision {
         $edge.LastPressed = $Now
 
         if (-not $edge.Down) {
+            #
+            # A new press begins.  The button is marked as down before
+            # anything else, so that a press that is ignored does not
+            # answer again with every following sample of the held button.
+            #
+            $edge.Down = $true
+            $edge.PressSince = $Now
+            $edge.Stuck = $false
+
             if ($edge.Locked) {
+                #
+                # The press is inside the quiet time of the last action, it
+                # is ignored.  The long press is marked as answered, so that
+                # the release of the button does not answer with a second
+                # action.
+                #
+                $edge.LongHandled = $true
                 return [pscustomobject]@{
                     Kind   = 'Ignored'
                     Action = 0
@@ -588,11 +611,11 @@ function Get-TimelmButtonDecision {
                 }
             }
 
-            $edge.Down = $true
             $edge.LongHandled = $false
 
             if ($Button.LongPress -le 0 -and $Button.ShortAction -ne 0) {
                 $edge.Locked = $true
+                $edge.LockedSince = $Now
                 return [pscustomobject]@{
                     Kind   = 'Short'
                     Action = $Button.ShortAction
@@ -610,10 +633,29 @@ function Get-TimelmButtonDecision {
         if (-not $edge.LongHandled -and $Button.LongPress -gt 0 -and $Held -ge $Button.LongPress) {
             $edge.LongHandled = $true
             $edge.Locked = $true
+            $edge.LockedSince = $Now
             return [pscustomobject]@{
                 Kind   = 'Long'
                 Action = $Button.LongAction
                 Reason = ('long press ({0} ms)' -f $Held)
+            }
+        }
+
+        #
+        # The contact of the button can stay closed for a long time.  A
+        # button that is held down is not a press that is answered again,
+        # and it must not keep the button locked for ever either.  The
+        # button is released and pressed again for a new answer.
+        #
+        if (-not $edge.Stuck -and ($Now - $edge.PressSince).TotalMilliseconds -ge $StuckMillis) {
+            $edge.Stuck = $true
+            $edge.Locked = $false
+            $edge.LockedSince = $Now
+            $edge.LongHandled = $true
+            return [pscustomobject]@{
+                Kind   = 'Ignored'
+                Action = 0
+                Reason = 'the contact of the button stayed closed, the button is released'
             }
         }
 
@@ -624,6 +666,7 @@ function Get-TimelmButtonDecision {
         $edge.Down = $false
         if (-not $edge.LongHandled -and $Button.LongPress -gt 0 -and $Button.ShortAction -ne 0) {
             $edge.Locked = $true
+            $edge.LockedSince = $Now
             return [pscustomobject]@{
                 Kind   = 'Short'
                 Action = $Button.ShortAction
@@ -645,6 +688,7 @@ function Get-TimelmButtonDecision {
     $quiet = ($Now - $edge.LastPressed).TotalMilliseconds
     if ($edge.Locked -and $quiet -ge $QuietMillis) {
         $edge.Locked = $false
+        $edge.LockedSince = $Now
     }
 
     return $null

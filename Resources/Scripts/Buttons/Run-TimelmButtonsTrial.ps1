@@ -624,18 +624,33 @@ finally {
     #
     try {
         $taskFile = Join-Path $env:SystemRoot 'System32\Tasks\TimelmButtonsTrial'
-        $output = & "$env:SystemRoot\System32\schtasks.exe" /Delete /TN '\TimelmButtonsTrial' /F 2>&1
+        # The command of the scheduler writes its own error into the stream
+        # of the errors, and the trial stops on every error.  The output is
+        # therefore read without the stream of the errors, so that a task
+        # that is not there does not stop the removal of the file.
+        $output = & "$env:SystemRoot\System32\schtasks.exe" /Delete /TN '\TimelmButtonsTrial' /F 2>$null
         if ($LASTEXITCODE -eq 0) {
             Write-Log 'the scheduled task of this trial was removed'
         } else {
             Write-Log ('the scheduled task was not there: ' + ($output -join ' '))
         }
+    } catch {
+        Write-Log ("removing the scheduled task failed: {0}" -f $_.Exception.Message)
+    }
+
+    #
+    # The file of the task is removed as well.  A task that was never
+    # registered by the scheduler is only a file, and the file has to go so
+    # that the next logon of the phone does not find it again.
+    #
+    try {
+        $taskFile = Join-Path $env:SystemRoot 'System32\Tasks\TimelmButtonsTrial'
         if (Test-Path -LiteralPath $taskFile) {
             Remove-Item -LiteralPath $taskFile -Force
             Write-Log 'the file of the scheduled task was removed'
         }
     } catch {
-        Write-Log ("removing the scheduled task failed: {0}" -f $_.Exception.Message)
+        Write-Log ("removing the file of the scheduled task failed: {0}" -f $_.Exception.Message)
     }
 
     # The phone always powers off cleanly at the end of the attempt, so that

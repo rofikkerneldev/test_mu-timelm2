@@ -50,6 +50,7 @@ param(
     [int]$VolumeDownLongPressMillis = 800,
     [string]$AssistTargetPath = (Join-Path $env:ProgramData 'Timelm\assist-target.txt'),
     [int]$QuietMillis = 500,
+    [int]$StuckMillis = 3000,
     [switch]$DisableLock,
     [switch]$DisableShutdown,
     [switch]$DryRun,
@@ -402,7 +403,8 @@ try {
                 -Button $button `
                 -Pressed $pressed `
                 -Held $held `
-                -QuietMillis $QuietMillis
+                -QuietMillis $QuietMillis `
+                -StuckMillis $StuckMillis
 
             if (-not $decision) { continue }
 
