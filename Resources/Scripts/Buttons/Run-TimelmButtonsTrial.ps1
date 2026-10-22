@@ -155,6 +155,38 @@ function Invoke-PnP([string]$Label, [string[]]$Arguments) {
     return $code
 }
 
+function Install-TestCertificate([string]$CerPath) {
+    <#
+        The driver is signed with the test certificate of the build machine.
+        Every CI run creates a new one, so the certificate of this package is
+        added to the machine stores before the driver is installed.  Without
+        that the driver would not start, Windows would report the unsigned
+        image.
+    #>
+    $certificate = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($CerPath)
+    $result = [ordered]@{
+        subject = $certificate.Subject
+        thumbprint = $certificate.Thumbprint
+        not_after = $certificate.NotAfter.ToString('o')
+        added = $false
+    }
+    foreach ($name in @('Root', 'TrustedPublisher')) {
+        $store = New-Object System.Security.Cryptography.X509Certificates.X509Store($name, 'LocalMachine')
+        try {
+            $store.Open('ReadWrite')
+            $known = $store.Certificates | Where-Object { $_.Thumbprint -eq $certificate.Thumbprint }
+            if (-not $known) {
+                $store.Add($certificate)
+                $result.added = $true
+            }
+            $store.Close()
+        } finally {
+            $store.Dispose()
+        }
+    }
+    return $result
+}
+
 $agentProcess = $null
 $trialError = $null
 $installed = $false
@@ -213,6 +245,17 @@ try {
     }
 
     Copy-SetupApiLog 'before'
+
+    # The test certificate of the build machine has to be trusted before the
+    # driver is installed, otherwise Windows refuses the image.
+    $cerPath = Join-Path $PackagePath 'TimelmButtons.cer'
+    if (Test-Path -LiteralPath $cerPath) {
+        $certificate = Install-TestCertificate $cerPath
+        Save-Json 'certificate.json' $certificate
+        Write-Log ("test certificate {0} thumbprint {1} added {2}" -f $certificate.subject, $certificate.thumbprint, $certificate.added)
+    } else {
+        Write-Log 'the package has no certificate file, the trust of the image is not changed'
+    }
 
     # Only one driver may own the ACPI\KONA1003 hardware id.  The driver that
     # is selected for the device right now is the one that has to go.
