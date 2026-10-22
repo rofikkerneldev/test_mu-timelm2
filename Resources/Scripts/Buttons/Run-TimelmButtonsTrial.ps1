@@ -752,8 +752,11 @@ finally {
     # the mass storage mode can be reached again for the log collection.
     Write-Log 'shutting down'
     try {
-        & "$env:SystemRoot\System32\shutdown.exe" /s /t 30 /c 'Timelm button trial complete. Logs saved; reconnect Mu Mass Storage.'
+        # /f closes the programs that would hold the shutdown back, the exit
+        # code of the request is written to the log.
+        & "$env:SystemRoot\System32\shutdown.exe" /s /t 30 /f /c 'Timelm button trial complete. Logs saved; reconnect Mu Mass Storage.'
         $shutdownRequested = ($LASTEXITCODE -eq 0)
+        Write-Log ("shutdown exit {0}" -f $LASTEXITCODE)
     } catch {
         Write-Log ("shutdown request failed: {0}" -f $_.Exception.Message)
     }

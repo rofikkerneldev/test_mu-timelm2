@@ -470,7 +470,7 @@ The log of the attempt 9 is still on the phone, it is read with the next
 staging (the staging archives the log of the phone into
 `previous-trial-logs` of the receipt).
 
-### Attempt 10, the mapping for the daily use (staged)
+### Attempt 10, the mapping for the daily use (proven)
 
 The user asked for a mapping that is easier to use, and the mapping is now
 a parameter of the trial and of the tool:
@@ -486,9 +486,48 @@ The four arrow keys are new actions of the agent (13, 14, 15 and 16).  The
 driver carries the number of the action without looking at it, so no new
 build of the driver is needed for them.
 
+The attempt 10 ran on the phone on 23.10.2026, 1200 s, with the mapping
+above.  The log of the agent (`E:\TimelmLogs\TimelmButtonsTrial\agent.log`)
+answers every press with the action of the mapping:
+
+| Action | Times | Action | Times |
+| --- | --- | --- | --- |
+| `UP` | 15 | `DOWN` | 60 |
+| `RIGHT` | 5 | `LEFT` | 4 |
+| `ENTER` | 12 | `TAB` | 9 |
+| the start menu | 17 | `shutdown /s` | 2 |
+
+The long press is measured by the driver: the volume and the assist key
+answered after 815 ms to 827 ms (limit 800 ms), the power key after 1515 ms
+and 1519 ms (limit 1500 ms).
+
+The **shutdown is no longer switched off**: the flag of the attempt 9
+(`-DisableShutdownAction`) is gone, and the agent logged
+`action shutdown /s` twice, at 00:49:15 and at 00:49:31 (phone clock).
+The phone did shut down, but only **two minutes later**: the last write of
+`System.evtx` and of `bootstat.dat` is 00:51:32 and there is no bugcheck
+dump, so the shutdown was clean and not a crash.  The request itself was
+blind before (the exit code of `shutdown.exe` was never read), so the two
+minutes could not be told apart from a request that was never accepted.
+
+The agent now measures the request:
+
+* `shutdown.exe /s /t 0 /f` (the `/f` closes the programs that would hold
+  the shutdown back),
+* the exit code of the helper is written to the log,
+* if the helper is refused, `ExitWindowsEx` asks for the same shutdown and
+  its answer is logged too.
+
+The trial ends with the same request (`shutdown /s /t 30 /f`) and writes the
+exit code into the log.
+
 ## What is still open
 
-* The **new mapping** of the attempt 10 is not proven on the phone yet.
+* The **shutdown of the long power press** is answered (the agent calls
+  `shutdown.exe`), but the phone needed two minutes for it on the attempt
+  10.  The next attempt reads the exit code of the request; the open
+  question is what holds the shutdown back (the attached USB mass storage
+  or an open program).
 * The **capture of the touch chip** in the recovery came out empty
   (`captures/touch/f-touch`): the chip is quiet in the recovery, so the
   capture has to run in Android, not in the recovery.

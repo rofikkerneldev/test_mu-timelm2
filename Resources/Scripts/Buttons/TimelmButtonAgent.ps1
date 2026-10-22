@@ -199,7 +199,38 @@ function Invoke-TimelmShutdown {
         return
     }
     Write-TimelmAgentLog 'action shutdown /s'
-    Start-Process -FilePath 'shutdown.exe' -ArgumentList '/s', '/t', '0', '/c', 'TimelmButtons long press' -WindowStyle Hidden
+    #
+    # The request is measured: the exit code of the helper and the answer of
+    # the native call are written to the log, so that a shutdown that stays
+    # away can be told apart from a request that was never accepted.
+    # /f closes the applications that would hold the shutdown back.
+    #
+    $exit = $null
+    try {
+        $process = Start-Process -FilePath "$env:SystemRoot\System32\shutdown.exe" `
+            -ArgumentList '/s', '/t', '0', '/f', '/c', 'TimelmButtons long press' `
+            -WindowStyle Hidden -PassThru
+        try { Wait-Process -Id $process.Id -Timeout 15 -ErrorAction Stop } catch { }
+        try { $exit = $process.ExitCode } catch { $exit = $null }
+        Write-TimelmAgentLog ('action shutdown exit {0}' -f $exit)
+    } catch {
+        Write-TimelmAgentLog ('action shutdown failed: {0}' -f $_.Exception.Message)
+    }
+    if ($null -ne $exit -and $exit -ne 0) {
+        # The helper was refused, the native call asks for the same shutdown.
+        try {
+            if (-not ('TimelmNative.ExitWindows' -as [type])) {
+                Add-Type -Namespace 'TimelmNative' -Name 'ExitWindows' -MemberDefinition @'
+[DllImport("user32.dll", SetLastError = true)]
+public static extern bool ExitWindowsEx(uint flags, uint reason);
+'@
+            }
+            $ok = [TimelmNative.ExitWindows]::ExitWindowsEx(4 -bor 1, 0)
+            Write-TimelmAgentLog ('action shutdown native returned {0}' -f $ok)
+        } catch {
+            Write-TimelmAgentLog ('action shutdown native failed: {0}' -f $_.Exception.Message)
+        }
+    }
 }
 
 function Invoke-TimelmWake {

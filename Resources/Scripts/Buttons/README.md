@@ -394,6 +394,40 @@ The four arrow keys are new actions of the agent (13, 14, 15 and 16).  The
 driver carries the number of the action without looking at it, so no new
 build of the driver is needed for them.
 
+The tenth attempt ran on the phone on 23.10.2026 (1200 s).  The log of the
+agent answers every press with the action of the mapping:
+
+| Action | Times | Action | Times |
+| --- | --- | --- | --- |
+| `UP` | 15 | `DOWN` | 60 |
+| `RIGHT` | 5 | `LEFT` | 4 |
+| `ENTER` | 12 | `TAB` | 9 |
+| the start menu | 17 | `shutdown /s` | 2 |
+
+The long press is measured by the driver: the volume and the assist key
+answered after 815 ms to 827 ms (limit 800 ms), the power key after 1515 ms
+and 1519 ms (limit 1500 ms).
+
+The **shutdown of the agent is not switched off any more** (the flag of the
+ninth attempt, `-DisableShutdown`, is gone).  The log shows the request
+twice (`action shutdown /s` at 00:49:15 and 00:49:31, phone clock), and the
+phone shut down **two minutes later** (the last write of `System.evtx` and
+of `bootstat.dat` is 00:51:32, no bugcheck dump: a clean shutdown).  The
+request was blind before, so the delay could not be told apart from a
+request that was never accepted.
+
+The agent now measures the request:
+
+```powershell
+# in the agent, the long press of the power key
+shutdown.exe /s /t 0 /f          # the exit code is written to the log
+# if the helper is refused:
+ExitWindowsEx(EWX_SHUTDOWN or EWX_FORCE, 0)
+```
+
+The trial ends with the same request (`shutdown /s /t 30 /f`) and writes the
+exit code into the log.
+
 ```powershell
 # PC, stage the attempt with the mapping
 pwsh -NoProfile -ExecutionPolicy Bypass -File Stage-TimelmButtonsTrial.ps1 `
