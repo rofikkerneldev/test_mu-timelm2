@@ -18,6 +18,7 @@ on:
       - 'Resources/Scripts/build_touch_enumeration.sh'
       - 'Resources/Scripts/build_touch_gpio_trial.sh'
       - 'Resources/Scripts/TouchGpio/**'
+      - 'Resources/Scripts/Buttons/**'
       - 'Resources/Scripts/generate_touch_enumeration.py'
       - 'Resources/Scripts/TouchEnumeration/**'
       - 'Platforms/LG/timelmPkg/Experimental/TouchWindows.asl'
@@ -42,6 +43,7 @@ on:
       - 'Resources/Scripts/build_touch_enumeration.sh'
       - 'Resources/Scripts/build_touch_gpio_trial.sh'
       - 'Resources/Scripts/TouchGpio/**'
+      - 'Resources/Scripts/Buttons/**'
       - 'Resources/Scripts/generate_touch_enumeration.py'
       - 'Resources/Scripts/TouchEnumeration/**'
       - 'Platforms/LG/timelmPkg/Experimental/TouchWindows.asl'
@@ -91,6 +93,24 @@ jobs:
         with:
           name: timelm-native-touch-gpio
           path: kona-packages/
+          if-no-files-found: warn
+  windows-buttons:
+    runs-on: windows-2022
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: rofikkerneldev/timelm_Drivers
+          ref: a0dcddd
+          path: buttons-source
+      - shell: pwsh
+        run: ./Resources/Scripts/Buttons/build_timelm_buttons.ps1 -Source ./buttons-source -Destination ./buttons-packages
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: timelm-native-buttons
+          path: buttons-packages/
           if-no-files-found: warn
   lifecycle-tests:
     runs-on: ubuntu-latest
