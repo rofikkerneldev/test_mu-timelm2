@@ -20,7 +20,7 @@ param(
     [int]$Seconds = 120,
     [ValidateSet('Agent', 'Hid', 'Both')]
     [string]$ButtonMode = 'Agent',
-    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu')]
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close')]
     [string]$AssistAction = 'StartMenu',
     [string]$AssistTarget = 'notepad.exe'
 )

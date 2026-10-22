@@ -42,7 +42,7 @@ param(
     [string]$InstallDirectory = (Join-Path $env:ProgramData 'Timelm'),
     [ValidateSet('Agent', 'Hid', 'Both')]
     [string]$Mode = 'Agent',
-    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu')]
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close')]
     [string]$AssistAction = 'StartMenu',
     [switch]$StartNow,
     [switch]$Uninstall

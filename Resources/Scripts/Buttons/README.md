@@ -47,8 +47,8 @@ TimelmButtons.sys (kernel, ACPI\KONA1003)
             |
 TimelmButtonAgent.ps1 (user mode, interactive session)
     -> WAIT / GET_STATE ioctl
-    -> SendInput: TAB / ENTER / Shift+F10 / Win
-    -> lock / wake the display / shutdown /s
+    -> SendInput: TAB / ENTER / Shift+F10 / Win / Alt+F4
+    -> display off and on / unlock the lock screen / shutdown /s
 ```
 
 The driver is the **only** access point to the button hardware, so the agent
@@ -84,17 +84,62 @@ scripts write a mapping that the installed driver understands.
 
 | Button | Short press | Long press |
 | --- | --- | --- |
-| Volume Up | `TAB` | - |
+| Volume Up | `TAB` | open the lock screen of a locked session (1500 ms) |
 | Volume Down | `ENTER` | `Shift+F10` (800 ms) |
-| Power | lock the workstation, wake the display if the session is locked | `shutdown /s` (1500 ms), clean shutdown |
-| Assist | the Windows key, the start menu opens | - |
+| Power | display off, the next press brings the display back | `shutdown /s` (1500 ms), clean shutdown |
+| Assist | the Windows key, the start menu opens | `Alt+F4`, close the window that has the focus (1500 ms) |
 
 The long press is detected with the press duration that the driver reports,
 so it does not depend on the accuracy of the polling loop.
 
-Windows has no native lock, so the power key always belongs to the agent.
-The volume keys do have a native counterpart, the HID face of the driver can
-take them over in the mode `Hid`.
+The **power key does not lock the session**.  A lock without a way to open
+it again is a trap on this phone: the touch screen does not work and there
+is no keyboard, so the lock screen would be the end of the session.  The
+eighth attempt showed exactly that.  A session that was locked by Windows
+itself is opened with the long press of the volume up key.
+
+The mode is written into the driver, so it can be changed while Windows runs
+(`Set-TimelmButtonMode.ps1`).
+
+### The actions of the agent
+
+| Number | Name | Meaning |
+| --- | --- | --- |
+| 0 | none | - |
+| 1 | Tab | `TAB` |
+| 2 | Enter | `ENTER` |
+| 3 | Shift+F10 | context menu |
+| 4 | Lock | lock the workstation |
+| 5 | Shutdown | `shutdown /s` |
+| 6 | Wake | turn the display on again |
+| 7 | Lock or wake | lock when the session is open, wake when it is locked |
+| 8 | Assist target | start the program of `%ProgramData%\Timelm\assist-target.txt` |
+| 9 | Start menu | the Windows key, the start menu of Windows opens |
+| 10 | Display toggle | the display of the phone goes off, the next press brings it back |
+| 11 | Unlock | open the lock screen of a locked session |
+| 12 | Close | `Alt+F4`, close the window that has the focus |
+
+The driver does **not** check the numbers, it only carries them from the
+mapping of the tool into the agent, so the three new actions (10, 11 and 12)
+need no new build of the driver.
+
+The display is turned off with `WM_SYSCOMMAND / SC_MONITORPOWER` and the
+value 0, it is turned on again with the value 1 and a small movement of the
+mouse.  The message is posted and not sent, a window that does not answer
+would block the agent for ever.  The agent holds
+`ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED` while it runs, so
+the idle timer of Windows does not turn the display off and the state of the
+display is only changed by the power key of the phone.
+
+The lock screen of a locked session lives on the secure desktop of
+`winlogon.exe`.  A process of the session cannot open that desktop (the
+error 5 "the access was denied" and the error 170 "the desktop was in
+use").  The unlock works with the identity of `winlogon.exe` instead: the
+token of that process is copied, the agent works as that identity for a
+moment, opens the `Winlogon` desktop and sends the return key there.  The
+account of the phone has **no password** (`AutoAdminLogon = 1`,
+`DefaultUserName = Administrator` and no `DefaultPassword`), so the return
+key signs the user in.
 
 ## Usage
 
@@ -273,24 +318,73 @@ Two findings are important for the next attempt:
 The attempt had no button event at all, the window of 240 seconds was too
 short for the test.
 
-### Result of the eighth attempt (staged)
+### Result of the eighth attempt (2026-10-22)
 
-The eighth attempt is armed with a Startup entry as well, with a window of
-900 seconds.
+The eighth attempt ran from 22:56 until 23:07, the receipts are in
+`receipts/buttons-attempt8/trial-logs`.
 
-The helper of the edges was changed after the seventh attempt.  The log of
-the fifth attempt had 523 lines of
+The **button path** is good:
+
+| Key | Result |
+| --- | --- |
+| Assist short | the start menu opens |
+| Volume Up short | `TAB` |
+| Volume Down short | `ENTER` |
+| Volume Down long | `Shift+F10` |
+
+The **power key** is the part that fails.  The agent answered every press
+with `action lock returned True` and the wake never came back:
 
 ```
-Power down ignored, the button is still locked after the last action
+wake input desktop error 5      (the access to the secure desktop was denied)
+wake input desktop error 170    (the desktop was in use)
+the input desktop is ????|0     (the name could not be read)
+the input desktop is <none>|5
 ```
 
-The helper marked a button as down only when the press was answered, so a
-press inside the quiet time was ignored again and again, and the time of
-the last press was moved forward by every sample of the held button, so the
-quiet time never ended.  The press that is ignored marks the button as down
-and the long press as answered now, and a contact that stays closed for
-three seconds (`-StuckMillis`) gives the lock up.
+The lock of a session that cannot be opened again is a trap on this phone,
+the touch screen does not work and there is no keyboard, so the user was
+left in the lock screen and no key could leave it.  The mapping of the
+ninth attempt is therefore different:
+
+* the short press of the power key turns the **display** off and on again
+  and does not lock the session,
+* the long press of the **volume up** key opens the lock screen of a
+  session that was locked by Windows itself,
+* the long press of the **assist** key closes the window that has the
+  focus (`Alt+F4`).
+
+## The status of the buses
+
+`Collect-TimelmPciStatus.ps1` collects the state of the buses of the
+machine, it is the evidence for the touch driver.  The trial calls it at
+the beginning of the attempt, before the buttons are tested, so that a
+problem of the machine is told apart from a problem of the driver of the
+buttons.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File Collect-TimelmPciStatus.ps1 `
+    -OutputDirectory C:\TimelmLogs\TimelmPciStatus
+```
+
+The report has two files, `pci-status.json` for the machines and
+`pci-status.txt` for the eye:
+
+| Part | Content |
+| --- | --- |
+| summary | the number of the devices of every class, the number of the devices with a problem, the number of the devices that are not there |
+| pci | every device of the bus PCI with its status, its problem code, its driver and its place in the bus |
+| problems | every device of every class with a problem code (the code 45 means "not there" and is not a problem) |
+| acpi | the devices of the class ACPI, the touch controller of the phone is behind one of them |
+| i2c | the controllers of the class I2C |
+| registry | the entries of `Enum\PCI` and `Enum\ACPI` with their driver and their device parameters |
+| events | the entries of the system log that talk about `PCI`, `PCIe`, `WHEA`, `ACPI`, `I2C` or the touch |
+| pnputil | the output of `pnputil /enum-devices /problem` |
+
+The class of a device of the bus PCI is not always "PCI", a root complex
+of a laptop shows up as a device of the class System.  The report therefore
+uses the name of the instance (`PCI\...`) and not the class.
+
 
 ## The assist key
 
@@ -342,7 +436,10 @@ held.  The result can be written back with `SET_MAPPING`
   DSDT.  Only one driver may own that hardware id, so `PMIC.inf` has to be
   removed first (`pnputil /delete-driver oem2.inf /uninstall`).
 * The agent has to run in the interactive user session, `SendInput` and
-  `LockWorkStation` do not work from a service.
+  the switch of the input desktop do not work from a service.
+* The trial hides its own console window, otherwise the `Alt+F4` of the
+  assist key would close the console of the trial instead of the window
+  that has the focus.
 * Windows itself may also react to the power key through the ACPI button
   driver, which can produce a shutdown prompt in addition to the action of
   the agent.

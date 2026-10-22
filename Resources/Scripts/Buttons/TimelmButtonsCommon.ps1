@@ -96,6 +96,76 @@ public static class TimelmButtonsNative
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
 
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "OpenDesktopW")]
+    public static extern IntPtr OpenDesktop(string lpszDesktop, uint dwFlags, bool fInherit, uint dwDesiredAccess);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr GetConsoleWindow();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern uint GetCurrentProcessId();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, int dwProcessId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool ProcessIdToSessionId(uint dwProcessId, out uint lpSessionId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr CreateToolhelp32Snapshot(uint dwFlags, uint th32ProcessID);
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern bool Process32FirstW(IntPtr hSnapshot, ref PROCESSENTRY32 lppe);
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern bool Process32NextW(IntPtr hSnapshot, ref PROCESSENTRY32 lppe);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    public static extern bool OpenProcessToken(IntPtr ProcessHandle, uint DesiredAccess, out IntPtr TokenHandle);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    public static extern bool DuplicateTokenEx(IntPtr hExistingToken, uint dwDesiredAccess, IntPtr lpTokenAttributes, int ImpersonationLevel, int TokenType, out IntPtr phNewToken);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    public static extern bool ImpersonateLoggedOnUser(IntPtr hToken);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    public static extern bool RevertToSelf();
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern short VkKeyScanW(char ch);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct PROCESSENTRY32
+    {
+        public uint dwSize;
+        public uint cntUsage;
+        public uint th32ProcessID;
+        public IntPtr th32DefaultHeapID;
+        public uint th32ModuleID;
+        public uint cntThreads;
+        public uint th32ParentProcessID;
+        public int pcPriClassBase;
+        public uint dwFlags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+        public string szExeFile;
+    }
+
     public const uint GENERIC_READ = 0x80000000;
     public const uint GENERIC_WRITE = 0x40000000;
     public const uint FILE_SHARE_READ = 1;
@@ -116,6 +186,18 @@ public static class TimelmButtonsNative
     public const int UOI_NAME = 2;
     public const uint DESKTOP_READOBJECTS = 0x0001;
     public const uint DESKTOP_SWITCHDESKTOP = 0x0100;
+    public const uint DESKTOP_WRITEOBJECTS = 0x0080;
+
+    //
+    // The tokens of the process that owns the secure desktop.
+    //
+    public const uint TOKEN_ASSIGN_PRIMARY = 0x0001;
+    public const uint TOKEN_DUPLICATE = 0x0002;
+    public const uint TOKEN_QUERY = 0x0008;
+    public const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+    public const int SecurityImpersonation = 2;
+    public const int TokenPrimary = 1;
+    public const uint TH32CS_SNAPPROCESS = 0x00000002;
 
     //
     // SendMessage
@@ -349,6 +431,354 @@ public static class TimelmButtonsNative
     }
 
     //
+    // Keeps the system awake.  The display stays on as long as it is asked
+    // for, so the state of the display is only changed by the power key of
+    // the phone and not by the idle timer of Windows.
+    //
+    public static int SetKeepAwake(bool displayRequired)
+    {
+        uint flags = ES_CONTINUOUS | ES_SYSTEM_REQUIRED;
+        if (displayRequired)
+        {
+            flags |= ES_DISPLAY_REQUIRED;
+        }
+
+        SetThreadExecutionState(flags);
+        return 0;
+    }
+
+    //
+    // Turns the display of the phone off and on again.
+    //
+    // The power key of a phone turns the display off and on again, it does
+    // not lock the session.  The session stays open, so the same key brings
+    // the user back to the desktop.  A lock without a way to open it again
+    // would be a trap, the phone has no working touch screen.
+    //
+    // The request goes to the power manager of Windows as a broadcast, the
+    // value 0 turns the display off and the value 1 turns it on.
+    //
+    public static int SetDisplayPower(bool on)
+    {
+        SetKeepAwake(on);
+
+        //
+        // The message is posted and not sent, a window that does not answer
+        // would block the agent for ever.  The value 0 turns the display off
+        // and the value 1 turns it on.
+        //
+        PostMessage(HWND_BROADCAST, WM_SYSCOMMAND,
+                    new IntPtr((int)SC_MONITORPOWER),
+                    new IntPtr(on ? 1 : 0));
+
+        if (on)
+        {
+            NudgeMouse();
+        }
+
+        return 0;
+    }
+
+    //
+    // Closes the window that has the focus, the same way as Alt+F4.
+    //
+    // The window of the agent itself is never closed, that would stop the
+    // agent, and a console window is skipped as well, the trial would end
+    // with it.
+    //
+    public static int CloseForegroundWindow()
+    {
+        IntPtr foreground = GetForegroundWindow();
+        if (foreground == IntPtr.Zero)
+        {
+            return 1001;
+        }
+
+        uint processId = 0;
+        GetWindowThreadProcessId(foreground, out processId);
+
+        if (processId == GetCurrentProcessId())
+        {
+            return 1002;
+        }
+
+        System.Text.StringBuilder className = new System.Text.StringBuilder(256);
+        GetClassName(foreground, className, className.Capacity);
+
+        if (className.ToString() == "ConsoleWindowClass")
+        {
+            return 1003;
+        }
+
+        INPUT[] inputs = new INPUT[4];
+
+        inputs[0].type = INPUT_KEYBOARD;
+        inputs[0].u.ki.wVk = 0x12;   // VK_MENU
+
+        inputs[1].type = INPUT_KEYBOARD;
+        inputs[1].u.ki.wVk = 0x73;   // VK_F4
+        inputs[1].u.ki.dwFlags = KEYEVENTF_EXTENDEDKEY;
+
+        inputs[2].type = INPUT_KEYBOARD;
+        inputs[2].u.ki.wVk = 0x73;   // VK_F4
+        inputs[2].u.ki.dwFlags = KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP;
+
+        inputs[3].type = INPUT_KEYBOARD;
+        inputs[3].u.ki.wVk = 0x12;   // VK_MENU
+        inputs[3].u.ki.dwFlags = KEYEVENTF_KEYUP;
+
+        SendInput(4, inputs, Marshal.SizeOf(typeof(INPUT)));
+
+        return 0;
+    }
+
+    //
+    // Hides the console window of the process.  The trial and the agent
+    // should not stand in front of the windows of the user, otherwise the
+    // key that closes a window would close the console of the trial.
+    //
+    public static int HideConsoleWindow()
+    {
+        IntPtr console = GetConsoleWindow();
+        if (console == IntPtr.Zero)
+        {
+            return 1001;
+        }
+
+        ShowWindow(console, 0);
+        return 0;
+    }
+
+    //
+    // Opens the lock screen of a locked session.
+    //
+    // The lock screen lives on the "Winlogon" desktop of the secure
+    // desktop.  A process of the session cannot open that desktop, the
+    // access is denied (the trial of the attempt 8 showed the error 5).
+    // The way to reach it is to work with the identity of winlogon.exe,
+    // the process that owns the secure desktop.
+    //
+    // The call runs in a thread of its own, because a thread that was moved
+    // to the secure desktop cannot be trusted to work on the desktop of the
+    // session any more.  The thread ends right afterwards.
+    //
+    // The account of the phone has no password, so the second key press
+    // signs the user in.
+    //
+    public static int UnlockSecureDesktop(string password)
+    {
+        int[] result = new int[1];
+        result[0] = 2000;
+
+        System.Threading.Thread worker = new System.Threading.Thread(delegate()
+        {
+            result[0] = UnlockSecureDesktopOnWorker(password);
+        });
+
+        worker.IsBackground = true;
+        worker.Start();
+        worker.Join(8000);
+
+        return result[0];
+    }
+
+    private static int UnlockSecureDesktopOnWorker(string password)
+    {
+        uint session = 0;
+        ProcessIdToSessionId(GetCurrentProcessId(), out session);
+
+        int winlogon = FindProcessInSession("winlogon.exe", session);
+        if (winlogon == 0)
+        {
+            return 2001;
+        }
+
+        IntPtr process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, winlogon);
+        if (process == IntPtr.Zero)
+        {
+            return 2002;
+        }
+
+        IntPtr token = IntPtr.Zero;
+        IntPtr duplicate = IntPtr.Zero;
+        IntPtr desktop = IntPtr.Zero;
+
+        try
+        {
+            if (!OpenProcessToken(process,
+                                  TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_QUERY,
+                                  out token))
+            {
+                return 2003;
+            }
+
+            if (!DuplicateTokenEx(token,
+                                  TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY,
+                                  IntPtr.Zero,
+                                  SecurityImpersonation,
+                                  TokenPrimary,
+                                  out duplicate))
+            {
+                return 2004;
+            }
+
+            if (!ImpersonateLoggedOnUser(duplicate))
+            {
+                return 2005;
+            }
+
+            desktop = OpenDesktop("Winlogon", 0, false,
+                                   DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS | DESKTOP_SWITCHDESKTOP);
+            if (desktop == IntPtr.Zero)
+            {
+                return 2006;
+            }
+
+            if (!SetThreadDesktop(desktop))
+            {
+                return 2007;
+            }
+
+            //
+            // The lock screen shows the clock, the first key dismisses it
+            // and shows the sign in, the second key sends the password.
+            //
+            SendVirtualKey(0x0D);   // VK_RETURN
+            System.Threading.Thread.Sleep(800);
+
+            if (!string.IsNullOrEmpty(password))
+            {
+                SendText(password);
+                System.Threading.Thread.Sleep(200);
+            }
+
+            SendVirtualKey(0x0D);   // VK_RETURN
+            System.Threading.Thread.Sleep(200);
+
+            return 0;
+        }
+        finally
+        {
+            RevertToSelf();
+
+            if (desktop != IntPtr.Zero) { CloseDesktop(desktop); }
+            if (duplicate != IntPtr.Zero) { CloseHandle(duplicate); }
+            if (token != IntPtr.Zero) { CloseHandle(token); }
+            CloseHandle(process);
+        }
+    }
+
+    //
+    // The process id of a program in a session, 0 when it was not found.
+    //
+    private static int FindProcessInSession(string name, uint session)
+    {
+        IntPtr snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (snapshot == IntPtr.Zero || snapshot == new IntPtr(-1))
+        {
+            return 0;
+        }
+
+        try
+        {
+            PROCESSENTRY32 entry = new PROCESSENTRY32();
+            entry.dwSize = (uint)Marshal.SizeOf(typeof(PROCESSENTRY32));
+
+            if (!Process32FirstW(snapshot, ref entry))
+            {
+                return 0;
+            }
+
+            do
+            {
+                if (string.Compare(entry.szExeFile, name, true) != 0)
+                {
+                    continue;
+                }
+
+                uint processSession = 0;
+                if (!ProcessIdToSessionId((uint)entry.th32ProcessID, out processSession))
+                {
+                    continue;
+                }
+
+                if (processSession == session)
+                {
+                    return (int)entry.th32ProcessID;
+                }
+            }
+            while (Process32NextW(snapshot, ref entry));
+        }
+        finally
+        {
+            CloseHandle(snapshot);
+        }
+
+        return 0;
+    }
+
+    //
+    // A key press of the virtual key code.
+    //
+    private static void SendVirtualKey(ushort virtualKey)
+    {
+        INPUT[] inputs = new INPUT[2];
+
+        inputs[0].type = INPUT_KEYBOARD;
+        inputs[0].u.ki.wVk = virtualKey;
+
+        inputs[1].type = INPUT_KEYBOARD;
+        inputs[1].u.ki.wVk = virtualKey;
+        inputs[1].u.ki.dwFlags = KEYEVENTF_KEYUP;
+
+        SendInput(2, inputs, Marshal.SizeOf(typeof(INPUT)));
+    }
+
+    //
+    // Types a text, only the characters of the keyboard of the United
+    // States are supported.
+    //
+    private static void SendText(string text)
+    {
+        foreach (char character in text)
+        {
+            short scan = VkKeyScanW(character);
+            if (scan == -1)
+            {
+                continue;
+            }
+
+            ushort virtualKey = (ushort)(scan & 0xFF);
+            bool shift = ((scan >> 8) & 1) != 0;
+            bool control = ((scan >> 8) & 2) != 0;
+
+            if (control)
+            {
+                SendVirtualKey(0x11);   // VK_CONTROL
+            }
+
+            if (shift)
+            {
+                SendVirtualKey(0x10);   // VK_SHIFT
+            }
+
+            SendVirtualKey(virtualKey);
+
+            if (shift)
+            {
+                SendVirtualKey(0x10);
+            }
+
+            if (control)
+            {
+                SendVirtualKey(0x11);
+            }
+
+            System.Threading.Thread.Sleep(30);
+        }
+    }
+
+    //
     // The name of the desktop that has the input focus.  While the
     // workstation is locked it is the "Winlogon" desktop of the secure
     // desktop, otherwise it is the "Default" desktop of the session.
@@ -491,6 +921,9 @@ $script:TimelmAgentAction = @{
     LockOrWake   = 7
     LaunchTarget = 8
     StartMenu    = 9
+    DisplayToggle = 10
+    Unlock        = 11
+    Close         = 12
 }
 
 function Get-TimelmAgentActionName {
@@ -911,15 +1344,21 @@ function ConvertTo-TimelmButtonMapping {
       The mode decides who reacts to a short press:
 
         Agent  the agent answers with TAB, ENTER, the assist target and the
-               lock (the default)
+               display (the default)
         Hid    the driver reports a native volume key, the agent only
                answers a long press and the short press of the power key
         Both   both of them react, only useful to see the two paths at once
 
       The short press of the power key always belongs to the agent, Windows
-      has no native lock and would show its power menu instead.  It locks
-      the workstation when it is unlocked and wakes the display when the
-      session is locked.
+      has no native lock and would show its power menu instead.  It turns
+      the display of the phone off and on again, the session stays open.
+      A lock without a way to open it again would be a trap, the phone has
+      no working touch screen and no keyboard.
+
+      The long press of the power key shuts the phone down, the long press
+      of the volume up key opens the lock screen of a locked session and
+      the long press of the assist key closes the window that has the
+      focus.
 
       The version decides the size of the structure: 200 byte for the current
       driver with four buttons, 152 byte for the driver of the second
@@ -941,6 +1380,11 @@ function ConvertTo-TimelmButtonMapping {
         [ValidateSet('Agent', 'Hid', 'Both')]
         [string]$Mode = 'Agent',
         [int]$PowerLongPressMillis = 1500,
+        [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close')]
+        [string]$PowerAction = 'DisplayToggle',
+        [int]$VolumeUpLongPressMillis = 1500,
+        [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close')]
+        [string]$VolumeUpLongAction = 'Unlock',
         [int]$VolumeDownLongPressMillis = 800,
         [ValidateSet(1, 2, 3)]
         [int]$Version = 3,
@@ -948,9 +1392,11 @@ function ConvertTo-TimelmButtonMapping {
         [int]$AssistAddress = 0xC010,
         [int]$AssistMask = 0x01,
         [int]$AssistPolarity = 1,
-        [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu')]
+        [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close')]
         [string]$AssistAction = 'StartMenu',
-        [int]$AssistLongPressMillis = 0
+        [int]$AssistLongPressMillis = 1500,
+        [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close')]
+        [string]$AssistLongAction = 'Close'
     )
 
     $size = 200
@@ -984,8 +1430,8 @@ function ConvertTo-TimelmButtonMapping {
         # The actions of the three buttons: power, volume up, volume down.
         #
         $actions = @(
-            @($script:TimelmHidAction.PowerDown, $PowerLongPressMillis, $script:TimelmAgentAction.LockOrWake, $script:TimelmAgentAction.Shutdown),
-            @($script:TimelmHidAction.VolumeIncrement, 0, $script:TimelmAgentAction.Tab, $script:TimelmAgentAction.None),
+            @($script:TimelmHidAction.PowerDown, $PowerLongPressMillis, $script:TimelmAgentAction[$PowerAction], $script:TimelmAgentAction.Shutdown),
+            @($script:TimelmHidAction.VolumeIncrement, $VolumeUpLongPressMillis, $script:TimelmAgentAction.Tab, $script:TimelmAgentAction[$VolumeUpLongAction]),
             @($script:TimelmHidAction.VolumeDecrement, $VolumeDownLongPressMillis, $script:TimelmAgentAction.Enter, $script:TimelmAgentAction.ShiftF10)
         )
 
@@ -1048,7 +1494,7 @@ function ConvertTo-TimelmButtonMapping {
         [void][BitConverter]::GetBytes([uint32]$script:TimelmHidAction.None).CopyTo($mapping, 176)
         [void][BitConverter]::GetBytes([uint32]$AssistLongPressMillis).CopyTo($mapping, 180)
         [void][BitConverter]::GetBytes([uint32]$script:TimelmAgentAction[$AssistAction]).CopyTo($mapping, 184)
-        [void][BitConverter]::GetBytes([uint32]$script:TimelmAgentAction.None).CopyTo($mapping, 188)
+        [void][BitConverter]::GetBytes([uint32]$script:TimelmAgentAction[$AssistLongAction]).CopyTo($mapping, 188)
         [void][BitConverter]::GetBytes([uint32]0).CopyTo($mapping, 192)
     }
 

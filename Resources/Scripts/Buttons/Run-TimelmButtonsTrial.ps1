@@ -36,7 +36,7 @@ param(
     [switch]$KeepDriver,
     [ValidateSet('Agent', 'Hid', 'Both')]
     [string]$ButtonMode = 'Agent',
-    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu')]
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close')]
     [string]$AssistAction = 'StartMenu',
     [string]$AssistTarget = 'notepad.exe'
 )
@@ -119,6 +119,35 @@ if (-not $shellReady) {
 }
 
 . (Join-Path $PSScriptRoot 'TimelmButtonsCommon.ps1')
+
+#
+# The console of the trial should not stand in front of the windows of the
+# user, otherwise the key that closes a window would close the console of
+# the trial.  The log of the trial is the receipt of the attempt.
+#
+try {
+    [void][TimelmButtonsNative]::HideConsoleWindow()
+} catch {
+    Write-Log ('the console could not be hidden: {0}' -f $_.Exception.Message)
+}
+
+#
+# The status of the buses is the evidence for the touch driver.  It is
+# collected at the beginning of the trial, before the buttons are tested,
+# so that a problem of the machine is told apart from a problem of the
+# driver of the buttons.
+#
+$pciCollector = Join-Path $PSScriptRoot 'Collect-TimelmPciStatus.ps1'
+if (Test-Path -LiteralPath $pciCollector) {
+    try {
+        & $pciCollector -OutputDirectory $ResultPath -Quiet
+        Write-Log 'the status of the buses was collected'
+    } catch {
+        Write-Log ('the status of the buses could not be collected: {0}' -f $_.Exception.Message)
+    }
+} else {
+    Write-Log 'the collector of the status of the buses is not there'
+}
 
 if (-not $PackagePath) {
     $PackagePath = Join-Path $PSScriptRoot 'Drivers\Buttons'
@@ -506,14 +535,32 @@ try {
         $mappingVersion = Get-TimelmButtonMappingVersion -Handle $handle
         $mapping = ConvertTo-TimelmButtonMapping -Mode $ButtonMode -Version $mappingVersion -AssistAction $AssistAction
         Set-TimelmButtonMapping -Handle $handle -Mapping $mapping
+        $readBack = Get-TimelmButtonMapping -Handle $handle
         $modeRecord = [ordered]@{
             mode = $ButtonMode
             mapping_version = $mappingVersion
             assist_action = $AssistAction
+            actions = @(
+                foreach ($action in $readBack.Action) {
+                    [ordered]@{
+                        index = $action.Index
+                        long_press_ms = $action.LongPressMillis
+                        short = Get-TimelmAgentActionName $action.AgentShortAction
+                        long = Get-TimelmAgentActionName $action.AgentLongAction
+                    }
+                }
+            )
             utc = [DateTime]::UtcNow.ToString('o')
         }
         Save-Json 'button-mode.json' $modeRecord
         Write-Log ("button mode {0}, mapping version {1}, assist action {2}" -f $ButtonMode, $mappingVersion, $AssistAction)
+        foreach ($action in $readBack.Action) {
+            Write-Log ("button {0}: short {1}, long {2} after {3} ms" -f `
+                (Get-TimelmButtonName (1 -shl $action.Index)),
+                (Get-TimelmAgentActionName $action.AgentShortAction),
+                (Get-TimelmAgentActionName $action.AgentLongAction),
+                $action.LongPressMillis)
+        }
 
         # The agent is started after the mapping is written, so that it uses
         # the mapping of this attempt and not the one of an earlier run.

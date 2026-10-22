@@ -93,29 +93,34 @@ as well and is retried while `SPMI.sys` is not up yet.
 
 | Button | Short press | Long press |
 | --- | --- | --- |
-| Volume Up | `TAB` | - |
+| Volume Up | `TAB` | open the lock screen (1500 ms) |
 | Volume Down | `ENTER` | `Shift+F10` (800 ms) |
-| Power | lock the workstation, wake the display if the session is locked | `shutdown /s` (1500 ms), clean shutdown |
-| Assist | the Windows key, the start menu opens | - |
+| Power | display off, press again for display on | `shutdown /s` (1500 ms), clean shutdown |
+| Assist | the Windows key, the start menu opens | `Alt+F4`, close the window that has the focus (1500 ms) |
 
 The long press is detected with the press duration that the driver reports,
 so it does not depend on the accuracy of the polling loop. The power long
 press is the only path that ends the session, and it uses `shutdown /s`, so
 Windows still shuts down cleanly.
 
-The agent has to run in the interactive user session: `SendInput` and
-`LockWorkStation` do not work from a service in session 0.
+The power key does **not** lock the session.  A lock without a way to open
+it again is a trap on this phone: the touch screen does not work and there
+is no keyboard, so the lock screen would be the end of the session.  The
+attempt 8 showed exactly that (see the result of the attempt 8 below).
+
+The agent has to run in the interactive user session: `SendInput` does not
+work from a service in session 0.
 
 ### Who answers a press
 
-Windows has no native counterpart for the lock, so the power key always
+Windows has no native counterpart for the display, so the power key always
 belongs to the agent. The two volume keys do have one, so the HID face of
 the driver can take them over. Three modes are possible:
 
 | Mode | Volume keys | Power key | Assist key |
 | --- | --- | --- | --- |
 | `Agent` | TAB / ENTER / Shift+F10 through the agent | agent | agent |
-| `Hid` | the volume flyout of Windows, through the HID face of the driver | agent (lock or wake) | agent |
+| `Hid` | the volume flyout of Windows, through the HID face of the driver | agent (display off and on) | agent |
 | `Both` | both at once, only good for a test | both at once | agent |
 
 The mode is written into the driver, so it can be changed while Windows runs
@@ -135,25 +140,32 @@ The mode is written into the driver, so it can be changed while Windows runs
 | 7 | Lock or wake | lock when the session is open, wake when it is locked |
 | 8 | Assist target | start the program of `%ProgramData%\Timelm\assist-target.txt` |
 | 9 | Start menu | the Windows key, the start menu of Windows opens |
+| 10 | Display toggle | the display of the phone goes off, the next press brings it back |
+| 11 | Unlock | open the lock screen of a locked session |
+| 12 | Close | `Alt+F4`, close the window that has the focus |
 
-The assist key uses the action 9 by default, so that the button of the
-phone opens the start menu of Windows. The action 8 exists for every other
-function, the target of the key is then a text file with a command line.
+The driver does not check the numbers, it only carries them from the mapping
+of the tool into the agent, so the three new actions need no new build of
+the driver.  The action 4 and the action 7 stay in the table, they are the
+answer to a session that was locked by Windows itself.
 
-Windows has no wake button of its own, so the wake is done by the agent: it
-calls `SetThreadExecutionState(ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED)`,
-sends `WM_SYSCOMMAND / SC_MONITORPOWER` to all windows and nudges the mouse.
-The input of `SendInput` only arrives at the desktop of the thread of the
-caller, so a helper in a short lived process moves itself to the input
-desktop of the session and sends a harmless key there.  That desktop is the
-secure desktop of a locked session, so the lock screen wakes up.
+The display is turned off with `WM_SYSCOMMAND / SC_MONITORPOWER` and the
+value 0, it is turned on again with the value 1 and a small movement of the
+mouse.  The message is posted and not sent, a window that does not answer
+would block the agent for ever.  The agent holds
+`ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED` while it runs, so
+the idle timer of Windows does not turn the display off and the state of
+the display is only changed by the power key of the phone.
 
-Whether the session is locked is read from the name of the input desktop
-(`OpenInputDesktop` plus `GetUserObjectInformation(UOI_NAME)`); on a locked
-session the name is `Winlogon`.  That name is not a reliable source on this
-board (see attempt 4), so the power key is a **toggle**: the press after a
-lock is a wake, and the name of the desktop is only the evidence for the
-first press and for the log.
+The lock screen of a locked session lives on the secure desktop of
+`winlogon.exe`.  A process of the session cannot open that desktop, the
+attempt 8 showed the error 5 (the access was denied) and the error 170 (the
+desktop was in use).  The unlock works with the identity of `winlogon.exe`
+instead: the token of that process is copied, the agent works as that
+identity for a moment, opens the `Winlogon` desktop and sends the return
+key there.  The account of the phone has **no password**
+(`AutoAdminLogon = 1`, `DefaultUserName = Administrator` and no
+`DefaultPassword`), so the return key signs the user in.
 
 ## Control codes
 
@@ -386,16 +398,60 @@ ever.  The press that is ignored marks the button as down and the long
 press as answered now, and a contact that stays closed for three seconds
 gives the lock up, the button has to be released and pressed again.
 
+#### The result of the attempt 8 (2026-10-22)
+
+The trial ran from 22:56 until 23:07, the log of the agent is in
+`receipts/buttons-attempt8/trial-logs/agent.log`.
+
+* The **assist key** answers with the start menu, the **volume up** key
+  with `TAB` and the **volume down** key with `ENTER` and with `Shift+F10`
+  after 800 ms.  The bouncing contact of the assist key answers only once.
+* The **power key** locked the session again and again
+  (`action lock returned True`), and the wake did not come back:
+  `wake input desktop error 5` (the access to the secure desktop was
+  denied) and `wake input desktop error 170` (the desktop was in use).
+  The name of the input desktop could not be read either
+  (`the input desktop is ????|0` and `the input desktop is <none>|5`).
+
+The button path itself is good, the **lock** is the part that fails.  The
+lock of a session that cannot be opened again is a trap on this phone, the
+touch screen does not work and there is no keyboard, so the user was left
+in the lock screen (blue background and the clock) and no key could leave
+it.  The mapping of the attempt 9 is therefore different:
+
+* the short press of the power key turns the **display** off and on again
+  and does not lock the session,
+* the long press of the **volume up** key opens the lock screen of a
+  session that was locked by Windows itself,
+* the long press of the **assist** key closes the window that has the
+  focus (`Alt+F4`).
+
+The account of the phone has no password (`AutoAdminLogon = 1`,
+`DefaultUserName = Administrator`, no `DefaultPassword`), so the return key
+is enough to sign in.
+
+#### The status of the buses
+
+The trial collects the status of the buses before it tests the buttons
+(`Collect-TimelmPciStatus.ps1`), so that a problem of the machine is told
+apart from a problem of the driver of the buttons.  The report has the
+devices of the bus PCI with their status and their place in the bus, the
+devices with a problem, the devices of the class ACPI (the touch controller
+of the phone is behind one of them), the controllers of the class I2C, the
+entries of `Enum\PCI` and `Enum\ACPI` and the entries of the system log
+that talk about `PCI`, `PCIe`, `WHEA`, `ACPI`, `I2C` or the touch.
+
 ## What is still open
 
-* The **wake** of the display is the only part of the button path that is
-  not proven on the phone.  The assist key works (attempt 4), the lock works
-  (attempt 4), the wake is the subject of attempt 5.
+* The **display** of the power key and the **unlock** of the volume up key
+  are the parts of the new mapping that are not proven on the phone yet.
+  The unlock cannot be tested while the session stays open, it needs a
+  session that was locked by Windows itself.
 * The **capture of the touch chip** in the recovery came out empty
   (`captures/touch/f-touch`): the chip is quiet in the recovery, so the
   capture has to run in Android, not in the recovery.
-* Windows does not react to the power key with a wake, the agent has to do
-  it.  The wake is not proven by a measurement on the phone yet.
+* The status of the buses of the phone has to be read on the phone itself,
+  the report of the attempt 9 is the first one.
 
 ## Risks
 
@@ -408,3 +464,7 @@ gives the lock up, the button has to be released and pressed again.
   the state the board was in before this path.
 * The PMIC is read through `SPMI.sys`. While that driver is not running the
   button driver stays in the "not ready" state and retries every 500 ms.
+* The unlock works with the identity of `winlogon.exe`, that needs the
+  right to impersonate.  The agent runs as the administrator of the phone,
+  the right is part of that account.
+

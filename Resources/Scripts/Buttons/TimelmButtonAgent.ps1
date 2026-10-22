@@ -10,15 +10,17 @@
   the behaviour can be changed at run time without a new build:
 
       Volume Up            short press            -> TAB
+      Volume Up            long press (1500 ms)   -> open the lock screen
       Volume Down          short press            -> ENTER
       Volume Down          long press (800 ms)    -> Shift+F10 (context menu)
-      Power                short press            -> lock the workstation,
-                                                   wake the display when
-                                                   the session is locked
+      Power                short press            -> display off, press again
+                                                    for display on
       Power                long press (1500 ms)   -> shutdown /s (clean shutdown)
       Assist               short press            -> the Windows key (the
-                                                   start menu), or the
-                                                   program of the target file
+                                                    start menu), or the
+                                                    program of the target file
+      Assist               long press (1500 ms)   -> Alt+F4, close the window
+                                                    that has the focus
 
   With the mapping in the mode "Hid" the short press is not answered by the
   agent at all.  The driver then reports the button to Windows as a real
@@ -47,8 +49,11 @@ param(
     [string]$LogPath = (Join-Path $env:ProgramData 'Timelm\button-agent.log'),
     [int]$WaitTimeoutMillis = 250,
     [int]$PowerLongPressMillis = 1500,
+    [int]$VolumeUpLongPressMillis = 1500,
     [int]$VolumeDownLongPressMillis = 800,
+    [int]$AssistLongPressMillis = 1500,
     [string]$AssistTargetPath = (Join-Path $env:ProgramData 'Timelm\assist-target.txt'),
+    [string]$UnlockPassword = '',
     [int]$QuietMillis = 500,
     [int]$StuckMillis = 3000,
     [switch]$DisableLock,
@@ -90,6 +95,27 @@ $script:LogFile = $LogPath
 # What the next short press of the power key does, 'Lock', 'Wake' or an
 # empty string when the agent does not know it yet.
 $script:TimelmPowerNext = ''
+
+# True when the display of the phone is off.  The agent keeps the state,
+# because Windows does not tell a program whether the display is on.
+$script:TimelmDisplayOff = $false
+
+#
+# The password of the account of the phone.  The account of the phone has no
+# password, the value of the registry is only used when it is there.
+#
+$script:TimelmUnlockPassword = $UnlockPassword
+if (-not $script:TimelmUnlockPassword) {
+    try {
+        $value = Get-ItemPropertyValue `
+            -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' `
+            -Name 'DefaultPassword' `
+            -ErrorAction Stop
+        $script:TimelmUnlockPassword = [string]$value
+    } catch {
+        $script:TimelmUnlockPassword = ''
+    }
+}
 
 function Write-TimelmAgentLog {
     param([string]$Message)
@@ -255,6 +281,75 @@ function Invoke-TimelmStartMenu {
     Write-TimelmAgentLog 'action start menu'
 }
 
+function Invoke-TimelmDisplayToggle {
+    <#
+      Turns the display of the phone off and on again, the same way as the
+      power key of a phone.
+
+      The session stays open, so the same key brings the user back to the
+      desktop.  A lock without a way to open it again would be a trap, the
+      phone has no working touch screen and no keyboard.
+
+      The agent keeps the state of the display, because Windows does not
+      tell a program whether the display is on.
+    #>
+    $turnOn = $script:TimelmDisplayOff
+
+    if ($DryRun) {
+        Write-TimelmAgentLog ('action display {0} (dry run)' -f $(if ($turnOn) { 'on' } else { 'off' }))
+        return
+    }
+
+    [void][TimelmButtonsNative]::SetDisplayPower($turnOn)
+    $script:TimelmDisplayOff = -not $turnOn
+
+    Write-TimelmAgentLog ('action display {0}' -f $(if ($turnOn) { 'on' } else { 'off' }))
+}
+
+function Invoke-TimelmUnlock {
+    <#
+      Opens the lock screen of a locked session.
+
+      The lock screen lives on the secure desktop of winlogon.exe, the
+      agent cannot reach it with its own identity (the attempt 8 showed the
+      error 5, the access was denied).  The helper of the native code works
+      with the identity of winlogon.exe instead.
+
+      The account of the phone has no password, so the sign in is done with
+      the return key.
+    #>
+    if ($DryRun) {
+        Write-TimelmAgentLog 'action unlock (dry run)'
+        return
+    }
+
+    $state = Get-TimelmLockState
+    if ($state -ne 'Locked') {
+        Write-TimelmAgentLog ('action unlock skipped (the session is {0}), the display is woken instead' -f $state)
+        Invoke-TimelmWake
+        return
+    }
+
+    $code = [TimelmButtonsNative]::UnlockSecureDesktop($script:TimelmUnlockPassword)
+    Write-TimelmAgentLog ('action unlock returned {0}' -f $code)
+}
+
+function Invoke-TimelmClose {
+    <#
+      Closes the window that has the focus, the same way as Alt+F4.
+
+      The window of the agent and the console of the trial are never
+      closed, the trial would end with them.
+    #>
+    if ($DryRun) {
+        Write-TimelmAgentLog 'action close (dry run)'
+        return
+    }
+
+    $code = [TimelmButtonsNative]::CloseForegroundWindow()
+    Write-TimelmAgentLog ('action close (Alt+F4) returned {0}' -f $code)
+}
+
 function Invoke-TimelmLaunchTarget {
     <#
       Starts the program of the target file.  That is the way to direct the
@@ -316,6 +411,15 @@ function Invoke-TimelmAgentAction {
     elseif ($Action -eq $script:TimelmAgentAction.StartMenu) {
         Invoke-TimelmStartMenu
     }
+    elseif ($Action -eq $script:TimelmAgentAction.DisplayToggle) {
+        Invoke-TimelmDisplayToggle
+    }
+    elseif ($Action -eq $script:TimelmAgentAction.Unlock) {
+        Invoke-TimelmUnlock
+    }
+    elseif ($Action -eq $script:TimelmAgentAction.Close) {
+        Invoke-TimelmClose
+    }
 }
 
 # Button bit -> index inside the driver state arrays (Power, VolumeUp, VolumeDown, Assist)
@@ -324,10 +428,10 @@ function Invoke-TimelmAgentAction {
 # not know the mapping.  As soon as the mapping of the driver is readable,
 # it decides what the agent does.
 $buttonTable = @(
-    [pscustomobject]@{ Bit = 1; Name = 'Power'; Index = 0; LongPress = $PowerLongPressMillis; ShortAction = $script:TimelmAgentAction.LockOrWake; LongAction = $script:TimelmAgentAction.Shutdown },
-    [pscustomobject]@{ Bit = 2; Name = 'VolumeUp'; Index = 1; LongPress = 0; ShortAction = $script:TimelmAgentAction.Tab; LongAction = $script:TimelmAgentAction.None },
+    [pscustomobject]@{ Bit = 1; Name = 'Power'; Index = 0; LongPress = $PowerLongPressMillis; ShortAction = $script:TimelmAgentAction.DisplayToggle; LongAction = $script:TimelmAgentAction.Shutdown },
+    [pscustomobject]@{ Bit = 2; Name = 'VolumeUp'; Index = 1; LongPress = $VolumeUpLongPressMillis; ShortAction = $script:TimelmAgentAction.Tab; LongAction = $script:TimelmAgentAction.Unlock },
     [pscustomobject]@{ Bit = 4; Name = 'VolumeDown'; Index = 2; LongPress = $VolumeDownLongPressMillis; ShortAction = $script:TimelmAgentAction.Enter; LongAction = $script:TimelmAgentAction.ShiftF10 },
-    [pscustomobject]@{ Bit = 8; Name = 'Assist'; Index = 3; LongPress = 0; ShortAction = $script:TimelmAgentAction.StartMenu; LongAction = $script:TimelmAgentAction.None }
+    [pscustomobject]@{ Bit = 8; Name = 'Assist'; Index = 3; LongPress = $AssistLongPressMillis; ShortAction = $script:TimelmAgentAction.StartMenu; LongAction = $script:TimelmAgentAction.Close }
 )
 
 $handle = [IntPtr]::Zero
@@ -339,11 +443,33 @@ $mappingLoaded = $false
 #
 $edges = New-TimelmButtonEdges -ButtonTable $buttonTable
 
+#
+# The console of the agent should not stand in front of the windows of the
+# user, otherwise the key that closes a window would close the console.
+# The display stays on while the agent runs, so that the state of the
+# display is only changed by the power key of the phone.
+#
+try {
+    [void][TimelmButtonsNative]::HideConsoleWindow()
+    [void][TimelmButtonsNative]::SetKeepAwake($true)
+} catch {
+    Write-TimelmAgentLog ('the console could not be hidden: {0}' -f $_.Exception.Message)
+}
+
 try {
     $deadline = [DateTime]::UtcNow.AddSeconds($RunSeconds)
     $retry = 0
 
     while ($true) {
+        #
+        # The run time is checked first, so that the agent also ends when the
+        # driver of the buttons never shows up.
+        #
+        if ($RunSeconds -gt 0 -and [DateTime]::UtcNow -ge $deadline) {
+            Write-TimelmAgentLog 'run time reached, exiting'
+            break
+        }
+
         if ($handle -eq [IntPtr]::Zero) {
             try {
                 $handle = Open-TimelmButtons

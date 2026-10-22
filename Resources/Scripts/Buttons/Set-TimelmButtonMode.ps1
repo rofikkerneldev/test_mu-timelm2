@@ -33,9 +33,17 @@ param(
     [ValidateSet('Agent', 'Hid', 'Both')]
     [string]$Mode = 'Hid',
     [int]$PowerLongPressMillis = 1500,
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close')]
+    [string]$PowerAction = 'DisplayToggle',
+    [int]$VolumeUpLongPressMillis = 1500,
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close')]
+    [string]$VolumeUpLongAction = 'Unlock',
     [int]$VolumeDownLongPressMillis = 800,
-    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu')]
-    [string]$AssistAction = 'StartMenu'
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close')]
+    [string]$AssistAction = 'StartMenu',
+    [int]$AssistLongPressMillis = 1500,
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close')]
+    [string]$AssistLongAction = 'Close'
 )
 
 Set-StrictMode -Version 2.0
@@ -57,6 +65,9 @@ function Get-TimelmActionName {
         7 { return 'lock or wake' }
         8 { return 'assist target' }
         9 { return 'start menu' }
+        10 { return 'display off / on' }
+        11 { return 'unlock' }
+        12 { return 'close (Alt+F4)' }
         default { return 'none' }
     }
 }
@@ -79,8 +90,13 @@ try {
         -Mode $Mode `
         -Version $version `
         -PowerLongPressMillis $PowerLongPressMillis `
+        -PowerAction $PowerAction `
+        -VolumeUpLongPressMillis $VolumeUpLongPressMillis `
+        -VolumeUpLongAction $VolumeUpLongAction `
         -VolumeDownLongPressMillis $VolumeDownLongPressMillis `
-        -AssistAction $AssistAction
+        -AssistAction $AssistAction `
+        -AssistLongPressMillis $AssistLongPressMillis `
+        -AssistLongAction $AssistLongAction
 
     Set-TimelmButtonMapping -Handle $handle -Mapping $mapping
 

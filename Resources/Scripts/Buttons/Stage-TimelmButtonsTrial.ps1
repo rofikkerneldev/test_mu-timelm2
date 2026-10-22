@@ -33,7 +33,7 @@ param(
     [Parameter(Mandatory = $true)][string]$Output,
     [ValidateSet('Agent', 'Hid', 'Both')]
     [string]$ButtonMode = 'Agent',
-    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu')]
+    [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu', 'DisplayToggle', 'Unlock', 'Close')]
     [string]$AssistAction = 'StartMenu',
     [string]$AssistTarget = 'notepad.exe',
     [int]$Seconds = 240,
@@ -321,6 +321,7 @@ try {
         @{ source = (Join-Path $PSScriptRoot 'TimelmButtonsCommon.ps1'); relative = 'TimelmButtonsCommon.ps1' },
         @{ source = (Join-Path $PSScriptRoot 'Set-TimelmButtonMode.ps1'); relative = 'Set-TimelmButtonMode.ps1' },
         @{ source = (Join-Path $PSScriptRoot 'Install-TimelmButtonAgent.ps1'); relative = 'Install-TimelmButtonAgent.ps1' },
+        @{ source = (Join-Path $PSScriptRoot 'Collect-TimelmPciStatus.ps1'); relative = 'Collect-TimelmPciStatus.ps1' },
         @{ source = $manifestPath; relative = 'sha256.json' },
         @{ source = $sourcePath; relative = 'source.json' }
     )
