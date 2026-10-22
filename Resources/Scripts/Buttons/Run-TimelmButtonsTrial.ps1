@@ -75,6 +75,24 @@ if ($sessionId -le 0) {
     throw 'The trial has to run in the interactive session'
 }
 
+#
+# The trial can be started by the task scheduler at the logon of the
+# administrator, and the shell of the session is not always ready when the
+# logon happens.  The agent sends its input to that shell, so the trial
+# waits for it.
+#
+$shellReady = $false
+for ($second = 0; $second -lt 90; $second++) {
+    if (Get-Process -Name explorer -ErrorAction SilentlyContinue) {
+        $shellReady = $true
+        break
+    }
+    Start-Sleep -Seconds 1
+}
+if (-not $shellReady) {
+    throw 'The shell of the session did not come up'
+}
+
 . (Join-Path $PSScriptRoot 'TimelmButtonsCommon.ps1')
 
 if (-not $PackagePath) {
@@ -572,6 +590,26 @@ finally {
         }
     } catch {
         Write-Log ("removing the startup entry failed: {0}" -f $_.Exception.Message)
+    }
+
+    #
+    # The task of the arming is disarmed after the attempt as well, so that
+    # the trial does not run again at the next logon of the phone.
+    #
+    try {
+        $taskFile = Join-Path $env:SystemRoot 'System32\Tasks\TimelmButtonsTrial'
+        $output = & "$env:SystemRoot\System32\schtasks.exe" /Delete /TN '\TimelmButtonsTrial' /F 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-Log 'the scheduled task of this trial was removed'
+        } else {
+            Write-Log ('the scheduled task was not there: ' + ($output -join ' '))
+        }
+        if (Test-Path -LiteralPath $taskFile) {
+            Remove-Item -LiteralPath $taskFile -Force
+            Write-Log 'the file of the scheduled task was removed'
+        }
+    } catch {
+        Write-Log ("removing the scheduled task failed: {0}" -f $_.Exception.Message)
     }
 
     # The phone always powers off cleanly at the end of the attempt, so that

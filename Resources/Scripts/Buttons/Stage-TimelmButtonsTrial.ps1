@@ -36,7 +36,9 @@ param(
     [ValidateSet('None', 'Tab', 'Enter', 'ShiftF10', 'Lock', 'Shutdown', 'Wake', 'LockOrWake', 'LaunchTarget', 'StartMenu')]
     [string]$AssistAction = 'StartMenu',
     [string]$AssistTarget = 'notepad.exe',
+    [int]$Seconds = 240,
     [switch]$Arm,
+    [switch]$ArmTask,
     [switch]$Replace
 )
 
@@ -79,6 +81,107 @@ function Get-Sha256Text {
     } finally {
         $sha.Dispose()
     }
+}
+
+function Remove-TimelmTaskFile([string]$Path) {
+    <#
+      Removes a task file of a previous trial.  The file was written by the
+      build PC, so the build PC is the owner of it and may take the rights
+      that it needs for the removal.  The volume of the phone answers the
+      first removal with a denial now and then.
+    #>
+    if (-not (Test-Path -LiteralPath $Path)) { return $false }
+
+    for ($attempt = 0; $attempt -lt 4; $attempt++) {
+        try {
+            Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
+            return $true
+        } catch {
+            & icacls.exe $Path /setowner $env:USERNAME | Out-Null
+            Start-Sleep -Milliseconds 500
+        }
+    }
+
+    throw ("the task file of a previous trial could not be removed: {0}" -f $Path)
+}
+
+function Get-TimelmTaskXml {
+    <#
+      The task of the phone that starts the trial at the logon of the
+      administrator.
+
+      The Startup folder of the phone belongs to its own administrators, and
+      Windows of the phone applied its own rights to the ProgramData, so the
+      build PC cannot write the Startup entry.  The folder of the task
+      scheduler can be written, the scheduler reads the tasks of that folder
+      when its service starts, so a task that is put there runs at the next
+      boot.
+
+      The task is removed by the trial itself at the end of the attempt.
+    #>
+    param(
+        [string]$Command,
+        [string]$Arguments,
+        [string]$WorkingDirectory,
+        [string]$UserSid = 'S-1-5-21-2900457808-1833740068-2038273949-500',
+        [string]$TaskName = 'TimelmButtonsTrial'
+    )
+
+    function Escape-Xml([string]$Text) {
+        return $Text.Replace('&', '&amp;').Replace('<', '&lt;').Replace('>', '&gt;').Replace('"', '&quot;')
+    }
+
+    $lines = @(
+        '<?xml version="1.0" encoding="UTF-16"?>'
+        '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">'
+        '  <RegistrationInfo>'
+        '    <Author>timelm</Author>'
+        '    <Description>TimelmButtons trial</Description>'
+        ('    <URI>\{0}</URI>' -f $TaskName)
+        '  </RegistrationInfo>'
+        '  <Triggers>'
+        '    <LogonTrigger>'
+        '      <Enabled>true</Enabled>'
+        ('      <UserId>{0}</UserId>' -f $UserSid)
+        '    </LogonTrigger>'
+        '  </Triggers>'
+        '  <Principals>'
+        '    <Principal id="Author">'
+        ('      <UserId>{0}</UserId>' -f $UserSid)
+        '      <LogonType>InteractiveToken</LogonType>'
+        '      <RunLevel>HighestAvailable</RunLevel>'
+        '    </Principal>'
+        '  </Principals>'
+        '  <Settings>'
+        '    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>'
+        '    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>'
+        '    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>'
+        '    <AllowHardTerminate>true</AllowHardTerminate>'
+        '    <StartWhenAvailable>false</StartWhenAvailable>'
+        '    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>'
+        '    <IdleSettings>'
+        '      <StopOnIdleEnd>false</StopOnIdleEnd>'
+        '      <RestartOnIdle>false</RestartOnIdle>'
+        '    </IdleSettings>'
+        '    <AllowStartOnDemand>true</AllowStartOnDemand>'
+        '    <Enabled>true</Enabled>'
+        '    <Hidden>false</Hidden>'
+        '    <RunOnlyIfIdle>false</RunOnlyIfIdle>'
+        '    <WakeToRun>false</WakeToRun>'
+        '    <ExecutionTimeLimit>PT15M</ExecutionTimeLimit>'
+        '    <Priority>7</Priority>'
+        '  </Settings>'
+        '  <Actions Context="Author">'
+        '    <Exec>'
+        ('      <Command>{0}</Command>' -f (Escape-Xml $Command))
+        ('      <Arguments>{0}</Arguments>' -f (Escape-Xml $Arguments))
+        ('      <WorkingDirectory>{0}</WorkingDirectory>' -f (Escape-Xml $WorkingDirectory))
+        '    </Exec>'
+        '  </Actions>'
+        '</Task>'
+    )
+
+    return ($lines -join "`r`n")
 }
 
 try {
@@ -146,6 +249,7 @@ try {
     $bundle = Join-Path $winRoot 'TimelmTools\TimelmButtonsTrial'
     $logDir = Join-Path $winRoot 'TimelmLogs\TimelmButtonsTrial'
     $startup = Join-Path $winRoot 'ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\Timelm-buttons.cmd'
+    $taskFile = Join-Path $winRoot 'Windows\System32\Tasks\TimelmButtonsTrial'
 
     #
     # A trial leaves its bundle, its receipts and possibly its startup entry
@@ -173,6 +277,11 @@ try {
         if (Test-Path -LiteralPath $startup) {
             Remove-Item -LiteralPath $startup -Force
             $archived += 'Startup\Timelm-buttons.cmd'
+        }
+        if (Test-Path -LiteralPath $taskFile) {
+            if (Remove-TimelmTaskFile $taskFile) {
+                $archived += 'Tasks\TimelmButtonsTrial'
+            }
         }
         $modified = $true
     }
@@ -206,6 +315,8 @@ try {
     $cmdText = $cmdText -replace '-AssistAction\s+\w+', ('-AssistAction ' + $AssistAction)
     if ($cmdText -notmatch '-AssistTarget\s+"[^"]*"') { throw 'The trial launcher has no assist target' }
     $cmdText = $cmdText -replace '-AssistTarget\s+"[^"]*"', ('-AssistTarget "{0}"' -f $AssistTarget)
+    if ($cmdText -notmatch '-Seconds\s+\d+') { throw 'The trial launcher has no time' }
+    $cmdText = $cmdText -replace '-Seconds\s+\d+', ('-Seconds {0}' -f $Seconds)
     $cmdPath = Join-Path $bundle 'Timelm-buttons.cmd'
     Write-Flushed $cmdPath ([Text.Encoding]::ASCII.GetBytes($cmdText))
 
@@ -243,10 +354,11 @@ try {
         button_mode = $ButtonMode
         assist_action = $AssistAction
         assist_target = $AssistTarget
+        seconds = $Seconds
         archived = $archived
         files = $hashes
-        armed = $Arm.IsPresent
-        manual_start = 'powershell.exe -ExecutionPolicy Bypass -File C:\TimelmTools\TimelmButtonsTrial\Start-TimelmButtonsTrial.ps1 -Seconds 240 -ButtonMode {0} -AssistAction {1} -AssistTarget "{2}"' -f $ButtonMode, $AssistAction, $AssistTarget
+        armed = $Arm.IsPresent -or $ArmTask.IsPresent
+        manual_start = 'powershell.exe -ExecutionPolicy Bypass -File C:\TimelmTools\TimelmButtonsTrial\Start-TimelmButtonsTrial.ps1 -Seconds {0} -ButtonMode {1} -AssistAction {2} -AssistTarget "{3}"' -f $Seconds, $ButtonMode, $AssistAction, $AssistTarget
         esp_touched = $false
         bcd_changed = $false
         boot_order_changed = $false
@@ -279,6 +391,35 @@ try {
         }
         $staged.armed = $true
         $staged.startup_sha256 = (Get-FileHash -LiteralPath $startup -Algorithm SHA256).Hash
+        $staged.arm_method = 'startup-entry'
+        $staged | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $receiptRoot 'stage-status.json')
+    }
+
+    if ($ArmTask) {
+        #
+        # The task of the task scheduler is the way to start the trial after
+        # the next boot, the Startup folder of the phone cannot be written
+        # from the build PC any more.  The file is written in the format of
+        # the task scheduler, UTF-16 with a byte order mark.
+        #
+        $arguments = '-NoProfile -ExecutionPolicy Bypass -File "C:\TimelmTools\TimelmButtonsTrial\Start-TimelmButtonsTrial.ps1" -Seconds {0} -ButtonMode {1} -AssistAction {2} -AssistTarget "{3}"' -f $Seconds, $ButtonMode, $AssistAction, $AssistTarget
+        $xml = Get-TimelmTaskXml `
+            -Command 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' `
+            -Arguments $arguments `
+            -WorkingDirectory 'C:\TimelmTools\TimelmButtonsTrial'
+        $bytes = [byte[]](0xFF, 0xFE) + [Text.Encoding]::Unicode.GetBytes($xml)
+        Write-Flushed $taskFile $bytes
+
+        $readBack = [IO.File]::ReadAllBytes($taskFile)
+        if ($readBack.Length -ne $bytes.Length) { throw 'The task of the phone did not read back' }
+        for ($i = 0; $i -lt $bytes.Length; $i++) {
+            if ($readBack[$i] -ne $bytes[$i]) { throw 'The task of the phone did not read back' }
+        }
+
+        $staged.armed = $true
+        $staged.arm_method = 'scheduled-task'
+        $staged.task_path = 'C:\Windows\System32\Tasks\TimelmButtonsTrial'
+        $staged.task_sha256 = (Get-FileHash -LiteralPath $taskFile -Algorithm SHA256).Hash
         $staged | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $receiptRoot 'stage-status.json')
     }
 

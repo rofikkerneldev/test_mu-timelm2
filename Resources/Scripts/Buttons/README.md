@@ -149,14 +149,24 @@ That write needs the write right on the Startup folder of the phone, and the
 folder belongs to the administrators of the phone.  Once Windows of the phone
 has applied its own rights to the ProgramData, the build PC has no write
 right there and the staging fails with "the Startup folder of the phone is
-not writable from the build PC".  The bundle is on the phone in that case
-and the trial is started by hand, the receipt of the staging carries the
-command in `manual_start`:
+not writable from the build PC".
+
+The phone has no working touchscreen and Windows does not see the USB OTG, so
+there is no way to start the trial by hand.  The staging has a second way to
+arm it: `-ArmTask` writes a task of the task scheduler into
+`C:\Windows\System32\Tasks\TimelmButtonsTrial`.  The scheduler reads the
+tasks of that folder when its service starts, so the task runs at the logon
+of the administrator and the trial starts by itself.  The trial removes the
+task at the end of the attempt, so it does not run again at the next logon.
 
 ```powershell
-# phone: Win+R, or a terminal in the session of the logged on user
-powershell.exe -ExecutionPolicy Bypass -File C:\TimelmTools\TimelmButtonsTrial\Start-TimelmButtonsTrial.ps1 -Seconds 240 -ButtonMode Agent -AssistAction StartMenu -AssistTarget "notepad.exe"
+pwsh -NoProfile -ExecutionPolicy Bypass -File Stage-TimelmButtonsTrial.ps1 `
+    -Artifact C:\artifacts\timelm-native-buttons -Output C:\receipts\buttons `
+    -ButtonMode Agent -AssistAction StartMenu -Seconds 240 -ArmTask
 ```
+
+The receipt of the staging carries the way of the arming in `arm_method`,
+the path of the task in `task_path` and its hash in `task_sha256`.
 
 The target of the assist key is written by the trial itself, into
 `C:\ProgramData\Timelm\assist-target.txt`.  The build PC has no write right
