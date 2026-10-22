@@ -21,15 +21,30 @@
 # shell.
 #
 # The third argument is optional.  It is the name of the module of the touch
-# driver.  The module is unloaded and loaded again while the trace runs, so
+# driver, the module is unloaded and loaded again while the trace runs, so
 # that the sequence of the probe of the driver is in the trace as well.  A
 # recovery has no modules, there the argument is left out.
+#
+# The third argument can also be a rebind of the i2c device of the touch:
+#
+#     sh capture_touch_ftrace.sh /data/local/tmp/touch-probe 15 rebind:2-0028
+#
+# The device is unbound from its driver and bound again, that is the probe of
+# the driver again, so the sequence of the init of the chip is in the trace.
+# The device of the touch of the LG V60 is 2-0028 on the adapter of the GENI
+# bus.  The other chip at the same address, 0-0028, is the NFC of Sony.
+#
+# A rebind of the touch is dangerous.  The driver of LG registers a platform
+# device with a fixed name, the second probe fails with a duplicate name and
+# the kernel of the phone crashed with it.  Only do it with a phone that can
+# be flashed again.
 #
 # Examples:
 #
 #     sh capture_touch_ftrace.sh
 #     sh capture_touch_ftrace.sh /data/local/tmp/touch-ftrace 90
 #     sh capture_touch_ftrace.sh /data/local/tmp/touch-ftrace 30 sw42902
+#     sh capture_touch_ftrace.sh /data/local/tmp/touch-probe 15 rebind:2-0028
 #
 # The trace points of the i2c bus are needed.  If the kernel has none, the
 # script says so, the trace of the kernel is still saved.
@@ -150,12 +165,10 @@ while read -r event; do
     esac
 done < "$output/events-available.txt"
 
-{
-    echo "# the trace points that were enabled"
-    cat "$selected"
-} > "$selected.tmp"
-mv "$selected.tmp" "$selected"
-
+#
+# The list of the trace points is kept plain in the file events-selected.txt,
+# the loops below read it.
+#
 if ! grep -q '^i2c/' "$selected" 2>/dev/null; then
     echo ""
     echo "the kernel has no i2c trace point, the register map of the chip"
@@ -176,19 +189,45 @@ echo 1 > "$tracefs/tracing_on" 2>/dev/null || true
 
 #
 # The probe of the driver is the interesting part, the module is loaded again
-# while the trace runs.
+# or the i2c device is bound again while the trace runs.
 #
 if [ -n "$module" ]; then
-    if [ -d "/sys/module/$module" ]; then
-        echo ""
-        echo "the module $module is loaded again, the sequence of the probe is in the trace"
-        rmmod "$module" 2>/dev/null || true
-        sleep 1
-        modprobe "$module" 2>/dev/null || insmod "$module.ko" 2>/dev/null || true
-    else
-        echo ""
-        echo "the module $module is not loaded, the sequence of the probe is not in the trace"
-    fi
+    case "$module" in
+        rebind:*)
+            device="${module#rebind:}"
+            device_path="/sys/bus/i2c/devices/$device"
+            echo ""
+            echo "WARNING: a rebind of the touch crashed the kernel of this phone."
+            echo "         The driver of LG registers a platform device with a fixed"
+            echo "         name, the second probe fails with a duplicate name."
+            if [ -d "$device_path" ]; then
+                driver_link=$(readlink "$device_path/driver" 2>/dev/null || true)
+                driver_name="${driver_link##*/}"
+                echo ""
+                echo "the device $device is bound again, the sequence of the probe is in the trace"
+                if [ -n "$driver_name" ]; then
+                    echo "$device" > "/sys/bus/i2c/drivers/$driver_name/unbind" 2>/dev/null || true
+                    sleep 1
+                    echo "$device" > "/sys/bus/i2c/drivers/$driver_name/bind" 2>/dev/null || true
+                fi
+            else
+                echo ""
+                echo "the device $device is not there, the sequence of the probe is not in the trace"
+            fi
+            ;;
+        *)
+            if [ -d "/sys/module/$module" ]; then
+                echo ""
+                echo "the module $module is loaded again, the sequence of the probe is in the trace"
+                rmmod "$module" 2>/dev/null || true
+                sleep 1
+                modprobe "$module" 2>/dev/null || insmod "$module.ko" 2>/dev/null || true
+            else
+                echo ""
+                echo "the module $module is not loaded, the sequence of the probe is not in the trace"
+            fi
+            ;;
+    esac
 fi
 
 echo ""
@@ -207,7 +246,18 @@ done < "$selected"
 # has the chip id and the register writes in a readable form.
 #
 cp "$tracefs/trace" "$output/trace.txt" 2>/dev/null || true
-dmesg > "$output/dmesg.txt" 2>/dev/null || true
+
+#
+# The plain dmesg of a recovery of AOSP reads nothing, the option -S of the
+# dmesg of toybox reads the buffer of the kernel instead.  The file /proc/kmsg
+# is a stream, it would not end, so it is not used.
+#
+if ! dmesg -S > "$output/dmesg.txt" 2>/dev/null; then
+    dmesg > "$output/dmesg.txt" 2>/dev/null || true
+fi
+if [ ! -s "$output/dmesg.txt" ]; then
+    dmesg > "$output/dmesg.txt" 2>/dev/null || true
+fi
 
 #
 # Only the lines of the touch chip, they are the interesting ones.

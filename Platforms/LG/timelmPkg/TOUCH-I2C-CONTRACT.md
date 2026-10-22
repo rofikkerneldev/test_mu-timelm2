@@ -4,6 +4,132 @@ The peripheral KMDF package compiles, but the installed firmware has no SPB host
 or touchscreen in ACPI. This is the remaining dependency before a touch test.
 Do not add an arbitrary QCOM hardware ID to make an unrelated driver bind.
 
+## The wire protocol of the chip
+
+The protocol was read from the driver of the touch of the phone, the file
+`Kernel/touch_sw42902/touch_sw42902.c` and its header in the tree of the
+kernel of the user.  The kernel log of a recovery confirms every value of it.
+
+The chip is a SW42902, product id B3W68TIM, firmware version 0.74, chip id 10,
+protocol 4.  It boots its firmware from its own flash, the boot loader of the
+phone only sets the maker id.  A boot from flash is reported by the driver as
+`flash boot : BOOT pass`, so the Windows side does not have to upload the
+firmware image `B3W68TIME_0_74.img` as long as the chip reports version 0.74.
+
+### Frame of a transfer
+
+The register address of the chip is 12 bit.  It is split over the two first
+bytes of the transfer, the high nibble of the address sits in the low nibble
+of the first byte, next to the command.
+
+    byte 0   command | (address >> 8) & 0x0f
+    byte 1   address & 0xff
+    byte 2   payload of a write, little endian
+
+The command says what the transfer does and how long it is:
+
+| Command | Meaning |
+| --- | --- |
+| 0x00 | read, up to 4 bytes |
+| 0x20 | read, more than 4 bytes |
+| 0x40 | write, up to 4 bytes |
+| 0x60 | write, more than 4 bytes |
+
+A read is a write of the two header bytes with a repeated start, the chip
+answers with the bytes of the register.  A write sends the two header bytes
+and the payload after them.  The values of the registers are 32 bit, they are
+sent little endian, so the register 0x0C03 with the value 0x8303 goes over the
+bus as the bytes `4c 03 03 83 00 00`.
+
+### Registers
+
+| Address | Name | Use |
+| --- | --- | --- |
+| 0x0024 | BUS_TEST_REG | read and write test of the bus |
+| 0x0004 | SYS_RST_CTL | reset of the chip, software |
+| 0x0020 | INFO_PTR_ADDR | pointer of the firmware, boot check |
+| 0x008C | GDMA_CRC_RESULT | result of the checksum, boot check |
+| 0x008D | GDMA_CRC_PASS | pass of the checksum, boot check |
+| 0x0600 | TC_IC_STATUS | status of the chip, also the start of a report |
+| 0x0601 | TC_STATUS | status of the controller |
+| 0x0642 | CHIP_INFO + 0x00 | version of the chip, 4 bytes |
+| 0x0644 | CHIP_INFO + 0x02 | product id, 8 bytes, `B3W68TIM` |
+| 0x0656 | PT_INFO | channel and revision of the panel |
+| 0x0666 | TC_STS | status of the controller |
+| 0x0C00 | TC_CMD + 0x00 | device control |
+| 0x0C01 | TC_CMD + 0x01 | interrupt control |
+| 0x0C03 | TC_CMD + 0x03 | driving control |
+| 0x0F85 | ABT_CMD + 0x65 | state of the charger |
+| 0x0F88 | ABT_CMD + 0x68 | state of the IME |
+| 0x0F8A | ABT_CMD + 0x6A | state of the film |
+| 0x0FE4 | SERIAL_SPI_EN | switch the serial SPI off, the bus is I2C |
+| 0x0FE5 | SERIAL_I2C_EN | switch the serial I2C off, the bus is SPI |
+
+### Sequence of the start
+
+The driver of Linux does this, in this order:
+
+1. Reset the chip over the reset line, TLMM 38, and wait 90 ms.
+2. Test the bus: write and read the register 0x0024 with the patterns
+   0x5A5A5A5A, 0xA5A5A5A5, 0xF0F0F0F0, 0x0F0F0F0F, 0xFF00FF00, 0x00FF00FF,
+   0xFFFF0000, 0x0000FFFF, 0xFFFFFFFF and 0x00000000.  Every value has to come
+   back the same.
+3. Read the chip: the version at 0x0642 and the product id at 0x0644.  The
+   chip id has to be 10 and the protocol version 4.
+4. Read the boot state: 0x008C has to be the fixed checksum, 0x008D and 0x0020
+   have to be not zero.  Otherwise the firmware of the chip has to be
+   uploaded.
+5. Write 0x0FE4 with 0, the serial SPI of the chip has to be off.
+6. Write 0x0C00 with 1, the device control.
+7. Write 0x0C01 with 1, the interrupt of the chip has to be on.
+8. Write 0x0F85 with the state of the charger, 1 when the cable is in.
+9. Write 0x0F88 with the state of the IME and 0x0F8A with the state of the
+   film.
+10. Stop the controller: write 0x0C03 with 0x00000004, wait 30 ms.
+11. Start the controller: write 0x0C03 with 0x00008303 for the mode U3.
+    The mode U0 is 0x00000001.
+12. Read 0x0600, the status of the chip.
+
+### Report of a touch
+
+The chip raises the interrupt on the line TLMM 39 when a touch is there.  The
+report is read from the register 0x0600.  The driver of Linux reads it in two
+parts, the flexible report:
+
+1. The base part, 48 bytes: the header of 12 bytes, the pen of 24 bytes and
+   the first contact of 12 bytes.
+2. If the header says that there are more contacts, the rest is read from
+   0x060C, 12 bytes for every further contact.
+
+The layout of the 48 bytes, every field is little endian:
+
+| Offset | Field |
+| --- | --- |
+| 0x00 | ic_status, 4 bytes |
+| 0x04 | tc_status, 4 bytes |
+| 0x08 | wakeup_type 8 bit, touch_cnt 5 bit, button_cnt 3 bit, pen_cnt 1 bit, abnormal_sts 7 bit, curr_mode 3 bit, palm 1 bit |
+| 0x0C | the pen, 24 bytes: in_range, contact, swit1, swit2, pressure 12 bit, battery 2 bit, id, x, y, tilt, azimuth |
+| 0x24 | the contacts, 12 bytes each |
+
+A contact of 12 bytes is a set of bit fields:
+
+| Bits | Field |
+| --- | --- |
+| 0..4 | track id |
+| 5..7 | tool type |
+| 8..15 | angle |
+| 16..17 | event |
+| 18..31 | x |
+| 32..45 | y |
+| 46..53 | pressure |
+| 54..63 | reserve |
+| 64..73 | reserve |
+| 74..87 | width major |
+| 88..101 | width minor |
+
+The x and the y of the chip are already in the units of the panel, the driver
+of Linux copies them without a scale.  The panel of the phone is 1080 by 2460.
+
 ## Board resources observed in Recovery
 
 | Resource | Value |
