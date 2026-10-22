@@ -28,5 +28,13 @@ if (-not (Test-Path -LiteralPath $package)) { throw 'The button driver package i
 
 $arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -Seconds {1} -PackagePath "{2}"' -f $trial, $Seconds, $package
 
-Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
-    -Verb RunAs -ArgumentList $arguments
+$principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+$elevated = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+if ($elevated) {
+    # The Startup entry of the phone already runs elevated, the child keeps
+    # the privileges of this process.
+    Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList $arguments
+} else {
+    Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Verb RunAs -ArgumentList $arguments
+}

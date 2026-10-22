@@ -128,12 +128,19 @@ try {
 
     $null = New-Item -ItemType Directory -Path $bundle
     $modified = $true
+
+    # The reference time of the build PC.  The RTC of the phone runs hours
+    # behind, the trial corrects the clock before it writes any receipt.
+    $hostUtc = [DateTime]::UtcNow.ToString('o')
+    [IO.File]::WriteAllText((Join-Path $bundle 'host-utc.txt'), $hostUtc)
+
     $hashes = foreach ($file in $scripts) {
         $destination = Join-Path $bundle ($file.relative -replace '/', '\')
         $null = New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force
         $hash = Copy-Verified $file.source $destination
         [ordered]@{ path = $file.relative; sha256 = $hash }
     }
+    $hashes += [ordered]@{ path = 'host-utc.txt'; sha256 = (Get-FileHash -LiteralPath (Join-Path $bundle 'host-utc.txt') -Algorithm SHA256).Hash }
 
     $staged = [ordered]@{
         phase = 'staged'

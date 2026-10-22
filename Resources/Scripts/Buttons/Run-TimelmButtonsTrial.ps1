@@ -160,8 +160,44 @@ $trialError = $null
 $installed = $false
 $shutdownRequested = $false
 
+# One attempt only.  A second run of the trial is refused, the receipt of the
+# first attempt stays untouched.
+$attemptFile = Join-Path $ResultPath 'attempt.json'
+if (Test-Path -LiteralPath $attemptFile) {
+    Write-Log 'an attempt was already made, the trial is not repeated'
+    return
+}
+
 try {
+    Save-Json 'attempt.json' [ordered]@{
+        utc = [DateTime]::UtcNow.ToString('o')
+        session = $sessionId
+        user = $identity.Name
+        package = $PackagePath
+        seconds = $Seconds
+    }
     Write-Log ("session {0}, user {1}" -f $sessionId, $identity.Name)
+
+    # The RTC of the phone runs hours behind the build PC.  The reference time
+    # is staged with the bundle, the clock is corrected before the first
+    # receipt is written, so that the log times can be compared with the PC
+    # receipts.  A clock jump is not harmful here, the trial does not use the
+    # task scheduler.
+    $hostTimeFile = Join-Path $PSScriptRoot 'host-utc.txt'
+    if (Test-Path -LiteralPath $hostTimeFile) {
+        try {
+            $hostUtc = [DateTime]::Parse((Get-Content -LiteralPath $hostTimeFile -Raw).Trim()).ToUniversalTime()
+            $clockBefore = [DateTime]::UtcNow
+            if ([Math]::Abs(($clockBefore - $hostUtc).TotalSeconds) -gt 60) {
+                Set-Date -Date $hostUtc.ToLocalTime() | Out-Null
+                Write-Log ("clock corrected, was {0:o} now {1:o}" -f $clockBefore, [DateTime]::UtcNow)
+            } else {
+                Write-Log ("clock is within a minute of the build PC ({0:o})" -f $clockBefore)
+            }
+        } catch {
+            Write-Log ("the clock could not be compared: {0}" -f $_.Exception.Message)
+        }
+    }
 
     $packageInf = Join-Path $PackagePath $infName
     $packageSys = Join-Path $PackagePath $sysName
@@ -322,6 +358,25 @@ finally {
         # The driver stays installed, a second attempt starts from the same
         # state and installs the package again.
         Write-Log 'the button driver stays installed'
+    }
+
+    # The Startup entry is disarmed after the attempt, so that the trial does
+    # not run again on the next boot.  Only an entry that is byte for byte the
+    # staged one may be removed.
+    try {
+        $startup = Join-Path $env:SystemDrive 'ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\Timelm-buttons.cmd'
+        $staged = Join-Path $PSScriptRoot 'Timelm-buttons.cmd'
+        if ((Test-Path -LiteralPath $startup) -and (Test-Path -LiteralPath $staged)) {
+            if ((Get-FileHash -LiteralPath $startup -Algorithm SHA256).Hash -eq
+                (Get-FileHash -LiteralPath $staged -Algorithm SHA256).Hash) {
+                Remove-Item -LiteralPath $startup -Force
+                Write-Log 'the startup entry of this trial was removed'
+            } else {
+                Write-Log 'the startup entry does not belong to this trial, it stays'
+            }
+        }
+    } catch {
+        Write-Log ("removing the startup entry failed: {0}" -f $_.Exception.Message)
     }
 
     # The phone always powers off cleanly at the end of the attempt, so that
