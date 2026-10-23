@@ -2,7 +2,7 @@
 // LG V60 timelm initial Windows bring-up. Addresses checked against mainline DTB.
 // UFS hardware ID/resources follow the upstream Kona/kebab ACPI contract.
 // Peripheral drivers and low power states require separate device validation.
-DefinitionBlock ("", "DSDT", 2, "LGE   ", "TIMELM  ", 0x00000001)
+DefinitionBlock ("", "DSDT", 2, "LGE   ", "TIMELM  ", 0x00000002)
 {
     Scope (\_SB)
     {
@@ -60,6 +60,79 @@ DefinitionBlock ("", "DSDT", 2, "LGE   ", "TIMELM  ", 0x00000001)
                 Interrupt (ResourceConsumer, Level, ActiveHigh, Shared) { 240 }
                 Interrupt (ResourceConsumer, Level, ActiveHigh, Shared) { 240 }
                 Interrupt (ResourceConsumer, Level, ActiveHigh, Shared) { 240 }
+                // Trial 10 pin registry: self-referencing GpioIo entries keep the
+                // resource-hub connection position equal to the physical TLMM pin
+                // number, so a consumer pin index resolves onto the matching pin
+                // instead of a sequential connection id (trial 9: IdLowPart 1..4).
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x00 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x01 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x02 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x03 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x04 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x05 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x06 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x07 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x08 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x09 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x0A }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x0B }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x0C }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x0D }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x0E }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x0F }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x10 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x11 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x12 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x13 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x14 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x15 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x16 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x17 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x18 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x19 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x1A }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x1B }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x1C }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x1D }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x1E }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x1F }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x20 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x21 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x22 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x23 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x24 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x25 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x26 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x27 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x28 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x29 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x2A }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x2B }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x2C }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x2D }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x2E }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x2F }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x30 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x31 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x32 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x33 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x34 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x35 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x36 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x37 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x38 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x39 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x3A }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x3B }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x3C }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x3D }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x3E }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x3F }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x40 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x41 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x42 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x43 }
+                GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionNone, "\\_SB.GPIO", 0, ResourceConsumer, ,) { 0x44 }
             })
         }
         Device (SPMI)
