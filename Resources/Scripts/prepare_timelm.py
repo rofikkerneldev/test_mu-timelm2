@@ -31,7 +31,7 @@ for name, destination in (
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
 
-aml = root / "Silicium-ACPI/Platforms/LG/timelm/ACPI/DSDT.aml"
+aml = root / "Silicium-ACPI/Platforms/LG/timelm/DSDT.aml"
 digest = hashlib.sha256(aml.read_bytes()).hexdigest()
 if digest != manifest["ACPI/DSDT.aml"]:
     raise SystemExit("Copied DSDT.aml lost its manifest fingerprint: " + str(aml))
