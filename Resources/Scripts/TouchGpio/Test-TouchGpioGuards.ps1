@@ -137,6 +137,12 @@ $stage = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Stage-TouchGpioTrial
 if ($stage -notmatch 'refusing to disarm it' -or $stage -notmatch 'refusing to rearm') {
     throw 'The staging re-arm must refuse a foreign Startup entry and a plain re-arm'
 }
+# A clean bundle is staged with the host gate written as zero. One is only
+# staged when this bundle's own host INF is already installed: the resumed
+# attempt's first device start has to reach the bitbang prepare path.
+if ($stage -notmatch 'resumeFromInstalledInf' -or $stage -notmatch '-GateValue \$gateTarget') {
+    throw 'The staging must reserve the armed host gate for a resumed attempt'
+}
 # The Device Manager helper opens the console in the desktop session and has to
 # expand it, so the drivers Windows loaded are visible while the trial runs.
 $helper = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'TouchGpioDeviceManager.ps1') -Raw

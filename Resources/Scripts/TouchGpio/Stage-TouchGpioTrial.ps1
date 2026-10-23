@@ -176,17 +176,32 @@ try {
         if (!(Test-Path -LiteralPath ($espRoot+$rel))) {Write-Flushed ($espRoot+$rel) $original}
         if ((Get-FileHash -LiteralPath ($espRoot+$rel)).Hash -ne $expectedWindowsHash) {throw 'Restoration backup readback failed'}
     }
-    # The host gate is armed in the phone hive before the trial boot. The host
-    # driver reads NativeGpioI2cEnabled when the device starts, and that start
-    # happens in the very boot that carries the trial SSDT. A device that failed
-    # to start keeps the PnP lock of its parameters key, so the value can not be
-    # written while the phone runs: the hive is edited here instead, with the
-    # phone off. Every other gate stays zero, the bitbang path refuses to run
-    # when one of them is set.
+    # The host gate is written in the phone hive before the trial boot. The
+    # host driver reads NativeGpioI2cEnabled when the device starts, and that
+    # start happens in the very boot that carries the trial SSDT. A device
+    # that failed to start keeps the PnP lock of its parameters key, so the
+    # value can not be written while the phone runs: the hive is edited here
+    # instead, with the phone off. Every other gate stays zero, the bitbang
+    # path refuses to run when one of them is set.
+    # Arm one is reserved for a resumed attempt: when this exact bundle's own
+    # host INF is already installed, the resumed boot's first start is the one
+    # that must reach the bitbang prepare path. A clean bundle stages the gate
+    # at zero: the runner verifies the zero state, upgrades the driver bundle
+    # and arms the gate by itself before restarting the device. Pre-arming a
+    # clean bundle would only trip the runner's pre-existing-gate guard
+    # (trial 9: the guard threw at 05:13:50Z before any baseline was written).
+    $hostPkg = @($manifest.packages | Where-Object {$_.name -ceq 'Host'})[0]
+    $hostInfRel = 'Drivers/' + $hostPkg.name + '/' + $hostPkg.inf
+    $hostInfHash = @($manifest.files | Where-Object {$_.path -ceq $hostInfRel})[0].sha256
+    $resumeFromInstalledInf = $false
+    foreach ($match in @($installed | Select-String -Pattern 'ACPI\\TIML0001' -List)) {
+        if ((Get-FileHash -LiteralPath $match.Path).Hash -eq $hostInfHash) {$resumeFromInstalledInf = $true}
+    }
+    $gateTarget = if ($resumeFromInstalledInf) {1} else {0}
     $gateReceipt = Join-Path $receiptRoot 'host-gate.json'
-    $gateOutput = & (Join-Path $PSScriptRoot 'Arm-TouchGpioHostGate.ps1') -WindowsRoot $winRoot -Receipt $gateReceipt 2>&1
+    $gateOutput = & (Join-Path $PSScriptRoot 'Arm-TouchGpioHostGate.ps1') -WindowsRoot $winRoot -Receipt $gateReceipt -GateValue $gateTarget 2>&1
     $gateArmed = Test-Path -LiteralPath $gateReceipt
-    if (!$gateArmed) {throw "Host gate arming failed: $gateOutput"}
+    if (!$gateArmed) {throw "Host gate staging failed: $gateOutput"}
     $null = New-Item -ItemType Directory -Path $bundle
     $sources = @(
         @{source=(Join-Path $PSScriptRoot 'Launch-TouchGpioTrial.ps1');relative='Launch-TouchGpioTrial.ps1'},
@@ -262,7 +277,7 @@ try {
         test_seconds=120;automatic_reboot=$false;normal_shutdown=$true;flushed_and_dismounted=$true;
         rearm=$ReArm.IsPresent;disarmed_startup=$disarmedStartup;archived_leftovers=$archived;
         device_manager_startup='Timelm-device-manager.cmd';device_manager_startup_sha256=$devMgrStartupHash;
-        disarmed_device_manager_startup=$devMgrDisarmed;host_gate=$gateArmed;host_gate_receipt='host-gate.json';
+        disarmed_device_manager_startup=$devMgrDisarmed;host_gate=$gateTarget;host_gate_resume=$resumeFromInstalledInf;host_gate_receipt='host-gate.json';
         buttons_startup='Timelm-buttons.cmd';buttons_startup_sha256=$buttonsStartupHash;buttons_armed=$buttonsArmed;
         disarmed_buttons_startup=$buttonsDisarmed} |
         ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $receiptRoot 'stage-status.json')

@@ -193,3 +193,33 @@ The ninth attempt needs the one boot that carries the trial EFI: stage, then
 reboot the phone so that the boot passes the firmware. A boot that reaches
 Windows without the trial EFI has no trial SSDT and loses the attempt, which
 is what the eighth attempt did.
+
+## The staged tenth attempt (23.10.2026)
+
+The ninth attempt turned its open questions into evidence. Its runtime guard
+threw `Pre-existing hardware gate enabled: NativeGpioI2cEnabled` at
+05:13:50Z before any baseline existed, because the staging had armed the host
+gate for a clean bundle: the installed host INF was the older `ad746bac`
+build, so the runner refused the pre-armed value. The same boot records how
+the driver saw the trial's four `GpioIo` connections: the resource hub calls
+them `IdLowPart` 1..4 instead of the physical TLMM numbers 38, 67, 68 and 36,
+and the bus connection (id 4, read access) opened while the power
+connections (ids 1..3, write access) failed with `0xC00000BB`.
+
+The tenth attempt therefore changes the namespace and the staging rule.
+
+* The trial DSDT's GPIO controller self-references its own pins: its `_CRS`
+  carries one `GpioIo` entry per TLMM pin 0..68 (the SOUTH range that the
+  driver's `TileOffsets` model walks), so the connection position a consumer
+  addresses equals the physical pin number. The registered expectation is
+  that the driver records the pin ids 38, 67, 68 and 36 instead of 1..4,
+  and that the file system test that follows keeps its first pin check at
+  38. A result that still lists the sequential 1..4 refutes the registry
+  idea and moves the question to the connection-id semantics of Windows.
+* Staging writes `NativeGpioI2cEnabled` 0 for a clean bundle and 1 only when
+  this bundle's own host INF is already installed (a resumed attempt). A
+  fresh boot enumerates the host with the gate at zero - the code 10 that
+  the 19:59 boot already proved harmless - and the runner arms the gate
+  itself after its driver upgrade, while the stopped device allows the
+  write. The `host-gate.json` receipt now carries `value` 0 or 1 and
+  `stage-status.json` records `host_gate_resume`.
