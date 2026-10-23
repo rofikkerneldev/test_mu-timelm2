@@ -229,3 +229,43 @@ The tenth attempt therefore changes the namespace and the staging rule.
   non-SMMU GPIO trial for this exact Windows image. A foreign or altered
   leftover is refused. The ninth attempt's own bundle and log are what the
   tenth staging retires this way.
+
+## The lost tenth attempt (23.10.2026)
+
+The staged tenth attempt lost at the EFI's first contract phase, in front of
+Windows. The ESP log records the whole run: `Restore status=0x0`, then
+`Enumeration namespace gate=0x8000000000000021`, then `Trial returned;
+shutdown. Original Windows restored for next boot.` Every earlier boot in
+this log printed zero there, and nothing else differs: the binary, the SSDT
+and the flow come out of the same source; only the baked `mTimelmDsdt`
+fingerprint inside the launcher moved.
+
+`0x8000000000000021` is this base's `EFI_COMPROMISED_DATA` - `ENCODE_ERROR(33)`
+in MdePkg, where Mu renumbers the extended statuses. At that check
+`TrialTables(Sdt, FALSE)` refuses a firmware DSDT that is not the known
+table: `TrialKnownDsdt` requires the live length to equal
+`sizeof(mTimelmDsdt)`. Windows' stock boot of the next cycle reads a 952-byte
+DSDT - the pre-registry platform table - while the built launcher bakes the
+pin-registry DSDT of 3369 bytes. That launcher never installs a DSDT: its own
+log line says `No firmware GPIO/MMIO or IORT change`, because the DSDT is
+owned by the flashed platform firmware.
+
+The pin-registry experiment therefore cannot ride a one-boot trial alone.
+It needs the registry DSDT inside the platform image itself, which is what
+`prepare_timelm.py` already prepares Silicium-ACPI for, and the launcher
+fingerprint then has to stay aligned with the flashed table: the second
+boot's DSDT readback (952 bytes, `b759e921...`) still differs from the
+repository's pre-registry AML (`b1446886...`) at masked positions only, so
+compiler fingerprints differ by build even for the same source, and the
+mask mechanism of nine earlier zero-gate boots is what lets those builds
+share one contract.
+
+Everything else held. Restore-first worked: both boot managers are back to
+the stock `fae47d78...` image. The refusal shut the machine down before any
+Windows change existed. `gates-before.json` of the stock cycle records all
+seven gate checks at 0, so the staged clean-bundle zero gate survived. The
+runner's SSDT-missing cycle healed cleanly - before/after device snapshots,
+`Expected GPIO-only trial SSDT missing`, normal shutdown, its entries
+disarmed - and the driver store of 579 INFs checked stayed the same. The
+phone carries no active GPIO trial state besides the standing button
+watcher.
