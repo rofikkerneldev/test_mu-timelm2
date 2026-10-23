@@ -41,7 +41,15 @@ function Invoke-Reg([string[]]$Arguments) {
 function Remove-Mount() {
     # A stale mount is removed on a best effort basis: the phone hive is the
     # only thing that matters here, a leftover mount would block the load.
-    & reg.exe unload $mountReg 2>&1 | Out-Null
+    # reg.exe reports a missing mount with a failing exit code on stderr, and
+    # this script's strict error preference must not turn that harmless
+    # nothing-to-unload report into a staging failure. Whether the hive can
+    # really be opened is proven by the load that follows this call.
+    $preference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {& reg.exe unload $mountReg 2>&1 | Out-Null} catch {}
+    $ErrorActionPreference = $preference
+    $global:LASTEXITCODE = 0
 }
 function Get-GateValues([string]$KeyPath) {
     $values = @{}
