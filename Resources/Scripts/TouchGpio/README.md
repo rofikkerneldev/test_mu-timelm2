@@ -153,3 +153,43 @@ the 22.10. holds `install-GPIO`, `restart-GPIO` and `install-Host`, but no
 The runner now proves the step instead of assuming it: after the restart of
 the host it writes `host-parameters.json` and `host-bitbang.json` and stops
 the trial when the driver wrote no `TimelmBitbangStage`.
+
+## The lost eighth attempt and the ninth attempt (23.10.2026)
+
+The eighth attempt of 23.10. 2026 was a lost trial, not a driver fault. The
+runner found no trial SSDT in its baseline and stopped with `Expected GPIO-only
+trial SSDT missing`. Its `gates-before.json` shows the host gate armed
+(`NativeGpioI2cEnabled` 1) with every other gate at 0, and `complete.json`
+records `normal_shutdown` true, so the phone shut down cleanly instead of
+crashing.
+
+The trial SSDT only exists in the boot that passes the trial EFI, and the ESP
+keeps the log of that EFI in `timelm-touch-gpio.txt`. That log holds eight
+identical blocks. Every block reports `Restore status`, `Enumeration namespace
+gate`, `Install enumeration SSDT`, `Enumeration table readback`, `LoadImage`
+and `child LoadedImage` at `0x0000000000000000` and ends in `Windows stage:
+BEFORE StartImage (original Windows Boot Manager)`. The trial EFI therefore
+restores the original Windows boot manager first, installs the GPIO only SSDT
+and hands the boot over in each of those eight boots. The SSDT of three older
+attempts is byte for byte the AML of the bundle (`79aab95e...`, OEM table id
+`TIMLTGPI`), so the table does reach Windows when the boot passes the EFI.
+
+The eighth attempt never passed the trial EFI: its baseline holds no `SSDT.dat`
+and the collector says `SSDT was not enumerated`. The same bundle that failed
+at 20:36 on 22.10. produced the SSDT at 19:59, so the loss is in the boot
+path and not in the build. The ESP log is read through the volume path of
+partition 29, because a normal drive letter walk does not show it.
+
+The ninth attempt is staged from commit `8dc48d83...` under the same rules:
+the launcher is the ARM64 EFI `964ff1bb...` (12 800 bytes) in
+`EFI\Microsoft\Boot\bootmgfw.efi` and in `EFI\Boot\bootaa64.efi`, the original
+Windows boot manager is kept in the two `*.timelm-i2c-original.efi` backups,
+the BCD is not modified and the only armed gate is `NativeGpioI2cEnabled` (1)
+while `WindowsIommuEnabled`, `NativeBoardInitEnabled`, `NativeGpiEnabled`,
+`FirmwareHandoffVerified`, `SourceClockHz` and
+`ReadOnlyHardwareProbeEnabled` stay at 0.
+
+The ninth attempt needs the one boot that carries the trial EFI: stage, then
+reboot the phone so that the boot passes the firmware. A boot that reaches
+Windows without the trial EFI has no trial SSDT and loses the attempt, which
+is what the eighth attempt did.
