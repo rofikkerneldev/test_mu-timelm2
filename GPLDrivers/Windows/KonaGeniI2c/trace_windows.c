@@ -18,6 +18,11 @@
 #include <ntddk.h>
 #include "trace_windows.h"
 
+/* The kernel headers of the WDK declare ZwFlushBuffersFile only in ntifs.h,
+ * which cannot be combined with the KMDF headers of this driver. The
+ * routine is exported by the kernel, so the prototype is declared here. */
+NTSYSAPI NTSTATUS ZwFlushBuffersFile(_In_ HANDLE FileHandle, _Out_ PIO_STATUS_BLOCK IoStatusBlock);
+
 #define TIMELM_TRACE_DIRECTORY L"\\DosDevices\\C:\\TimelmLogs"
 #define TIMELM_TRACE_SUBDIR L"\\DosDevices\\C:\\TimelmLogs\\TouchGpioTrial"
 #define TIMELM_TRACE_FILE L"\\DosDevices\\C:\\TimelmLogs\\TouchGpioTrial\\driver-trace.log"
@@ -36,17 +41,17 @@ static ULONG TimelmTraceLength(const char *text)
 {
     ULONG length = 0;
     if (!text) return 0;
-    while (text[length] && length < TIMELM_TRACE_MAX) ++length;
+    while (text[length] && length < (ULONG)TIMELM_TRACE_MAX) ++length;
     return length;
 }
 
-static void TimelmTraceHex(char *out, ULONG *used, unsigned long value)
+static void TimelmTraceHex(char *out, ULONG *used, ULONGLONG value)
 {
     static const char digits[] = "0123456789abcdef";
     char tmp[16];
     ULONG n = 0, i;
     if (!value) { out[(*used)++] = '0'; return; }
-    while (value && n < sizeof(tmp)) { tmp[n++] = digits[value & 0xfu]; value >>= 4; }
+    while (value && n < (ULONG)sizeof(tmp)) { tmp[n++] = digits[value & 0xfu]; value >>= 4; }
     for (i = n; i > 0; --i) out[(*used)++] = tmp[i - 1];
 }
 
@@ -82,7 +87,7 @@ static void TimelmTraceFlushBuffer(void)
     OBJECT_ATTRIBUTES attributes;
     IO_STATUS_BLOCK iosb;
     HANDLE file = NULL;
-    ULONG index;
+    ULONG index, written = 0;
     NTSTATUS status;
     if (TimelmTraceBufferCount == 0) return;
     RtlZeroMemory(&attributes, sizeof(attributes));
@@ -95,28 +100,39 @@ static void TimelmTraceFlushBuffer(void)
     if (!NT_SUCCESS(status)) return;
     for (index = 0; index < TimelmTraceBufferCount; ++index) {
         ULONG lineLength = TimelmTraceLength(TimelmTraceBuffer[index]);
-        ULONG written = 0;
-        if (!lineLength) continue;
-        status = ZwWriteFile(file, &iosb, &written, NULL, TimelmTraceBuffer[index], lineLength, NULL, NULL);
+        if (!lineLength) { ++written; continue; }
+        status = ZwWriteFile(file, NULL, NULL, NULL, &iosb,
+            TimelmTraceBuffer[index], lineLength, NULL, NULL);
         if (!NT_SUCCESS(status)) break;
+        ++written;
     }
     if (NT_SUCCESS(status)) {
         (void)ZwFlushBuffersFile(file, &iosb);
-        TimelmTraceBufferCount = 0;
+        /* The lines that reached the disk leave the buffer. A line that was
+         * not written stays in the buffer and is written again later, so a
+         * line is never lost and never written twice. */
+        if (written) {
+            ULONG remaining = TimelmTraceBufferCount - written;
+            if (remaining) {
+                RtlCopyMemory(TimelmTraceBuffer[0], TimelmTraceBuffer[written],
+                    remaining * TIMELM_TRACE_BUFFER_LINE);
+            }
+            TimelmTraceBufferCount = remaining;
+        }
     }
     (void)ZwClose(file);
 }
 
-static void TimelmTraceLine(const char *tag, unsigned long value, int hasValue)
+static void TimelmTraceLine(const char *tag, ULONGLONG value, int hasValue)
 {
     char line[TIMELM_TRACE_MAX];
     ULONG used = 0, length;
-    LARGE_INTEGER ticks;
+    ULONGLONG ticks;
     if (KeGetCurrentIrql() > PASSIVE_LEVEL) return;
     ticks = KeQueryInterruptTimePrecise(NULL);
     length = TimelmTraceLength(tag);
     if (length > (ULONG)(TIMELM_TRACE_MAX - 40)) length = (ULONG)(TIMELM_TRACE_MAX - 40);
-    TimelmTraceHex(line, &used, (unsigned long)ticks.QuadPart);
+    TimelmTraceHex(line, &used, ticks);
     line[used++] = ' ';
     if (length) { RtlCopyMemory(&line[used], tag, length); used += length; }
     if (hasValue) {
@@ -128,13 +144,13 @@ static void TimelmTraceLine(const char *tag, unsigned long value, int hasValue)
     line[used] = 0;
     if (InterlockedCompareExchange(&TimelmTraceBusy, 1, 0) != 0) return;
     TimelmTraceEnsureDirectory();
-    if (TimelmTraceBufferCount >= TIMELM_TRACE_BUFFER_LINES) {
+    if (TimelmTraceBufferCount >= (ULONG)TIMELM_TRACE_BUFFER_LINES) {
         /* The oldest line makes room for the newest one. */
         RtlCopyMemory(TimelmTraceBuffer[0], TimelmTraceBuffer[1],
             TIMELM_TRACE_BUFFER_LINES * TIMELM_TRACE_BUFFER_LINE - TIMELM_TRACE_BUFFER_LINE);
         --TimelmTraceBufferCount;
     }
-    if (used > TIMELM_TRACE_BUFFER_LINE - 1) used = TIMELM_TRACE_BUFFER_LINE - 1;
+    if (used > (ULONG)(TIMELM_TRACE_BUFFER_LINE - 1)) used = (ULONG)(TIMELM_TRACE_BUFFER_LINE - 1);
     RtlCopyMemory(TimelmTraceBuffer[TimelmTraceBufferCount], line, used);
     TimelmTraceBuffer[TimelmTraceBufferCount][used] = 0;
     ++TimelmTraceBufferCount;
@@ -149,10 +165,10 @@ void TimelmTrace(const char *tag)
 
 void TimelmTraceValue(const char *tag, unsigned long value)
 {
-    TimelmTraceLine(tag, value, 1);
+    TimelmTraceLine(tag, (ULONGLONG)value, 1);
 }
 
 void TimelmTraceStatus(const char *tag, long status)
 {
-    TimelmTraceLine(tag, (unsigned long)status, 1);
+    TimelmTraceLine(tag, (ULONGLONG)(ULONG)status, 1);
 }
