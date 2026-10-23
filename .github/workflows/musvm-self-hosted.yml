@@ -1,0 +1,72 @@
+name: Muse VM self-hosted checks
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  musvm-lifecycle:
+    runs-on: [self-hosted, Linux, X64, muse-vm]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Report the toolchain of the self-hosted runner
+        run: |
+          set -eu
+          uname -a
+          gcc --version | head -1
+          python3 --version
+          nproc
+      - name: Run the native touch lifecycle tests
+        run: |
+          set -eux
+          gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+            GPLDrivers/Windows/KonaGeniI2c/tests/board_test.c \
+            GPLDrivers/Windows/KonaGeniI2c/touch_clock.c \
+            GPLDrivers/Windows/KonaGeniI2c/touch_board.c -o /tmp/touch-board-test
+          /tmp/touch-board-test
+          gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+            GPLDrivers/Windows/KonaGeniI2c/tests/fifo_test.c \
+            GPLDrivers/Windows/KonaGeniI2c/geni_fifo.c -o /tmp/touch-fifo-test
+          /tmp/touch-fifo-test
+          gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+            GPLDrivers/Windows/KonaGeniI2c/tests/gpi_test.c \
+            GPLDrivers/Windows/KonaGeniI2c/geni_gpi.c -o /tmp/touch-gpi-test
+          /tmp/touch-gpi-test
+          gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+            -IGPLDrivers/Windows/KonaGeniI2c/tests/iommu_shim \
+            GPLDrivers/Windows/KonaGeniI2c/tests/iommu_test.c \
+            GPLDrivers/Windows/KonaGeniI2c/iommu_windows.c -o /tmp/touch-iommu-test
+          /tmp/touch-iommu-test
+          gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+            GPLDrivers/Windows/KonaGeniI2c/tests/probe_policy_test.c -o /tmp/touch-probe-policy-test
+          /tmp/touch-probe-policy-test
+          gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+            -IGPLDrivers/Windows/KonaGeniI2c/tests/probe_shim \
+            GPLDrivers/Windows/KonaGeniI2c/tests/probe_windows_test.c -o /tmp/touch-probe-windows-test
+          /tmp/touch-probe-windows-test
+          gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+            GPLDrivers/Windows/KonaGeniI2c/tests/bitbang_test.c \
+            GPLDrivers/Windows/KonaGeniI2c/bitbang_i2c.c -o /tmp/touch-bitbang-test
+          /tmp/touch-bitbang-test
+          gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+            -IGPLDrivers/Windows/KonaGeniI2c/tests/bitbang_shim \
+            GPLDrivers/Windows/KonaGeniI2c/tests/bitbang_windows_test.c -o /tmp/touch-bitbang-windows-test
+          /tmp/touch-bitbang-windows-test
+          python3 Resources/DeviceOverlays/timelm/Drivers/KonaGPIO/test_touch_bus.py
+          python3 Resources/Scripts/tests/test_timelm_touch_iort.py
+          gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+            GPLDrivers/Windows/Sw42902Touch/tests/protocol_test.c -o /tmp/touch-protocol-test
+          /tmp/touch-protocol-test
+          gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+            GPLDrivers/Windows/Sw42902Touch/tests/init_test.c -o /tmp/touch-init-test
+          /tmp/touch-init-test
+          gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+            GPLDrivers/Windows/Sw42902Touch/tests/basic_test.c \
+            GPLDrivers/Windows/Sw42902Touch/driver/sw42902_basic.c -o /tmp/touch-basic-test
+          /tmp/touch-basic-test
+          gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+            Platforms/LG/timelmPkg/Applications/TouchDmaCheck/snapshot_test.c -o /tmp/touch-dma-check-test
+          /tmp/touch-dma-check-test
+          gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+            Resources/DeviceOverlays/timelm/Drivers/KonaSPMI/tests/transaction_test.c -o /tmp/spmi-transaction-test
+          /tmp/spmi-transaction-test
