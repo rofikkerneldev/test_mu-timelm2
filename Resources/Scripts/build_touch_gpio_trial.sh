@@ -6,7 +6,15 @@ expected="$(git ls-tree HEAD Mu_Basecore | awk '{print $3}')"
 [[ "$(git -C Mu_Basecore rev-parse HEAD)" == "$expected" ]]
 output="$repo/Build/TouchGpio"
 mkdir -p "$output"
-python3 Resources/Scripts/generate_touch_enumeration.py "$output" --gpio
+if [[ -n "${TIMELM_TOUCH_DSDT_SNAPSHOT:-}" && -n "${TIMELM_TOUCH_SSDT_SNAPSHOT:-}" ]]; then
+  python3 Resources/Scripts/generate_touch_enumeration.py "$output" --gpio --snapshot \
+    "$TIMELM_TOUCH_DSDT_SNAPSHOT" "$TIMELM_TOUCH_SSDT_SNAPSHOT"
+elif [[ -z "${TIMELM_TOUCH_DSDT_SNAPSHOT:-}" && -z "${TIMELM_TOUCH_SSDT_SNAPSHOT:-}" ]]; then
+  python3 Resources/Scripts/generate_touch_enumeration.py "$output" --gpio
+else
+  echo 'Set both TIMELM_TOUCH_DSDT_SNAPSHOT and TIMELM_TOUCH_SSDT_SNAPSHOT, or neither.' >&2
+  exit 2
+fi
 mapfile -t reference < <(python3 - <<'PY'
 import json
 r=json.load(open('Platforms/LG/timelmPkg/Applications/I2cClockDiag/WindowsBootReference.json'))

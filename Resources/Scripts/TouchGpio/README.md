@@ -277,3 +277,53 @@ runner's SSDT-missing cycle healed cleanly - before/after device snapshots,
 disarmed - and the driver store of 579 INFs checked stayed the same. The
 phone carries no active GPIO trial state besides the standing button
 watcher.
+
+## Contract reset to the live baseline, and per-milestone evidence (23.10.2026)
+
+Both follow-ups apply the closed-session analysis collected under
+`docs/touch-gpio-handoff-20261023` after the lost tenth attempt.
+
+The pin-registry platform flash is on hold: forcing "connection ID equals
+physical pin number" has no basis in the Windows contract, so nothing may
+borrow that premise as a reason to flash. The trial contract instead returns
+to the baseline platform DSDT the firmware already serves. The launcher now
+bakes the captured 952-byte table itself, `b759e921...`, byte-identical on
+the two boots behind the trial 9 and trial 10 evidence, behind the same
+narrow runtime mask. A diff against the pre-registry AML `b1446886...`
+differs in 83 bytes and the reviewed mask covers every one of them (85
+masked bytes, 8.9 percent), so the guard stays strict. The SSDT side no
+longer needs iasl either: the 451-byte `TIMLTGPI` SSDT that trial 9 already
+enumerated cleanly is baked byte for byte, `79aab95e...`. The generator pins
+both SHA-256 values and refuses any other snapshot, the default iasl flow
+for CI is untouched, and `build_touch_gpio_trial.sh` accepts
+`TIMELM_TOUCH_DSDT_SNAPSHOT` and `TIMELM_TOUCH_SSDT_SNAPSHOT` for the
+snapshot mode. The launcher built on this contract is 12800 bytes,
+SHA-256 `5a3a3a27...7727f5`, and its `windows_reference` still matches the
+stock boot managers (`fae47d78...`, 3120648 bytes) every restore lands on.
+While the platform readback stays `b759e921...`, the namespace gate passes
+with no platform flash at all.
+
+The driver wave then makes the next failure attributable without a kernel
+dump. The runner will write a per-boot `TimelmTouchAttemptId` to the device
+instance key; the adapter reads it in prepare and echoes it as
+`TimelmBitbangAttempt`, so every value in the collection binds to one boot.
+`TimelmBitbangFailOp` names the first failed milestone of the boot - zero is
+none, then contract, memory, class, count, open bus, links, provider,
+interface, open output, write low, GPIO-mode, VCL, VDD, reset, sample,
+identity at 1 through 16 - and this numbering is a log ABI that must never
+be renumbered. Per-pin evidence arrives as `TimelmBitbangOpenStatus0..4` and
+`TimelmBitbangWriteStatus0..4` (status of each open and write),
+`TimelmBitbangWriteBytes0..4` (bytes each write moved),
+`TimelmBitbangPinIdHigh0..4` (the high dword of each ResourceHub id),
+`TimelmBitbangConnOrdinal0..4` (the resource ordinal each connection came
+from), `TimelmBitbangResourceCount` (the raw resource total) and
+`TimelmBitbangIfaceVer`/`TimelmBitbangIfaceSize` (the negotiated provider
+interface identity); `TimelmHostBackend` names the selected backend (1
+bitbang, 2 probe, 3 native FIFO, 4 GPI) on every boot. The
+`TIMELM_TOUCH_BUS_V3` interface ABI is untouched.
+
+The adapter tests grow the same evidence surface: registry mocks for the
+attempt id, an assertion that the attempt plumbing survives the split-bus
+resource shape, and forced-failure checks that map each broken call to its
+exact milestone value. All three local test suites pass under
+ASan and UBSan.
