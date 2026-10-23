@@ -43,6 +43,7 @@
     <ClCompile Include="board_windows.c" /><ClCompile Include="touch_clock.c" /><ClCompile Include="touch_board.c" />
     <ClCompile Include="geni_gpi.c" /><ClCompile Include="gpi_windows.c" />
     <ClCompile Include="iommu_windows.c" /><ClInclude Include="iommu_windows.h" />
+    <ClCompile Include="trace_windows.c" /><ClInclude Include="trace_windows.h" />
     <ClInclude Include="geni_gpi.h" /><ClInclude Include="gpi_windows.h" />
     <ClInclude Include="dma_policy.h" />
     <ClInclude Include="board_windows.h" /><ClInclude Include="touch_clock.h" /><ClInclude Include="touch_board.h" />

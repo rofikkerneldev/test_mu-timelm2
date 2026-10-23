@@ -9,6 +9,7 @@
 #include "board_windows.h"
 #include "gpi_windows.h"
 #include "bitbang_windows.h"
+#include "trace_windows.h"
 
 typedef struct DEVICE_CONTEXT {
     PUCHAR Registers;
@@ -177,13 +178,24 @@ NTSTATUS GeniPrepare(WDFDEVICE device, WDFCMRESLIST raw, WDFCMRESLIST translated
     status = WdfRegistryQueryULong(key, &handoffName, &verified);
     if (NT_SUCCESS(status)) status = WdfRegistryQueryULong(key, &clockName, &sourceHz);
     WdfRegistryClose(key);
+    /* The gate values are written to a file that survives a bugcheck: the
+     * registry itself is lost when the kernel goes down. */
+    TimelmTraceValue("gate-bitbang", bitbang);
+    TimelmTraceValue("gate-probe", probe);
+    TimelmTraceValue("gate-native", native);
+    TimelmTraceValue("gate-gpi", gpi);
+    TimelmTraceValue("gate-iommu", iommu);
+    TimelmTraceValue("gate-verified", verified);
+    TimelmTraceValue("gate-sourcehz", sourceHz);
     if (bitbang) {
         if(bitbang!=1 || probe || native || gpi || iommu || verified || sourceHz)
             return STATUS_DEVICE_CONFIGURATION_ERROR;
         context->UseBitbang=TRUE;
+        TimelmTrace("bb-prepare-enter");
         status=BbWindowsPrepare(&context->Bitbang,device,translated);
         context->ResourcesReady=NT_SUCCESS(status);
         GeniRecord(device,L"TimelmHostStatus",(ULONG)status);
+        TimelmTraceStatus("bb-prepare-exit", status);
         return status;
     }
     if (probe) {
@@ -269,10 +281,12 @@ NTSTATUS GeniD0Entry(WDFDEVICE device, WDF_POWER_DEVICE_STATE previous)
     UNREFERENCED_PARAMETER(previous);
     if (!context->ResourcesReady || context->Started) return STATUS_DEVICE_NOT_READY;
     if(context->UseBitbang) {
+        TimelmTrace("bb-start-enter");
         status=BbWindowsStart(&context->Bitbang);
         context->Started=NT_SUCCESS(status);
         GeniRecord(device,L"TimelmHostStage",NT_SUCCESS(status)?4u:3u);
         GeniRecord(device,L"TimelmHostStatus",(ULONG)status);
+        TimelmTraceStatus("bb-start-exit", status);
         return status;
     }
     if (context->Board.Native) {

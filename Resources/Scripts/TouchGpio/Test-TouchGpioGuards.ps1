@@ -154,6 +154,32 @@ if ($stage -notmatch 'Timelm-device-manager\.cmd' -or
     $stage -notmatch 'Device manager startup entry is not this trial own') {
     throw 'The staging must arm the Device Manager helper and refuse a foreign entry'
 }
+# The button trial entry keeps the Volume, Power and Assist keys usable while
+# the touch trial is on the screen, and it is disarmed by the same rule.
+if ($stage -notmatch 'Timelm-buttons\.cmd' -or
+    $stage -notmatch 'Button startup entry is not this trial own') {
+    throw 'The staging must arm the button trial entry and refuse a foreign entry'
+}
+# The helper watches the state the driver published and writes it to a file
+# that survives a bugcheck of the kernel.
+if ($helper -notmatch 'driver-status\.log' -or $helper -notmatch 'TimelmBitbangStage') {
+    throw 'The Device Manager helper must record the live driver status'
+}
+# The driver writes the steps of the bitbang path to a file and flushes every
+# line, because the registry is lost when the kernel bugchecks.
+$driverRoot = Join-Path $PSScriptRoot '..\..\..\GPLDrivers\Windows\KonaGeniI2c'
+$traceSource = Get-Content -LiteralPath (Join-Path $driverRoot 'trace_windows.c') -Raw
+$bitbangSource = Get-Content -LiteralPath (Join-Path $driverRoot 'bitbang_windows.c') -Raw
+$driverSource = Get-Content -LiteralPath (Join-Path $driverRoot 'driver.c') -Raw
+if ($traceSource -notmatch 'ZwFlushBuffersFile' -or $traceSource -notmatch 'driver-trace\.log') {
+    throw 'The driver trace must flush every line to the disk'
+}
+if ($bitbangSource -notmatch 'TimelmTrace' -or $driverSource -notmatch 'TimelmTrace') {
+    throw 'The bitbang path must write its trace'
+}
+if ((Get-Content -LiteralPath (Join-Path $driverRoot 'kona_geni.vcxproj') -Raw) -notmatch 'trace_windows\.c') {
+    throw 'The driver project must build the trace'
+}
 if ($Artifact) {
     . (Join-Path $PSScriptRoot 'TouchGpioCommon.ps1')
     $null = Get-TouchGpioManifest $Artifact

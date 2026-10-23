@@ -11,6 +11,8 @@ $archived = @()
 $disarmedStartup = $false
 $devMgrStartupCreated = $false
 $devMgrDisarmed = $false
+$buttonsStartupCreated = $false
+$buttonsDisarmed = $false
 $expectedWindowsHash = 'fae47d78487e781aa06466775cb461adeb7ff7f887fe2c15295bb2eb4f4954e1'
 function Write-Flushed([string]$Path, [byte[]]$Data) {
     $f = [IO.FileStream]::new($Path,[IO.FileMode]::Create,[IO.FileAccess]::Write,[IO.FileShare]::None,4096,[IO.FileOptions]::WriteThrough)
@@ -105,6 +107,21 @@ try {
         Remove-Item -LiteralPath $devMgrStartup -Force
         $devMgrDisarmed = $true
     }
+    # The button trial is a third Startup entry. It keeps the Volume, Power and
+    # Assist keys usable while the touch trial is on the screen. It is
+    # disarmed by the same rule as the other entries: only an entry that this
+    # script staged byte for byte may be removed.
+    $buttonsStartup = Join-Path $winRoot 'ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\Timelm-buttons.cmd'
+    if (Test-Path -LiteralPath $buttonsStartup) {
+        if (!$ReArm) {throw 'GPIO trial button startup is still armed; refusing to rearm'}
+        $stagedButtonsCmd = Join-Path $bundle 'Timelm-buttons.cmd'
+        if (!(Test-Path -LiteralPath $stagedButtonsCmd) -or
+            (Get-FileHash -LiteralPath $buttonsStartup).Hash -ne (Get-FileHash -LiteralPath $stagedButtonsCmd).Hash) {
+            throw 'Button startup entry is not this trial own; refusing to disarm it'
+        }
+        Remove-Item -LiteralPath $buttonsStartup -Force
+        $buttonsDisarmed = $true
+    }
     if ((Test-Path -LiteralPath $bundle) -or (Test-Path -LiteralPath $logs)) {
         # A re-arm is only allowed for this bundle's own leftovers. The staged
         # manifest must match the artifact and the runtime log must carry this
@@ -178,6 +195,7 @@ try {
         @{source=(Join-Path $PSScriptRoot 'Timelm-touch-gpio.cmd');relative='Timelm-touch-gpio.cmd'},
         @{source=(Join-Path $PSScriptRoot 'TouchGpioDeviceManager.ps1');relative='TouchGpioDeviceManager.ps1'},
         @{source=(Join-Path $PSScriptRoot 'Timelm-device-manager.cmd');relative='Timelm-device-manager.cmd'},
+        @{source=(Join-Path $PSScriptRoot 'Timelm-buttons.cmd');relative='Timelm-buttons.cmd'},
         @{source=(Join-Path $PSScriptRoot 'Watch-DeviceNodes.ps1');relative='Watch-DeviceNodes.ps1'},
         @{source=(Join-Path (Split-Path $PSScriptRoot) 'TouchEnumeration\Invoke-ProbeProcess.ps1');relative='Invoke-ProbeProcess.ps1'},
         @{source=(Join-Path (Split-Path $PSScriptRoot) 'Collect-TimelmDiagnostics.ps1');relative='Collect-TimelmDiagnostics.ps1'},
@@ -213,6 +231,23 @@ try {
     # The phone volume is dismounted before the receipt is written, so the
     # hash of the armed entry is captured here and not read again later.
     $devMgrStartupHash = (Get-FileHash -LiteralPath $devMgrStartup).Hash
+    # The button trial entry is only armed when the button trial bundle of
+    # this phone is still on the volume. It starts the button trial in the
+    # interactive session, so the Volume, Power and Assist keys stay usable
+    # while the touch trial is on the screen.
+    $buttonsStartupHash = $null
+    $buttonsArmed = $false
+    $buttonsBundle = Join-Path $winRoot 'TimelmTools\TimelmButtonsTrial\Start-TimelmButtonsTrial.ps1'
+    if (Test-Path -LiteralPath $buttonsBundle) {
+        $null = Copy-Verified (Join-Path $bundle 'Timelm-buttons.cmd') (Join-Path $receiptRoot 'buttons-startup-staged.cmd')
+        $buttonsBytes = [IO.File]::ReadAllBytes((Join-Path $bundle 'Timelm-buttons.cmd'))
+        $buttonsStream = [IO.FileStream]::new($buttonsStartup,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None,4096,[IO.FileOptions]::WriteThrough)
+        $buttonsStartupCreated = $true
+        try {$buttonsStream.Write($buttonsBytes,0,$buttonsBytes.Length);$buttonsStream.Flush($true)} finally {$buttonsStream.Dispose()}
+        if ((Get-FileHash -LiteralPath $buttonsStartup).Hash -ne (Get-FileHash -LiteralPath (Join-Path $bundle 'Timelm-buttons.cmd')).Hash) {throw 'Button startup readback failed'}
+        $buttonsStartupHash = (Get-FileHash -LiteralPath $buttonsStartup).Hash
+        $buttonsArmed = $true
+    }
     foreach ($rel in $targets) {
         $dest = $espRoot + $rel
         $modified.Add($dest)
@@ -227,7 +262,9 @@ try {
         test_seconds=120;automatic_reboot=$false;normal_shutdown=$true;flushed_and_dismounted=$true;
         rearm=$ReArm.IsPresent;disarmed_startup=$disarmedStartup;archived_leftovers=$archived;
         device_manager_startup='Timelm-device-manager.cmd';device_manager_startup_sha256=$devMgrStartupHash;
-        disarmed_device_manager_startup=$devMgrDisarmed;host_gate=$gateArmed;host_gate_receipt='host-gate.json'} |
+        disarmed_device_manager_startup=$devMgrDisarmed;host_gate=$gateArmed;host_gate_receipt='host-gate.json';
+        buttons_startup='Timelm-buttons.cmd';buttons_startup_sha256=$buttonsStartupHash;buttons_armed=$buttonsArmed;
+        disarmed_buttons_startup=$buttonsDisarmed} |
         ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $receiptRoot 'stage-status.json')
 } catch {
     $failure = $_.Exception.Message; $rollback = @()
@@ -247,6 +284,11 @@ try {
     if ($devMgrStartupCreated -and (Test-Path -LiteralPath $devMgrStartup)) {
         try {
             Remove-Item -LiteralPath $devMgrStartup
+        } catch {$rollback += $_.Exception.Message}
+    }
+    if ($buttonsStartupCreated -and (Test-Path -LiteralPath $buttonsStartup)) {
+        try {
+            Remove-Item -LiteralPath $buttonsStartup
         } catch {$rollback += $_.Exception.Message}
     }
     if ($verifiedDisk) {try {Flush-Dismount} catch {$rollback += $_.Exception.Message}}
