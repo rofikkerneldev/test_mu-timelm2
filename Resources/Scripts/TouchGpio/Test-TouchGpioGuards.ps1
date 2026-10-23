@@ -143,6 +143,12 @@ if ($stage -notmatch 'refusing to disarm it' -or $stage -notmatch 'refusing to r
 if ($stage -notmatch 'resumeFromInstalledInf' -or $stage -notmatch '-GateValue \$gateTarget') {
     throw 'The staging must reserve the armed host gate for a resumed attempt'
 }
+# Retiring a previous attempt is still a re-arm: the old bundle must prove the
+# trial family identity (manifest rules plus restore-first metadata for the)
+# same Windows image) before its leftovers are archived.
+if ($stage -notmatch 'GPIO trial family' -or $stage -notmatch 'touch-gpio\.json') {
+    throw 'The staging must retire only provably own previous attempt leftovers'
+}
 # The Device Manager helper opens the console in the desktop session and has to
 # expand it, so the drivers Windows loaded are visible while the trial runs.
 $helper = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'TouchGpioDeviceManager.ps1') -Raw

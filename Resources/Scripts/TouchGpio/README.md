@@ -223,3 +223,9 @@ The tenth attempt therefore changes the namespace and the staging rule.
   itself after its driver upgrade, while the stopped device allows the
   write. The `host-gate.json` receipt now carries `value` 0 or 1 and
   `stage-status.json` records `host_gate_resume`.
+* The staging retires a previous attempt's leftovers by family identity:
+  the retired bundle still has to pass the full driver manifest check and
+  carry a `touch-gpio.json` that describes the same restore-first,
+  non-SMMU GPIO trial for this exact Windows image. A foreign or altered
+  leftover is refused. The ninth attempt's own bundle and log are what the
+  tenth staging retires this way.

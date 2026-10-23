@@ -123,15 +123,25 @@ try {
         $buttonsDisarmed = $true
     }
     if ((Test-Path -LiteralPath $bundle) -or (Test-Path -LiteralPath $logs)) {
-        # A re-arm is only allowed for this bundle's own leftovers. The staged
-        # manifest must match the artifact and the runtime log must carry this
-        # trial's receipts; a phone in any other state is refused instead.
+        # A re-arm is only allowed for this trial family's own leftovers. A
+        # previous attempt is retired while its identity stays provable without
+        # the artifact being staged: Get-TouchGpioManifest re-checks its driver
+        # and INF manifest rules, and its touch-gpio.json must still describe
+        # the same restore-first, no-SMMU GPIO trial for this exact Windows
+        # image. Anything else - a foreign bundle or one whose metadata no
+        # longer matches the contract - is refused and stays untouched.
         if (!$ReArm) {throw 'GPIO trial already exists; refusing to rearm'}
         $stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ')
         if (Test-Path -LiteralPath $bundle) {
             $null = Get-TouchGpioManifest $bundle
-            if ((Get-FileHash -LiteralPath (Join-Path $bundle 'package.json')).Hash -ne
-                (Get-FileHash -LiteralPath (Join-Path $artifactRoot 'package.json')).Hash) {throw 'Staged bundle is not this artifact'}
+            $oldIdentityFile = Join-Path $bundle 'touch-gpio.json'
+            if (!(Test-Path -LiteralPath $oldIdentityFile)) {throw 'Staged bundle is not this GPIO trial family'}
+            $oldIdentity = Get-Content -LiteralPath $oldIdentityFile -Raw | ConvertFrom-Json
+            if ($oldIdentity.windows_reference.sha256 -cne $expectedWindowsHash -or
+                $oldIdentity.restores_windows_first -ne $true -or
+                $oldIdentity.bbtrial -ne $true -or
+                $oldIdentity.iort_installed -ne $false -or
+                $oldIdentity.smmu_access -ne $false) {throw 'Staged bundle is not this GPIO trial family'}
             $staleBundle = Join-Path $winRoot ('TimelmTools\TouchGpioTrial-stale-' + $stamp)
             Move-Item -LiteralPath $bundle -Destination $staleBundle
             $archived += $staleBundle
