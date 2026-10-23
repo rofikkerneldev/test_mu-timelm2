@@ -4,8 +4,6 @@ from pathlib import Path
 import hashlib
 import json
 import shutil
-import subprocess
-import tempfile
 
 root = Path(__file__).resolve().parents[2]
 overlay = root / "Resources/DeviceOverlays/timelm"
@@ -33,12 +31,13 @@ for name, destination in (
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
 
-iasl = shutil.which("iasl")
-if not iasl:
-    raise SystemExit("iasl is required to compile the timelm DSDT")
-destination = root / "Silicium-ACPI/Platforms/LG/timelm"
-with tempfile.TemporaryDirectory(prefix="timelm-acpi-") as temp:
-    output = Path(temp) / "DSDT"
-    subprocess.run([iasl, "-ve", "-p", str(output), str(destination / "DSDT.asl")], check=True)
-    shutil.copyfile(output.with_suffix(".aml"), destination / "DSDT.aml")
-print("Prepared and verified timelm firmware assets; compiled DSDT.")
+aml = root / "Silicium-ACPI/Platforms/LG/timelm/ACPI/DSDT.aml"
+digest = hashlib.sha256(aml.read_bytes()).hexdigest()
+if digest != manifest["ACPI/DSDT.aml"]:
+    raise SystemExit("Copied DSDT.aml lost its manifest fingerprint: " + str(aml))
+# The platform tree keeps the CI-compiled artifact byte for byte. The trial
+# launcher bakes the very same table as its fingerprint (TrialKnownDsdt), and
+# AcpiTables.inf embeds the AML verbatim, so a local iasl recompile would
+# slightly move unmasked bytes and break the namespace gate after the flash.
+print("Prepared and verified timelm firmware assets.")
+print("Platform ACPI/DSDT.aml sha256: " + digest)

@@ -260,6 +260,14 @@ compiler fingerprints differ by build even for the same source, and the
 mask mechanism of nine earlier zero-gate boots is what lets those builds
 share one contract.
 
+The flash side now follows the same rule. `prepare_timelm.py` no longer
+recompiles the table with a local iasl: it copies the overlay assets and
+verifies that the platform tree's `DSDT.aml` still carries the manifest
+fingerprint, since `AcpiTables.inf` embeds the AML verbatim into the
+firmware volume. The flashed DSDT is therefore the same CI-compiled
+pin-registry table the launcher bakes, and the remaining live-versus-baked
+differences are exactly the masked runtime-patch fields.
+
 Everything else held. Restore-first worked: both boot managers are back to
 the stock `fae47d78...` image. The refusal shut the machine down before any
 Windows change existed. `gates-before.json` of the stock cycle records all
