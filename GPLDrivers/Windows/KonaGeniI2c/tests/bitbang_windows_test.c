@@ -81,6 +81,20 @@ VOID WdfIoTargetClose(WDFIOTARGET target)
 { assert(target->Open && !target->Deleted);target->Open=0;++closed; }
 VOID WdfObjectDelete(WDFIOTARGET target)
 { assert(!target->Open && !target->Deleted);target->Deleted=1;++deleted; }
+/* The runner writes a per-boot attempt id to the device instance key and the
+ * adapter reads it back in prepare. The mock keeps the plumbing testable. */
+static ULONG attemptValue;
+static int failAttempt;
+NTSTATUS WdfDeviceOpenRegistryKey(WDFDEVICE device,int type,ULONG access,PVOID attributes,WDFKEY *key)
+{
+    (void)device;(void)type;(void)access;(void)attributes;
+    if (failAttempt) return STATUS_ACCESS_DENIED;
+    *key=(WDFKEY)(ULONG_PTR)0x1;
+    return STATUS_SUCCESS;
+}
+NTSTATUS WdfRegistryQueryULong(WDFKEY key,PCUNICODE_STRING name,ULONG *value)
+{ (void)key;(void)name;*value=attemptValue;return STATUS_SUCCESS; }
+VOID WdfRegistryClose(WDFKEY key) { (void)key; }
 static VOID Dereference(PVOID context)
 { (void)context;assert(!modeActive);++dereferenced; }
 static NTSTATUS Mode(PVOID context,BOOLEAN enable)
@@ -150,6 +164,7 @@ static void Init(void)
     failModeEnable=failModeDisable=failSample=modeActive=0;
     failSetLines=cancelRequest=modeEnables=modeDisables=0;
     eventCount=0;clockUs=identityAt=0;contractStatus=STATUS_SUCCESS;transferResult=BbOk;
+    attemptValue=0;failAttempt=0;
     recordedPinCount=0;recordedCounts=0;recordedIds=0;memset(recordedPinId,0,sizeof(recordedPinId));
 }
 /* Windows may publish the {36,37} bus pair as one connection resource or as
@@ -176,7 +191,8 @@ static void Prepare(void) { assert(BbWindowsPrepare(&bus,NULL,&resources)==STATU
 static void SplitBusPins(void)
 {
     BB_MESSAGE message;UCHAR data=0;
-    Init();AddSplitBusPin();Prepare();
+    Init();AddSplitBusPin();attemptValue=7;Prepare();
+    assert(bus.Attempt==7);
     assert(bus.Connections==5 && created==3);
     assert(bus.Pins[3] && bus.Pins[3]->Open && bus.Pins[4] && bus.Pins[4]->Open);
     assert(!bus.Pins[0] && !bus.Pins[1] && !bus.Pins[2]);
@@ -195,6 +211,7 @@ static void Good(void)
     static const unsigned expected[]={12,14,16,1001,15,17,13,2000,12,16,14,1000};
     BB_MESSAGE message;UCHAR data=0;unsigned allocations;
     Init();Prepare();assert(bus.Acquired && !bus.Ready && created==2);
+    assert(bus.Attempt==0 && bus.FailOp==BbFailNone);
     allocations=created;
     assert(!NT_SUCCESS(BbWindowsPrepare(&bus,NULL,&resources)) && created==allocations);
     assert(BbWindowsStart(&bus)==STATUS_SUCCESS && bus.Ready && identityAt>=102000);
@@ -241,10 +258,18 @@ static void StartFailures(void)
         Init();Prepare();failOpen=i;assert(!NT_SUCCESS(BbWindowsStart(&bus)));Clean();
     }
     for(i=1;i<=6;++i) {
-        Init();Prepare();failPin=i;assert(!NT_SUCCESS(BbWindowsStart(&bus)));Clean();
+        Init();Prepare();failPin=i;assert(!NT_SUCCESS(BbWindowsStart(&bus)));
+        /* Pins 0..2 write LOW first, then the power-up writes in VCL, VDD,
+         * reset order: the FailOp names the exact milestone per call. */
+        if (i<=3) assert(bus.FailOp==BbFailWriteLow);
+        else if (i==4) assert(bus.FailOp==BbFailVcl);
+        else if (i==5) assert(bus.FailOp==BbFailVdd);
+        else assert(bus.FailOp==BbFailReset);
+        Clean();
     }
     Init();Prepare();failModeEnable=1;
-    assert(!NT_SUCCESS(BbWindowsStart(&bus)) && modeEnables==1 && modeDisables==1 && !modeActive);Clean();
+    assert(!NT_SUCCESS(BbWindowsStart(&bus)) && modeEnables==1 && modeDisables==1 && !modeActive);
+    assert(bus.FailOp==BbFailMux);Clean();
     Init();Prepare();failSample=1;assert(!NT_SUCCESS(BbWindowsStart(&bus)));Clean();
     Init();Prepare();badIdentity=1;assert(BbWindowsStart(&bus)==STATUS_NO_SUCH_DEVICE);Clean();
     Init();Prepare();transferResult=BbNack;assert(BbWindowsStart(&bus)==STATUS_NO_SUCH_DEVICE);Clean();

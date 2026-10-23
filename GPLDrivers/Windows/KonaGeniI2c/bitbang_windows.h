@@ -19,6 +19,12 @@ typedef struct BB_WINDOWS {
     BOOLEAN Acquired, Muxed, Powered, Ready, StartedOnce, Retained;
     NTSTATUS LastStatus;
     ULONG Transfers, Failures;
+    /* Per-op trial evidence (Phase B). NTSTATUS is stored unsigned; these are
+     * registry snapshots, so a *later* write per index wins. FailOp stays the
+     * first failed step of the boot (BitbangStatus/FailOp reset at prepare). */
+    ULONG OpenStatus[BB_WINDOWS_MAX_PINS], WriteStatus[BB_WINDOWS_MAX_PINS];
+    ULONG WriteBytes[BB_WINDOWS_MAX_PINS], PinOrdinals[BB_WINDOWS_MAX_PINS];
+    ULONG Attempt, FailOp;
 } BB_WINDOWS;
 NTSTATUS BbWindowsPrepare(BB_WINDOWS *bus,WDFDEVICE device,WDFCMRESLIST resources);
 NTSTATUS BbWindowsStart(BB_WINDOWS *bus);

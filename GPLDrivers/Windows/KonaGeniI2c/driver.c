@@ -187,6 +187,10 @@ NTSTATUS GeniPrepare(WDFDEVICE device, WDFCMRESLIST raw, WDFCMRESLIST translated
     TimelmTraceValue("gate-iommu", iommu);
     TimelmTraceValue("gate-verified", verified);
     TimelmTraceValue("gate-sourcehz", sourceHz);
+    /* One value naming the active backend of this boot: 0 disabled,
+     * 1=GPIO bitbang, 2=probe, 3=native FIFO, 4=GPI. Registry snapshot only. */
+    GeniRecord(device, L"TimelmHostBackend",
+        bitbang ? 1u : probe ? 2u : gpi ? 4u : native ? 3u : 0u);
     if (bitbang) {
         if(bitbang!=1 || probe || native || gpi || iommu || verified || sourceHz)
             return STATUS_DEVICE_CONFIGURATION_ERROR;
