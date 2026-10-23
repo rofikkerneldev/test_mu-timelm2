@@ -315,6 +315,17 @@ public static class TouchGpioAwake {
     Stop-NodeWatch $watchGpio
     Copy-SetupApiLog 'after-gpio-restart'
     if ($gpio.ConfigManagerErrorCode -ne 0 -or $gpio.Service -ine 'GPIO') {throw 'GPIO provider failed after upgrade/restart'}
+    # The effective provider gate is what the replacement provider itself
+    # publishes when it starts. Trial 9 lost its whole window to exactly the
+    # opposite: the host entered the bitbang prepare path while the provider
+    # gate stayed 0. The host is not restarted while that state exists.
+    $providerGates = @{}
+    foreach ($name in @('TouchBusGpioEnabled','TimelmGpioBitbangGate')) {
+        $providerGates[$name] = Get-Gate $gpioKey $name
+    }
+    Save-Json 'provider-gates-after-restart.json' $providerGates
+    if ($providerGates['TouchBusGpioEnabled'] -ne 1) {throw 'provider gate lost across restart; the host would start behind a gateless provider'}
+    if ($providerGates['TimelmGpioBitbangGate'] -eq 0) {throw 'provider effective gate stayed 0; the host must not start before the provider is ready'}
     # Every hardware phase publishes a receipt. The Device Manager helper in
     # the desktop session watches them and refreshes the console tree, so the
     # loaded drivers are visible while the trial continues.
@@ -326,6 +337,15 @@ public static class TouchGpioAwake {
     Copy-SetupApiLog 'after-host-install'
     foreach ($gate in $gates) {Set-Gate $hostKey $gate 0}
     Set-Gate $hostKey 'NativeGpioI2cEnabled' 1
+    # Attempt identity: the offline staging wrote the DWORD with the hive; an
+    # absent value gets one in-session so a runner-driven restart still binds
+    # exactly one boot to one id. The adapter echoes it as TimelmBitbangAttempt.
+    $attemptId = Get-Gate $hostKey 'TimelmTouchAttemptId'
+    if ($null -eq $attemptId) {
+        $attemptId = [int]([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() % 4294967296)
+        Set-Gate $hostKey 'TimelmTouchAttemptId' $attemptId
+    }
+    Save-Json 'attempt.json' @{attempt_id=$attemptId;utc=[DateTime]::UtcNow.ToString('o')}
     Save-Json 'gates-enabled.json' @{GPIO=(Get-ItemProperty -LiteralPath $gpioKey);Host=(Get-ItemProperty -LiteralPath $hostKey);dma_enabled=$false}
     # The host start is the moment the ACPI child of the bus has to appear.
     # The sampler runs across the restart, so a child node that exists only
@@ -337,7 +357,9 @@ public static class TouchGpioAwake {
     $hostDevice = Get-TouchGpioDevice $hostId
     Stop-NodeWatch $watchHost
     Copy-SetupApiLog 'after-host-restart'
-    if ($hostDevice.ConfigManagerErrorCode -ne 0 -or $hostDevice.Service -ine 'kona_geni') {throw 'GPIO I2C host did not start; inspect product/ACK diagnostics'}
+    # The registry snapshot of the failing driver must be on the disk before
+    # any refusal: it is the evidence, the throw only stops the trial. Trial
+    # 9 lost its Code 10 moment to an exception ordered ahead of this block.
     # The record of the driver itself is the proof that the bitbang path was
     # entered: the stage 1 is the first action of the prepare.  Without that
     # value the host stayed in the legacy path, whatever the gates say.
@@ -350,14 +372,20 @@ public static class TouchGpioAwake {
     if ($hostNames -contains 'TimelmHostStatus') { $hostStatus = [int]$hostParameters.TimelmHostStatus }
     $bitbangStatus = -1
     if ($hostNames -contains 'TimelmBitbangStatus') { $bitbangStatus = [int]$hostParameters.TimelmBitbangStatus }
+    $attemptRecorded = -1
+    if ($hostNames -contains 'TimelmBitbangAttempt') { $attemptRecorded = [int]$hostParameters.TimelmBitbangAttempt }
+    $hostBackend = -1
+    if ($hostNames -contains 'TimelmHostBackend') { $hostBackend = [int]$hostParameters.TimelmHostBackend }
     Save-Json 'host-parameters.json' $hostParameters
     Save-Json 'host-bitbang.json' @{bitbang_stage=$bitbangStage;host_status=$hostStatus;
-        bitbang_status=$bitbangStatus;utc=[DateTime]::UtcNow.ToString('o')}
+        bitbang_status=$bitbangStatus;attempt_id=$attemptId;attempt_recorded=$attemptRecorded;
+        backend=$hostBackend;utc=[DateTime]::UtcNow.ToString('o')}
+    Save-Json 'phase-host-started.json' @{phase='host-started';device=$hostId;service=$hostDevice.Service;
+        code=$hostDevice.ConfigManagerErrorCode;utc=[DateTime]::UtcNow.ToString('o')}
+    if ($hostDevice.ConfigManagerErrorCode -ne 0 -or $hostDevice.Service -ine 'kona_geni') {throw 'GPIO I2C host did not start; inspect product/ACK diagnostics'}
     if ($bitbangStage -lt 1) {
         throw 'the host did not enter the bitbang path, the driver wrote no TimelmBitbangStage'
     }
-    Save-Json 'phase-host-started.json' @{phase='host-started';device=$hostId;service=$hostDevice.Service;
-        code=$hostDevice.ConfigManagerErrorCode;utc=[DateTime]::UtcNow.ToString('o')}
     Assert-Budget 'install-touch'
     $watchTouch = Start-NodeWatch 'touch' 40
     Pnp 'install-Touch' @('/add-driver',(Join-Path $PSScriptRoot 'Drivers\Touch\vhidmini.inf'),'/install')

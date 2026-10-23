@@ -327,3 +327,24 @@ attempt id, an assertion that the attempt plumbing survives the split-bus
 resource shape, and forced-failure checks that map each broken call to its
 exact milestone value. All three local test suites pass under
 ASan and UBSan.
+
+The orchestration scripts encode the four staging lessons the same way.
+The runner now takes the persisted driver registry snapshot and phase
+receipts BEFORE it refuses a host start, so a Code 10 moment leaves the
+next analysis nothing missing. It asserts the provider's effective gate as
+soon as the replacement provider restarts: a restart that publishes
+`TimelmGpioBitbangGate=0` stops the trial there and never lets the host eat
+a boot with a gateless provider. It binds every boot to one attempt id:
+staging writes `TimelmTouchAttemptId` into the device parameters key of
+`ACPI\TIML0001` through the phone hive, the runner keeps that value
+(generating one only when staging skipped it) and the adapter reports it
+back as `TimelmBitbangAttempt`, recorded next to the stage and statuses in
+`host-bitbang.json`. The staging resume decision moved to the package the
+device itself selected: the offline gate script follows the binding from
+the Enum tree into the Class nodes and hashes that INF, refusing to guess
+from the store listing; the bundle's own INF on disk is still recorded, and
+the reference pass and the final gate/attempt write run as two verified
+Arm calls. All of it is pinned by `Test-TouchGpioGuards.ps1`, which now
+refuses a runner whose snapshot lands behind its own refusal, a staging
+that never reads the selected package, and a staged boot without an
+attempt id.

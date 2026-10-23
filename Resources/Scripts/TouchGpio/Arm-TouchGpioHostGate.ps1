@@ -13,7 +13,17 @@
 param(
     [Parameter(Mandatory=$true)][string]$WindowsRoot,
     [Parameter(Mandatory=$true)][string]$Receipt,
-    [int]$GateValue = 1)
+    [int]$GateValue = 1,
+    # A resumed attempt binds one boot to one attempt id: the adapter reads
+    # this DWORD from the device key at the first start of the boot and
+    # publishes it as TimelmBitbangAttempt. Zero means "not armed here".
+    [int]$AttemptId = 0,
+    # The SHA-256 of the bundle's own host INF. When set, the script follows
+    # the device's own Driver reference into the Class tree and hashes the
+    # INF the device actually selected. An INF that merely sits in the store
+    # is not the selected package; trial 9 refused a bundle over exactly
+    # that difference, so the resume decision has to come from here.
+    [string]$BundleInfHash = '')
 $ErrorActionPreference = 'Stop'
 $device = 'ACPI\TIML0001'
 $instance = 'e'
@@ -54,7 +64,7 @@ function Remove-Mount() {
 function Get-GateValues([string]$KeyPath) {
     $values = @{}
     if (!(Test-Path -LiteralPath $KeyPath)) {return $values}
-    foreach ($name in @($gateName) + $zeroGates) {
+    foreach ($name in (@($gateName) + $zeroGates + @('TimelmTouchAttemptId'))) {
         $item = Get-ItemProperty -LiteralPath $KeyPath -Name $name -ErrorAction SilentlyContinue
         if ($item -and ($item.PSObject.Properties.Name -contains $name)) {$values[$name] = [int]$item.$name}
     }
@@ -77,6 +87,57 @@ try {
         $null = Invoke-Reg @('add',$keyReg,'/v',$name,'/t','REG_DWORD','/d','0','/f')
     }
     $null = Invoke-Reg @('add',$keyReg,'/v',$gateName,'/t','REG_DWORD','/d',[string]$GateValue,'/f')
+    if ($AttemptId -gt 0) {
+        if ($AttemptId -gt 4294967295) {throw 'Attempt id does not fit a DWORD'}
+        $null = Invoke-Reg @('add',$keyReg,'/v','TimelmTouchAttemptId','/t','REG_DWORD','/d',[string]$AttemptId,'/f')
+    }
+    # The device's selected package decides a resumed attempt: follow the
+    # Enum binding into the Class tree and hash the INF file the device is
+    # actually bound to, not whichever INF happens to sit in the store.
+    $selected = [ordered]@{matches=$false;driver='';node='';inf='';inf_path='';inf_sha256='';nodes_scanned=0}
+    if ($BundleInfHash) {
+        $infRoot = Join-Path (Join-Path $WindowsRoot 'Windows') 'INF'
+        $enumKey = $mountKey + '\ControlSet00' + $current + '\Enum\' + $device + '\' + $instance
+        $enumProps = Get-ItemProperty -LiteralPath $enumKey -ErrorAction SilentlyContinue
+        if ($enumProps -and ($enumProps.PSObject.Properties.Name -contains 'Driver')) {
+            $selected.driver = [string]$enumProps.Driver
+        }
+        $classRoot = $mountKey + '\ControlSet00' + $current + '\Control\Class'
+        if (Test-Path -LiteralPath $classRoot) {
+            foreach ($classDir in @(Get-ChildItem -LiteralPath $classRoot -Directory -ErrorAction SilentlyContinue)) {
+                foreach ($node in @(Get-ChildItem -LiteralPath $classDir.PSPath -Directory -ErrorAction SilentlyContinue)) {
+                    $nodeProps = Get-ItemProperty -LiteralPath $node.PSPath -ErrorAction SilentlyContinue
+                    if (!$nodeProps -or ($nodeProps.PSObject.Properties.Name -notcontains 'MatchingDeviceId') -or
+                        $nodeProps.MatchingDeviceId -ne $device) {continue}
+                    $selected.nodes_scanned++
+                    $infName = ''
+                    if ($nodeProps.PSObject.Properties.Name -contains 'InfPath') {$infName = [string]$nodeProps.InfPath}
+                    elseif ($nodeProps.PSObject.Properties.Name -contains 'DriverInfPath') {$infName = [string]$nodeProps.DriverInfPath}
+                    if (!$infName) {continue}
+                    $infFile = Join-Path $infRoot $infName
+                    $infHash = ''
+                    if (Test-Path -LiteralPath $infFile) {$infHash = (Get-FileHash -LiteralPath $infFile).Hash}
+                    if ($infHash -ieq $BundleInfHash) {
+                        $selected.matches = $true
+                        $selected.node = $node.PSChildName
+                        $selected.inf = $infName
+                        $selected.inf_path = $infFile
+                        $selected.inf_sha256 = $infHash
+                        break
+                    }
+                    if (!$selected.node) {
+                        # Only a reference candidate to show which binding the
+                        # device held instead of the bundle.
+                        $selected.node = $node.PSChildName
+                        $selected.inf = $infName
+                        $selected.inf_path = $infFile
+                        $selected.inf_sha256 = $infHash
+                    }
+                }
+                if ($selected.matches) {break}
+            }
+        }
+    }
     $after = Get-GateValues $keyKey
 } finally {
     $null = Remove-Mount
@@ -92,10 +153,12 @@ if ($readBack[$gateName] -ne $GateValue) {throw 'Host gate readback failed'}
 foreach ($name in $zeroGates) {
     if ($readBack[$name] -ne 0) {throw "Host gate $name is not zero"}
 }
+if ($AttemptId -gt 0 -and $readBack['TimelmTouchAttemptId'] -ne $AttemptId) {throw 'Host attempt id readback failed'}
 $hiveHashAfter = (Get-FileHash -LiteralPath $hive -Algorithm SHA256).Hash
 [ordered]@{phase='host-gate-armed';utc=[DateTime]::UtcNow.ToString('o');device=$device;instance=$instance;
     control_set=('ControlSet00'+$current);key=('ControlSet00'+$current+'\Enum\'+$device+'\'+$instance+'\Device Parameters');
-    gate=$gateName;value=$GateValue;before=$before;after=$after;readback=$readBack;
+    gate=$gateName;value=$GateValue;attempt_id=$AttemptId;attempt_id_readback=$readBack['TimelmTouchAttemptId'];
+    selected_inf_match=$selected;before=$before;after=$after;readback=$readBack;
     hive_sha256_before=$hiveHashBefore;hive_sha256_after=$hiveHashAfter} |
     ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $Receipt -Encoding UTF8
-"host gate $gateName=$GateValue armed for $device ($instance) in ControlSet00$current"
+"host gate $gateName=$GateValue armed for $device ($instance) in ControlSet00$current (selected_inf_match=$($selected.matches), attempt_id=$AttemptId)"

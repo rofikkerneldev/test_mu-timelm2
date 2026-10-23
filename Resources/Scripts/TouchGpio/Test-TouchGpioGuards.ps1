@@ -143,6 +143,43 @@ if ($stage -notmatch 'refusing to disarm it' -or $stage -notmatch 'refusing to r
 if ($stage -notmatch 'resumeFromInstalledInf' -or $stage -notmatch '-GateValue \$gateTarget') {
     throw 'The staging must reserve the armed host gate for a resumed attempt'
 }
+# The resume basis is the package the device itself selected in the hive, not
+# an INF file that merely sits in the store: trial 9 staged an armed gate
+# over a foreign selection and the runner refused the bundle before baseline.
+if ($stage -notmatch 'resumeFromSelectedInf' -or
+    $stage -notmatch 'selected_inf_match' -or
+    $stage -notmatch '-BundleInfHash \$hostInfHash') {
+    throw 'The staging must read the selected package, not the store listing'
+}
+# Every staged boot carries exactly one bonding attempt id; the runner keeps
+# the staged value and the adapter echoes it as TimelmBitbangAttempt.
+$armText = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Arm-TouchGpioHostGate.ps1') -Raw
+if ($stage -notmatch '-AttemptId \$attemptId' -or $armText -notmatch 'TimelmTouchAttemptId') {
+    throw 'The staging must arm the attempt identity with the hive'
+}
+# A host start that is refused must leave its registry snapshot behind: the
+# snapshot is the evidence, the refusal only stops the trial (trial 9 lost
+# its Code 10 evidence to a throw ordered ahead of the snapshot).
+if ($runnerText -notmatch "Save-Json 'host-parameters\.json'") {
+    throw 'The runtime runner must publish the driver parameter snapshot'
+}
+if ($runnerText.IndexOf("Save-Json 'host-parameters.json'") -gt
+    $runnerText.IndexOf('GPIO I2C host did not start')) {
+    throw 'The failed host snapshot must be written before the refusal'
+}
+# The provider must publish its effective gate before the host is restarted:
+# trial 9 ran the whole window with the provider gate at 0.
+if ($runnerText -notmatch 'provider-gates-after-restart\.json' -or
+    $runnerText -notmatch 'provider effective gate stayed 0') {
+    throw 'The runtime runner must assert the provider effective gate before the host start'
+}
+# The runtime binding: staged/kept attempt id on the device key, recorded
+# attempt in the host receipt.
+if ($runnerText -notmatch 'TimelmTouchAttemptId' -or
+    $runnerText -notmatch 'TimelmBitbangAttempt' -or
+    $runnerText -notmatch "'attempt\.json'") {
+    throw 'The runtime runner must bind one attempt id to one host start'
+}
 # Retiring a previous attempt is still a re-arm: the old bundle must prove the
 # trial family identity (manifest rules plus restore-first metadata for the)
 # same Windows image) before its leftovers are archived.

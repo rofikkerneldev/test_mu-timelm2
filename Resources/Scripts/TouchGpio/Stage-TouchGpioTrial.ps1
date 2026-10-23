@@ -207,11 +207,26 @@ try {
     foreach ($match in @($installed | Select-String -Pattern 'ACPI\\TIML0001' -List)) {
         if ((Get-FileHash -LiteralPath $match.Path).Hash -eq $hostInfHash) {$resumeFromInstalledInf = $true}
     }
-    $gateTarget = if ($resumeFromInstalledInf) {1} else {0}
+    # The resume basis is the package the device itself selected, not an INF
+    # that merely sits in the store: trial 9 staged an armed gate while the
+    # selected INF was foreign, and the runner refused the bundle before it
+    # ever collected a baseline. The gate script reads the device binding out
+    # of the hive. The first call computes that reference with the gate held
+    # at zero; the second call writes the final gate and the attempt id, so
+    # every staged boot carries exactly one bonding attempt id.
+    $attemptId = [int]([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() % 4294967296)
     $gateReceipt = Join-Path $receiptRoot 'host-gate.json'
-    $gateOutput = & (Join-Path $PSScriptRoot 'Arm-TouchGpioHostGate.ps1') -WindowsRoot $winRoot -Receipt $gateReceipt -GateValue $gateTarget 2>&1
+    & (Join-Path $PSScriptRoot 'Arm-TouchGpioHostGate.ps1') -WindowsRoot $winRoot -Receipt $gateReceipt -GateValue 0 -AttemptId 0 -BundleInfHash $hostInfHash 2>&1 | Out-Null
+    if (!(Test-Path -LiteralPath $gateReceipt)) {throw 'Host gate staging failed on the reference pass'}
+    $gateReference = ConvertFrom-Json (Get-Content -LiteralPath $gateReceipt -Raw)
+    $resumeFromSelectedInf = [bool]$gateReference.selected_inf_match.matches
+    $gateTarget = if ($resumeFromSelectedInf) {1} else {0}
+    $gateOutput = & (Join-Path $PSScriptRoot 'Arm-TouchGpioHostGate.ps1') -WindowsRoot $winRoot -Receipt $gateReceipt -GateValue $gateTarget -AttemptId $attemptId -BundleInfHash $hostInfHash 2>&1
     $gateArmed = Test-Path -LiteralPath $gateReceipt
     if (!$gateArmed) {throw "Host gate staging failed: $gateOutput"}
+    $gateStatus = ConvertFrom-Json (Get-Content -LiteralPath $gateReceipt -Raw)
+    if (!$gateStatus.selected_inf_match.matches) {throw 'Host gate staging lost the selected reference'}
+    if ($gateStatus.attempt_id_readback -ne $attemptId) {throw 'Host gate staging lost the attempt id'}
     $null = New-Item -ItemType Directory -Path $bundle
     $sources = @(
         @{source=(Join-Path $PSScriptRoot 'Launch-TouchGpioTrial.ps1');relative='Launch-TouchGpioTrial.ps1'},
@@ -287,7 +302,8 @@ try {
         test_seconds=120;automatic_reboot=$false;normal_shutdown=$true;flushed_and_dismounted=$true;
         rearm=$ReArm.IsPresent;disarmed_startup=$disarmedStartup;archived_leftovers=$archived;
         device_manager_startup='Timelm-device-manager.cmd';device_manager_startup_sha256=$devMgrStartupHash;
-        disarmed_device_manager_startup=$devMgrDisarmed;host_gate=$gateTarget;host_gate_resume=$resumeFromInstalledInf;host_gate_receipt='host-gate.json';
+        disarmed_device_manager_startup=$devMgrDisarmed;host_gate=$gateTarget;host_gate_resume=$resumeFromInstalledInf;
+        host_gate_resume_selected=$resumeFromSelectedInf;attempt_id=$attemptId;host_gate_receipt='host-gate.json';
         buttons_startup='Timelm-buttons.cmd';buttons_startup_sha256=$buttonsStartupHash;buttons_armed=$buttonsArmed;
         disarmed_buttons_startup=$buttonsDisarmed} |
         ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $receiptRoot 'stage-status.json')
