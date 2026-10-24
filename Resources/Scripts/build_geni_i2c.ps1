@@ -22,6 +22,8 @@ $commit = (& git -C $repo rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Unable to record source revision' }
 [ordered]@{commit=$commit;configuration=$Configuration;architecture='ARM64';kmdf='1.33';mode='bounded FIFO and GPI SPB bring-up';native_gpi='verified firmware BYPASS or experimental Windows IOMMU v2 translated domain; both disabled by default';native_board_init='optional Windows GCC/GPIO lifecycle; disabled by default';observed_recovery_transport='GPI DMA; real packet decoder validated in Recovery';firmware_handoff='shared SMMU handoff not validated; IORT candidate is not deployable';hardware_validation='Windows GPI not yet deployed'} |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $output 'source.json')
+& python (Join-Path $PSScriptRoot 'record_touch_source.py') --component host --output (Join-Path $output 'source-inputs.json')
+if($LASTEXITCODE -ne 0){throw 'Host source provenance failed'}
 $hashes = foreach ($file in Get-ChildItem -LiteralPath $output -File -Recurse) {
     if ($file.Name -eq 'sha256.json') { continue }
     [ordered]@{path=[IO.Path]::GetRelativePath($output,$file.FullName);sha256=(Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant();size=$file.Length}

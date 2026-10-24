@@ -1,5 +1,11 @@
 # One-boot GPIO touch trial
 
+Current candidate: [Astra R13, schema 2](BUILD-ASTRA-R13.md). It implements the reviewed binding/readiness/failure-record corrections and uses prepare-then-cold-test activation. Read this candidate guide first; the implementation notes below describe the earlier trial history.
+
+> **Review update, 2026-10-24 (cbd97ab3): partial implementation, not hardware success.** Read [the review](../../../docs/touch-gpio-handoff-20261023/REVIEW-OPENCODE-20261024.md) before another trial. The latest boot contains the pinned 952-byte DSDT and 451-byte SSDT, but evidence does not establish that the newly instrumented host ran. Four runtime JSON receipts contain only NUL bytes; the offline SYSTEM hive has unequal sequence numbers.
+>
+> The evidence/orchestration claims below describe intended behavior and are qualified by these confirmed gaps: the offline selected-INF helper reads Enum Driver but accepts a matching INF from any Class node; the effective-provider-gate assertion accepts missing/nonzero values other than 1; successful rollback overwrites per-pin write failures. Attempt/backend are recorded without strict generation validation, and snapshots do not cover all earlier exceptions. The result analyzer still incorrectly compares Resource Hub connection IDs to physical GPIO numbers. Local reproductions and the next acceptance criteria are linked in the review. Do not interpret the existing guard tests as proof these invariants hold.
+
 `Build-TouchGpioPackage.ps1` assembles the verified bundle on the build PC:
 
 ```powershell
@@ -303,24 +309,28 @@ stock boot managers (`fae47d78...`, 3120648 bytes) every restore lands on.
 While the platform readback stays `b759e921...`, the namespace gate passes
 with no platform flash at all.
 
-The driver wave then makes the next failure attributable without a kernel
-dump. The runner will write a per-boot `TimelmTouchAttemptId` to the device
-instance key; the adapter reads it in prepare and echoes it as
-`TimelmBitbangAttempt`, so every value in the collection binds to one boot.
-`TimelmBitbangFailOp` names the first failed milestone of the boot - zero is
+The driver wave adds failure diagnostics. Staging or the runner writes
+`TimelmTouchAttemptId` to the device instance key; the adapter reads it in
+prepare and echoes it as `TimelmBitbangAttempt`. This is an attempt tag,
+not proof that every persistent field belongs to that boot or start. The
+runner does not yet reject an absent or mismatched echo.
+`TimelmBitbangFailOp` names the failed milestone of the current prepare/start - zero is
 none, then contract, memory, class, count, open bus, links, provider,
 interface, open output, write low, GPIO-mode, VCL, VDD, reset, sample,
 identity at 1 through 16 - and this numbering is a log ABI that must never
 be renumbered. Per-pin evidence arrives as `TimelmBitbangOpenStatus0..4` and
 `TimelmBitbangWriteStatus0..4` (status of each open and write),
-`TimelmBitbangWriteBytes0..4` (bytes each write moved),
+`TimelmBitbangWriteBytes0..4` (bytes from the latest successful write, zero on error),
 `TimelmBitbangPinIdHigh0..4` (the high dword of each ResourceHub id),
 `TimelmBitbangConnOrdinal0..4` (the resource ordinal each connection came
 from), `TimelmBitbangResourceCount` (the raw resource total) and
 `TimelmBitbangIfaceVer`/`TimelmBitbangIfaceSize` (the negotiated provider
 interface identity); `TimelmHostBackend` names the selected backend (1
 bitbang, 2 probe, 3 native FIFO, 4 GPI) on every boot. The
-`TIMELM_TOUCH_BUS_V3` interface ABI is untouched.
+`TIMELM_TOUCH_BUS_V3` interface ABI is untouched. The write fields are also
+updated by rollback: they do not preserve the first failing pin operation.
+The original returned status and FailOp survive that cleanup, but a separate
+immutable first-failure record is still required.
 
 The adapter tests grow the same evidence surface: registry mocks for the
 attempt id, an assertion that the attempt plumbing survives the split-bus
@@ -328,23 +338,22 @@ resource shape, and forced-failure checks that map each broken call to its
 exact milestone value. All three local test suites pass under
 ASan and UBSan.
 
-The orchestration scripts encode the four staging lessons the same way.
-The runner now takes the persisted driver registry snapshot and phase
-receipts BEFORE it refuses a host start, so a Code 10 moment leaves the
-next analysis nothing missing. It asserts the provider's effective gate as
-soon as the replacement provider restarts: a restart that publishes
-`TimelmGpioBitbangGate=0` stops the trial there and never lets the host eat
-a boot with a gateless provider. It binds every boot to one attempt id:
-staging writes `TimelmTouchAttemptId` into the device parameters key of
-`ACPI\TIML0001` through the phone hive, the runner keeps that value
-(generating one only when staging skipped it) and the adapter reports it
-back as `TimelmBitbangAttempt`, recorded next to the stage and statuses in
-`host-bitbang.json`. The staging resume decision moved to the package the
-device itself selected: the offline gate script follows the binding from
-the Enum tree into the Class nodes and hashes that INF, refusing to guess
-from the store listing; the bundle's own INF on disk is still recorded, and
-the reference pass and the final gate/attempt write run as two verified
-Arm calls. All of it is pinned by `Test-TouchGpioGuards.ps1`, which now
-refuses a runner whose snapshot lands behind its own refusal, a staging
-that never reads the selected package, and a staged boot without an
-attempt id.
+The runner now takes the driver registry snapshot before its explicit
+Code 10/service rejection. Earlier PnP or device-lookup errors can still
+bypass that block, and receipt persistence needs additional validation.
+After provider restart it requires the requested gate to equal 1 and
+rejects an effective gate of 0. Missing or other non-1 effective values
+currently pass; this must become an exact-1 readiness condition.
+
+Staging writes `TimelmTouchAttemptId` into the device parameters key of
+`ACPI\TIML0001`; the runner keeps it, generating one only when absent,
+and records the adapter echo in `host-bitbang.json`. Generation freshness
+and the backend marker are not yet enforced as acceptance conditions.
+
+The offline resume helper reads the Enum Driver value, but currently scans
+all Class nodes for a matching INF instead of restricting the query to that
+reference. A stale unselected node can therefore enable resume. Comparing
+the reference and final Arm receipts does not repair that selection error.
+`Test-TouchGpioGuards.ps1` checks relevant strings and ordering, but the
+semantic binding, missing-gate and cleanup cases need behavioral regression
+tests. The 2026-10-24 review provides local reproductions of those gaps.

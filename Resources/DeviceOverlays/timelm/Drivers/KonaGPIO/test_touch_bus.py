@@ -24,6 +24,7 @@ SHIM = r'''
 #include <string.h>
 #include "PinConfig.h"
 typedef uint32_t ULONG, *PULONG;
+typedef uint64_t ULONGLONG;
 typedef uintptr_t ULONG_PTR;
 typedef int32_t LONG, NTSTATUS;
 typedef void VOID, *PVOID;
@@ -69,10 +70,11 @@ typedef struct {
  ULONG TouchBusSaved[2]; KSPIN_LOCK TouchGpioLock;
  BOOLEAN TouchGpioLockReady, TouchGpioEnabled; ULONG TouchPinsConnected, TouchInterfacesAdded;
  ULONG TouchGpioSavedCtl[2], TouchGpioSavedIo[2]; WDFDEVICE TouchDevice;
+ ULONGLONG TouchGeneration;
 } GPIO_DEVICE_CONTEXT, *PGPIO_DEVICE_CONTEXT;
 static ULONG registers[(SOUTH+IO_REG(37)+4u)/4u];
 static unsigned writes, drop_write, high_drives, scl_rises, references;
-static unsigned query_calls, fail_query_call, registered_interfaces, successful_queries[3];
+static unsigned query_calls, fail_query_call, registered_interfaces, successful_queries[4];
 static unsigned log_pins[100], log_count;
 static int external_low[2];
 static ULONG *ctl(unsigned pin) { return &registers[(SOUTH+CTL_REG(pin))/4]; }
@@ -115,12 +117,13 @@ NTSTATUS GPIOTouchBus(PVOID c,BOOLEAN enable);
 NTSTATUS GPIOTouchGpioMode(PVOID c,BOOLEAN enable);
 NTSTATUS GPIOTouchSetLines(PVOID c,BOOLEAN scl,BOOLEAN sda);
 NTSTATUS GPIOTouchGetLines(PVOID c,PBOOLEAN scl,PBOOLEAN sda);
+NTSTATUS GPIOTouchQueryState(PVOID c,ULONG *gate,ULONGLONG *generation);
 static NTSTATUS WdfDeviceAddQueryInterface(WDFDEVICE d,WDF_QUERY_INTERFACE_CONFIG *q) {
- unsigned index=q->Guid==&GUID_TIMELM_TOUCH_BUS ? 0 : q->Guid==&GUID_TIMELM_TOUCH_BUS_V3 ? 1 : 2;
+ unsigned index=q->Guid==&GUID_TIMELM_TOUCH_BUS ? 0 : q->Guid==&GUID_TIMELM_TOUCH_BUS_V3 ? 1 : q->Guid==&GUID_TLMM_INTERFACE ? 2 : 3;
  assert(d&&q->Interface&&q->Interface->Context==d);
- assert(q->Guid==&GUID_TIMELM_TOUCH_BUS||q->Guid==&GUID_TIMELM_TOUCH_BUS_V3||q->Guid==&GUID_TLMM_INTERFACE);
- assert(q->Interface->Version==(index==0?2:index==1?3:1));
- assert(q->Interface->Size==(index==0?sizeof(TIMELM_TOUCH_BUS):index==1?sizeof(TIMELM_TOUCH_BUS_V3):sizeof(TLMM_INTERFACE)));
+ assert(q->Guid==&GUID_TIMELM_TOUCH_BUS||q->Guid==&GUID_TIMELM_TOUCH_BUS_V3||q->Guid==&GUID_TLMM_INTERFACE||q->Guid==&GUID_TIMELM_TOUCH_BUS_V4);
+ assert(q->Interface->Version==(index==0?2:index==1?3:index==2?1:4));
+ assert(q->Interface->Size==(index==0?sizeof(TIMELM_TOUCH_BUS):index==1?sizeof(TIMELM_TOUCH_BUS_V3):index==2?sizeof(TLMM_INTERFACE):sizeof(TIMELM_TOUCH_BUS_V4)));
  ++query_calls;
  if(query_calls==fail_query_call) return STATUS_INSUFFICIENT_RESOURCES;
  /* KMDF appends entries. Our provider must never ask twice per device. */
@@ -140,28 +143,32 @@ static void reset(GPIO_DEVICE_CONTEXT *c) {
  c->Base=(ULONG_PTR)registers; c->Length=sizeof(registers);
  c->TouchGpioLockReady=c->TouchGpioEnabled=TRUE;
  c->TouchPinsConnected=3; c->TouchDevice=c;
+ c->TouchGeneration=0x123400000007ULL;
  *ctl(36)=0xabcd0004u; *ctl(37)=0xcdef0004u;
  *io(36)=*io(37)=2u; /* saved high latches, inputs: safe to restore */
 }
 int main(void) {
- GPIO_DEVICE_CONTEXT c; BOOLEAN scl,sda;
+ GPIO_DEVICE_CONTEXT c; BOOLEAN scl,sda; ULONG gate; ULONGLONG generation;
  /* Successful entries persist across stop/reprepare; retry only unfinished
   * registrations after any single allocation failure. */
- for(unsigned failed=0;failed<=3;++failed) {
+ for(unsigned failed=0;failed<=4;++failed) {
   reset(&c); fail_query_call=failed;
   NTSTATUS status=GPIOTouchRegisterInterfaces(&c,&c);
   assert(status==(failed?STATUS_INSUFFICIENT_RESOURCES:STATUS_SUCCESS));
-  assert(c.TouchInterfacesAdded==(failed?((1u<<(failed-1))-1u):7u));
+  assert(c.TouchInterfacesAdded==(failed?(failed==4?11u:((1u<<(failed-1))-1u)):15u));
   fail_query_call=0;
   assert(GPIOTouchRegisterInterfaces(&c,&c)==STATUS_SUCCESS);
-  assert(c.TouchInterfacesAdded==7u&&registered_interfaces==7u);
-  assert(successful_queries[0]==1&&successful_queries[1]==1&&successful_queries[2]==1);
+  assert(c.TouchInterfacesAdded==15u&&registered_interfaces==15u);
+  assert(successful_queries[0]==1&&successful_queries[1]==1&&successful_queries[2]==1&&successful_queries[3]==1);
   unsigned before=query_calls;
   c.Base=0; /* release hardware does not destroy the WDFDEVICE/query list */
   assert(GPIOTouchRegisterInterfaces(&c,&c)==STATUS_SUCCESS&&query_calls==before);
   c.Base=(ULONG_PTR)registers;
   assert(GPIOTouchRegisterInterfaces(&c,&c)==STATUS_SUCCESS&&query_calls==before);
  }
+ reset(&c); assert(GPIOTouchQueryState(&c,&gate,&generation)==STATUS_SUCCESS && gate==1 && generation==c.TouchGeneration && writes==0);
+ c.TouchGpioEnabled=FALSE;assert(GPIOTouchQueryState(&c,&gate,&generation)==STATUS_SUCCESS && gate==0 && writes==0);
+ c.Base=0;assert(GPIOTouchQueryState(&c,&gate,&generation)==STATUS_DEVICE_NOT_READY && gate==0 && generation==0 && writes==0);
  reset(&c); c.TouchGpioEnabled=FALSE;
  assert(GPIOTouchGpioMode(&c,TRUE)==STATUS_NOT_SUPPORTED && writes==0);
  reset(&c); c.TouchPinsConnected=1;

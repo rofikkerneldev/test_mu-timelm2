@@ -2,6 +2,7 @@ name: Build native Windows timelm touch bring-up
 on:
   workflow_dispatch:
   push:
+    branches-ignore: [codex/astra-touch-gpio-r13]
     paths:
       - 'GPLDrivers/Windows/**'
       - 'Resources/DeviceOverlays/timelm/Drivers/KonaGPIO/**'

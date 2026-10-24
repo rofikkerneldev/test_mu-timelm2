@@ -9,6 +9,7 @@ param(
     [Parameter(Mandatory=$true)][string]$Trial,
     [Parameter(Mandatory=$true)][string]$Output,
     [string]$InstalledInfFolder,
+    [string]$ReplacementManifest,
     [string]$Receipt
 )
 $ErrorActionPreference = 'Stop'
@@ -56,11 +57,32 @@ try {
         @{name='Host';root=(Resolve-Directory $HostPackage 'host package');base='kona_geni';catalog='kona_geni.cat';id='TIML0001'},
         @{name='Touch';root=(Resolve-Directory $TouchPackage 'touch package');base='vhidmini';catalog='sw42902.cat';id='LGSW4290'}
     )
+    $componentSources = [ordered]@{}
+    foreach($source in $sources) {
+        $sourceFile=Join-Path $source.root 'source-inputs.json'
+        $component=Get-Content -LiteralPath $sourceFile -Raw | ConvertFrom-Json
+        $kind=switch($source.name){GPIO {'gpio'} Host {'host'} Touch {'touch'}}
+        if($component.schema -ne 2 -or $component.dirty_inputs -ne $false -or
+            $component.component -ne $kind -or
+            $component.commit -notmatch '^[a-f0-9]{40}$' -or $component.input_digest -notmatch '^[a-f0-9]{64}$') {
+            throw ('Missing or dirty component provenance: '+$source.name)
+        }
+        $componentSources[$source.name]=$component
+    }
+    $reviewedReplacements=$null
+    if($ReplacementManifest){$reviewedReplacements=Get-Content -LiteralPath $ReplacementManifest -Raw | ConvertFrom-Json}
     # Validate the trial launcher and SSDT first. The staging script checks the
     # same fields, so a bundle that passes here is provably stageable.
     $launcher = Join-Path $trialRoot 'TouchGpioOnce.efi'
     $ssdt = Join-Path $trialRoot 'TouchGpio.aml'
     $meta = Get-Content -LiteralPath (Join-Path $trialRoot 'touch-gpio.json') -Raw | ConvertFrom-Json
+    $launcherSource=Get-Content -LiteralPath (Join-Path $trialRoot 'source-inputs.json') -Raw | ConvertFrom-Json
+    $sourceCommit=$componentSources['Host'].commit
+    foreach($component in @($componentSources.Values)+@($launcherSource)) {
+        if($component.commit -ne $sourceCommit -or $component.dirty_inputs -ne $false) {throw 'Component source revisions differ or inputs are dirty'}
+    }
+    if($meta.commit -ne $sourceCommit -or $meta.dsdt_mode -ne 'live-snapshot-952' -or
+        $meta.dsdt_sha256 -ne 'b759e921e4224158834b5867a456ab988a49d5f900ee90d2b77ed984d9a6c5fe') {throw 'Launcher source/snapshot provenance mismatch'}
     if (!(Test-Path -LiteralPath $launcher) -or !(Test-Path -LiteralPath $ssdt)) {throw 'Trial launcher or SSDT missing'}
     Assert-Arm64Efi $launcher
     if ($meta.sha256 -notmatch '^[0-9a-fA-F]{64}$' -or (Get-Sha256 $launcher) -ne $meta.sha256.ToLowerInvariant() -or
@@ -119,6 +141,11 @@ try {
         # Every installed INF that matches this hardware ID must be listed, or
         # the staging script refuses the trial as an unreviewed replacement.
         $replaces = @()
+        if($reviewedReplacements) {
+            $reviewed=@($reviewedReplacements.packages | Where-Object {$_.name -ceq $source.name})
+            if($reviewed.Count -ne 1){throw 'Replacement manifest has no unique component'}
+            $replaces+=@($reviewed[0].replaces_inf_sha256)
+        }
         if ($installedRoot) {
             $pattern = 'ACPI\\'+$source.id
             foreach ($match in @(Get-ChildItem -LiteralPath $installedRoot -Filter '*.inf' -File | Select-String -Pattern $pattern -List)) {
@@ -127,20 +154,39 @@ try {
             }
         }
         $packages.Add([ordered]@{name=$source.name;inf=($source.base+'.inf');catalog=$catalogName;
-            certificate=($source.base+'.cer');certificate_thumbprint=$thumbprint;replaces_inf_sha256=@($replaces)})
+            certificate=($source.base+'.cer');certificate_thumbprint=$thumbprint;replaces_inf_sha256=@($replaces | Sort-Object -Unique)})
     }
     foreach ($file in @(@{from=$launcher;to='TouchGpioOnce.efi'},@{from=$ssdt;to='TouchGpio.aml'},@{from=(Join-Path $trialRoot 'touch-gpio.json');to='touch-gpio.json'})) {
         $to = Join-Path $Output $file.to
         Copy-Item -LiteralPath $file.from -Destination $to
         if ((Get-Sha256 $to) -ne (Get-Sha256 $file.from)) {throw "Copy verification failed: $($file.to)"}
     }
+    $helperRoot=$Output
+    $helpers=New-Object 'System.Collections.Generic.List[object]'
+    foreach($file in @(Get-ChildItem -LiteralPath $PSScriptRoot -File | Where-Object {$_.Extension -in @('.ps1','.cmd')}) +
+        @((Get-Item (Join-Path $PSScriptRoot '../Collect-TimelmDiagnostics.ps1')),(Get-Item (Join-Path $PSScriptRoot '../Invoke-ProbeProcess.ps1')))) {
+        Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $helperRoot $file.Name)
+        $helpers.Add([ordered]@{path=$file.Name;sha256=(Get-Sha256 (Join-Path $helperRoot $file.Name))})
+    }
+    & python (Join-Path $PSScriptRoot '../record_touch_source.py') --component helpers --output (Join-Path $Output 'helper-source.json')
+    if($LASTEXITCODE -ne 0){throw 'Helper source provenance failed'}
+    $helperSource=Get-Content -LiteralPath (Join-Path $Output 'helper-source.json') -Raw | ConvertFrom-Json
+    if($helperSource.commit -ne $sourceCommit -or $helperSource.dirty_inputs -ne $false){throw 'Helpers are not from the built revision'}
+    $provenance=[ordered]@{schema=2;components=$componentSources;launcher=$launcherSource;helpers=$helperSource;
+        build_id=539365412;provider_interface=4;activation_policy='prepare-then-cold-test';hardware_validation='pending'}
+    Write-TouchGpioJson (Join-Path $Output 'provenance.json') $provenance
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'BUILD-ASTRA-R13.md') -Destination (Join-Path $Output 'README.md')
     $manifest = [ordered]@{
         schema = 1
+        revision = 2
         trial = 'touch-gpio-v1'
-        source_commit = [string]$meta.commit
+        source_commit = [string]$sourceCommit
+        diagnostic_build_id = 539365412
         ssdt_sha256 = $meta.ssdt_sha256.ToLowerInvariant()
         files = @($files.ToArray())
         packages = @($packages.ToArray())
+        helpers = @($helpers.ToArray())
+        provenance_sha256 = Get-Sha256 (Join-Path $Output 'provenance.json')
     }
     $manifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $Output 'package.json')
     # Reuse the runtime manifest check so the bundle cannot differ from what
@@ -158,6 +204,11 @@ try {
     Write-Host ("Bundle verified: {0} ({1} files, {2} packages)" -f $Output,$manifest.files.Count,$manifest.packages.Count)
 } catch {
     # Only remove a directory this run created; a refused output must stay.
-    if ($created -and (Test-Path -LiteralPath $Output)) {Remove-Item -LiteralPath $Output -Recurse -Force}
+    if ($created -and (Test-Path -LiteralPath $Output)) {
+        $removePath=[IO.Path]::GetFullPath($Output)
+        if($removePath -eq [IO.Path]::GetPathRoot($removePath) -or
+            ((Get-Item -LiteralPath $removePath).Attributes -band [IO.FileAttributes]::ReparsePoint)) {throw 'Unsafe failed-build cleanup target'}
+        Remove-Item -LiteralPath $removePath -Recurse -Force
+    }
     throw
 }

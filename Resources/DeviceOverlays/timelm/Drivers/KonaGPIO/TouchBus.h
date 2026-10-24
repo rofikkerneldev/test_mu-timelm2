@@ -24,4 +24,17 @@ typedef struct TIMELM_TOUCH_BUS_V3 {
     NTSTATUS (*SetLines)(PVOID Context, BOOLEAN ReleaseScl, BOOLEAN ReleaseSda);
     NTSTATUS (*GetLines)(PVOID Context, PBOOLEAN SclHigh, PBOOLEAN SdaHigh);
 } TIMELM_TOUCH_BUS_V3;
+/* V4 is a separate ABI. QueryState reads live provider state without changing
+ * mux or pins. Generation changes on each provider hardware preparation.
+ * A consumer must observe Gate==1 and the same nonzero Generation in prepare
+ * and start before writing any power/reset output. V2/V3 remain unchanged. */
+DEFINE_GUID(GUID_TIMELM_TOUCH_BUS_V4,
+    0x0cf0124e, 0x7c60, 0x4ff8, 0x9c, 0xd0, 0x8a, 0x39, 0x35, 0xfa, 0xbc, 0x24);
+typedef struct TIMELM_TOUCH_BUS_V4 {
+    INTERFACE Interface;
+    NTSTATUS (*SetGpioMode)(PVOID Context, BOOLEAN Enable);
+    NTSTATUS (*SetLines)(PVOID Context, BOOLEAN ReleaseScl, BOOLEAN ReleaseSda);
+    NTSTATUS (*GetLines)(PVOID Context, PBOOLEAN SclHigh, PBOOLEAN SdaHigh);
+    NTSTATUS (*QueryState)(PVOID Context, ULONG *Gate, ULONGLONG *Generation);
+} TIMELM_TOUCH_BUS_V4;
 #endif

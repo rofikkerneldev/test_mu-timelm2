@@ -38,6 +38,9 @@ try {
     if (Test-Path -LiteralPath (Join-Path $receiptRoot 'stage-status.json')) {throw 'Trial staging already attempted; inspect existing receipt'}
     $artifactRoot = (Get-Item -LiteralPath $Artifact).FullName
     $manifest = Get-TouchGpioManifest $artifactRoot
+    $own=@($manifest.helpers | Where-Object {$_.path -ceq 'Stage-TouchGpioTrial.ps1'})
+    if($manifest.revision -ne 2 -or $own.Count -ne 1 -or
+        (Get-FileHash -LiteralPath $PSCommandPath).Hash -ine $own[0].sha256) {throw 'Use the staging helper shipped in this revision-2 bundle'}
     $meta = Get-Content -LiteralPath (Join-Path $artifactRoot 'touch-gpio.json') -Raw | ConvertFrom-Json
     $launcher = Join-Path $artifactRoot 'TouchGpioOnce.efi'
     $aml = Join-Path $artifactRoot 'TouchGpio.aml'
@@ -186,69 +189,45 @@ try {
         if (!(Test-Path -LiteralPath ($espRoot+$rel))) {Write-Flushed ($espRoot+$rel) $original}
         if ((Get-FileHash -LiteralPath ($espRoot+$rel)).Hash -ne $expectedWindowsHash) {throw 'Restoration backup readback failed'}
     }
-    # The host gate is written in the phone hive before the trial boot. The
-    # host driver reads NativeGpioI2cEnabled when the device starts, and that
-    # start happens in the very boot that carries the trial SSDT. A device
-    # that failed to start keeps the PnP lock of its parameters key, so the
-    # value can not be written while the phone runs: the hive is edited here
-    # instead, with the phone off. Every other gate stays zero, the bitbang
-    # path refuses to run when one of them is set.
-    # Arm one is reserved for a resumed attempt: when this exact bundle's own
-    # host INF is already installed, the resumed boot's first start is the one
-    # that must reach the bitbang prepare path. A clean bundle stages the gate
-    # at zero: the runner verifies the zero state, upgrades the driver bundle
-    # and arms the gate by itself before restarting the device. Pre-arming a
-    # clean bundle would only trip the runner's pre-existing-gate guard
-    # (trial 9: the guard threw at 05:13:50Z before any baseline was written).
-    $hostPkg = @($manifest.packages | Where-Object {$_.name -ceq 'Host'})[0]
-    $hostInfRel = 'Drivers/' + $hostPkg.name + '/' + $hostPkg.inf
-    $hostInfHash = @($manifest.files | Where-Object {$_.path -ceq $hostInfRel})[0].sha256
-    $resumeFromInstalledInf = $false
-    foreach ($match in @($installed | Select-String -Pattern 'ACPI\\TIML0001' -List)) {
-        if ((Get-FileHash -LiteralPath $match.Path).Hash -eq $hostInfHash) {$resumeFromInstalledInf = $true}
-    }
-    # The resume basis is the package the device itself selected, not an INF
-    # that merely sits in the store: trial 9 staged an armed gate while the
-    # selected INF was foreign, and the runner refused the bundle before it
-    # ever collected a baseline. The gate script reads the device binding out
-    # of the hive. The first call computes that reference with the gate held
-    # at zero; the second call writes the final gate and the attempt id, so
-    # every staged boot carries exactly one bonding attempt id.
-    $attemptId = [int]([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() % 4294967296)
+    # Prepare boot: both hardware gates are zero while the packages change.
+    # Test boot: exact host/provider selected binaries, both gates armed offline.
+    # The driver rechecks live provider V4 readiness before power/reset writes.
+    $hostInfHash = @($manifest.files | Where-Object {$_.path -ceq 'Drivers/Host/kona_geni.inf'})[0].sha256
+    $hostSysHash = @($manifest.files | Where-Object {$_.path -ceq 'Drivers/Host/kona_geni.sys'})[0].sha256
+    $gpioInfHash = @($manifest.files | Where-Object {$_.path -ceq 'Drivers/GPIO/GPIO.inf'})[0].sha256
+    $gpioSysHash = @($manifest.files | Where-Object {$_.path -ceq 'Drivers/GPIO/GPIO.sys'})[0].sha256
+    $random = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $idBytes = New-Object byte[] 4
+        do {$random.GetBytes($idBytes);$attemptId=([BitConverter]::ToInt32($idBytes,0) -band 0x7fffffff)} while(!$attemptId)
+    } finally {$random.Dispose()}
     $gateReceipt = Join-Path $receiptRoot 'host-gate.json'
-    & (Join-Path $PSScriptRoot 'Arm-TouchGpioHostGate.ps1') -WindowsRoot $winRoot -Receipt $gateReceipt -GateValue 0 -AttemptId 0 -BundleInfHash $hostInfHash 2>&1 | Out-Null
-    if (!(Test-Path -LiteralPath $gateReceipt)) {throw 'Host gate staging failed on the reference pass'}
-    $gateReference = ConvertFrom-Json (Get-Content -LiteralPath $gateReceipt -Raw)
-    $resumeFromSelectedInf = [bool]$gateReference.selected_inf_match.matches
+    $armArgs = @{WindowsRoot=$winRoot;Receipt=$gateReceipt;BundleInfHash=$hostInfHash;BundleSysHash=$hostSysHash;
+        ProviderInfHash=$gpioInfHash;ProviderSysHash=$gpioSysHash}
+    & (Join-Path $PSScriptRoot 'Arm-TouchGpioHostGate.ps1') @armArgs -GateValue 0 -AttemptId 0 | Out-Null
+    $reference = Get-Content -LiteralPath $gateReceipt -Raw | ConvertFrom-Json
+    $resumeFromSelectedInf = [bool]($reference.selected_inf_match.matches -and $reference.provider_selection.matches)
+    $resumeFromInstalledInf = $resumeFromSelectedInf
     $gateTarget = if ($resumeFromSelectedInf) {1} else {0}
-    $gateOutput = & (Join-Path $PSScriptRoot 'Arm-TouchGpioHostGate.ps1') -WindowsRoot $winRoot -Receipt $gateReceipt -GateValue $gateTarget -AttemptId $attemptId -BundleInfHash $hostInfHash 2>&1
-    $gateArmed = Test-Path -LiteralPath $gateReceipt
-    if (!$gateArmed) {throw "Host gate staging failed: $gateOutput"}
-    $gateStatus = ConvertFrom-Json (Get-Content -LiteralPath $gateReceipt -Raw)
-    # The final pass must reproduce the reference pass detection byte for
-    # byte: on a resumed attempt both receipts show the bundle INF selected
-    # (gate 1), on a clean bundle both show no binding (gate 0; the runner
-    # arms the gate itself inside the trial boot). Asserting matches=$true
-    # unconditionally stalled a clean phone at exactly this check.
-    if ($gateStatus.selected_inf_match.matches -ne $resumeFromSelectedInf) {throw 'Host gate staging lost the selected reference'}
-    if ($gateStatus.value -ne $gateTarget) {throw 'Host gate staging wrote the wrong gate'}
+    & (Join-Path $PSScriptRoot 'Arm-TouchGpioHostGate.ps1') @armArgs -GateValue $gateTarget -AttemptId $attemptId | Out-Null
+    $gateStatus = Get-Content -LiteralPath $gateReceipt -Raw | ConvertFrom-Json
+    if ($gateStatus.selected_inf_match.matches -ne $reference.selected_inf_match.matches -or
+        $gateStatus.provider_selection.matches -ne $reference.provider_selection.matches) {throw 'Host gate staging lost the selected reference'}
+    if ($gateStatus.value -ne $gateTarget -or $gateStatus.provider_requested_gate -ne $gateTarget) {throw 'Host gate staging wrote the wrong gate'}
     if ($gateStatus.attempt_id_readback -ne $attemptId) {throw 'Host gate staging lost the attempt id'}
+    $activation = [ordered]@{schema=2;mode=$(if($gateTarget){'test'}else{'prepare'});attempt_id=$attemptId;
+        expected_build_id=539365412;host_gate=$gateTarget;provider_gate=$gateTarget;
+        host_selection=$gateStatus.selected_inf_match;provider_selection=$gateStatus.provider_selection;
+        policy='install with gates zero; cold test boot only after exact selected host/provider; never restart an active bus'}
+    Write-TouchGpioJson (Join-Path $receiptRoot 'activation-plan.json') $activation
     $null = New-Item -ItemType Directory -Path $bundle
-    $sources = @(
-        @{source=(Join-Path $PSScriptRoot 'Launch-TouchGpioTrial.ps1');relative='Launch-TouchGpioTrial.ps1'},
-        @{source=(Join-Path $PSScriptRoot 'Run-TouchGpioTrial.ps1');relative='Run-TouchGpioTrial.ps1'},
-        @{source=(Join-Path $PSScriptRoot 'TouchGpioCommon.ps1');relative='TouchGpioCommon.ps1'},
-        @{source=(Join-Path $PSScriptRoot 'Timelm-touch-gpio.cmd');relative='Timelm-touch-gpio.cmd'},
-        @{source=(Join-Path $PSScriptRoot 'TouchGpioDeviceManager.ps1');relative='TouchGpioDeviceManager.ps1'},
-        @{source=(Join-Path $PSScriptRoot 'Timelm-device-manager.cmd');relative='Timelm-device-manager.cmd'},
-        @{source=(Join-Path $PSScriptRoot 'Timelm-buttons.cmd');relative='Timelm-buttons.cmd'},
-        @{source=(Join-Path $PSScriptRoot 'Watch-DeviceNodes.ps1');relative='Watch-DeviceNodes.ps1'},
-        @{source=(Join-Path (Split-Path $PSScriptRoot) 'TouchEnumeration\Invoke-ProbeProcess.ps1');relative='Invoke-ProbeProcess.ps1'},
-        @{source=(Join-Path (Split-Path $PSScriptRoot) 'Collect-TimelmDiagnostics.ps1');relative='Collect-TimelmDiagnostics.ps1'},
-        @{source=(Join-Path $artifactRoot 'package.json');relative='package.json'},
-        @{source=(Join-Path $artifactRoot 'touch-gpio.json');relative='touch-gpio.json'},
-        @{source=$aml;relative='TouchGpio.aml'})
-    foreach ($file in $manifest.files) {$sources += @{source=(Join-Path $artifactRoot $file.path);relative=$file.path}}
+    Write-TouchGpioJson (Join-Path $bundle 'activation-plan.json') $activation
+    if($manifest.revision -ne 2){throw 'Only the reviewed revision-2 package can be newly staged'}
+    $sources = @($manifest.helpers | ForEach-Object {@{source=(Join-Path $artifactRoot $_.path);relative=$_.path}})
+    $sources += @($manifest.files | ForEach-Object {@{source=(Join-Path $artifactRoot $_.path);relative=$_.path}})
+    foreach($name in @('package.json','touch-gpio.json','TouchGpio.aml','provenance.json','helper-source.json')) {
+        $sources += @{source=(Join-Path $artifactRoot $name);relative=$name}
+    }
     $hashes = foreach ($source in $sources) {
         $dest = Join-Path $bundle $source.relative
         $null = New-Item -ItemType Directory -Path (Split-Path $dest) -Force
@@ -315,6 +294,13 @@ try {
         ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $receiptRoot 'stage-status.json')
 } catch {
     $failure = $_.Exception.Message; $rollback = @()
+    if($verifiedDisk -and $armArgs) {
+        try {
+            $rollbackArgs=$armArgs.Clone()
+            $rollbackArgs.Receipt=Join-Path $receiptRoot 'host-gate-rollback.json'
+            & (Join-Path $PSScriptRoot 'Arm-TouchGpioHostGate.ps1') @rollbackArgs -GateValue 0 -AttemptId 0 | Out-Null
+        } catch {$rollback += ('Gate rollback: '+$_.Exception.Message)}
+    }
     foreach ($dest in $modified) {
         try {
             Write-Flushed $dest $original

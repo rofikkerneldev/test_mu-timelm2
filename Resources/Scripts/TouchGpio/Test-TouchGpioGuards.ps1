@@ -1,265 +1,29 @@
-# Safe parser/machine-guard checks on the build PC. Does not stage or install.
+# Behavioral regression checks. No phone or hardware access.
 param([string]$Artifact)
-$ErrorActionPreference = 'Stop'
-if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') {throw 'Run this check on the x64 PC'}
-foreach ($file in (Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.ps1' -File)) {
-    $tokens = $null; $errors = $null
-    [System.Management.Automation.Language.Parser]::ParseFile($file.FullName,[ref]$tokens,[ref]$errors) | Out-Null
-    if ($errors) {throw ($errors | Out-String)}
-}
-foreach ($runner in @('Launch-TouchGpioTrial.ps1','Run-TouchGpioTrial.ps1','TouchGpioDeviceManager.ps1')) {
-    $rejected = $false
-    try {& (Join-Path $PSScriptRoot $runner)}
-    catch {if ($_.Exception.Message -ne 'Wrong machine') {throw}; $rejected = $true}
-    if (!$rejected) {throw "Runner did not reject the PC: $runner"}
-}
-# Exercise the actual gate writer against in-memory cmdlets only. Recreating an
-# existing Device Parameters key could remove other values, so forbid it here.
-$runnerPath = Join-Path $PSScriptRoot 'Run-TouchGpioTrial.ps1'
-$tokens = $null; $errors = $null
-$runnerAst = [System.Management.Automation.Language.Parser]::ParseFile($runnerPath,[ref]$tokens,[ref]$errors)
-$writers = @($runnerAst.FindAll({param($node)
-    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Set-Gate'
-},$true))
-if ($writers.Count -ne 1) {throw 'Expected one production gate writer'}
-# The gate reader must survive a property that was never written. Windows
-# PowerShell 5.1 throws from Get-ItemPropertyValue in that case, and the
-# trial aborted on the phone before it reached any hardware operation.
-$readers = @($runnerAst.FindAll({param($node)
-    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
-    $node.Name -in @('Get-Gate','Get-RegistryValue')
-},$true))
-if ($readers.Count -lt 1) {throw 'Expected a production gate reader'}
-foreach ($reader in $readers) {
-    & {
-        param([string]$Definition,[string]$Name)
-        $state = @{exists=$true;values=@{NativeGpioI2cEnabled=0;TouchBusGpioEnabled=1}}
-        function Test-Path {param([string]$LiteralPath) return $state.exists}
-        function Get-ItemProperty {
-            param([string]$LiteralPath,[string]$ErrorAction)
-            if (!$state.exists) {return $null}
-            return [pscustomobject]$state.values
-        }
-        Invoke-Expression $Definition
-        $missing = & $Name 'HKLM:\InMemoryOnly' 'ReadOnlyHardwareProbeEnabled'
-        if ($null -ne $missing) {throw "A gate that was never written must read as not enabled: $Name"}
-        $zero = & $Name 'HKLM:\InMemoryOnly' 'NativeGpioI2cEnabled'
-        if ($null -eq $zero -or $zero -ne 0) {throw "A zero gate must read as zero: $Name"}
-        $state.exists = $false
-        $absent = & $Name 'HKLM:\InMemoryOnly' 'TouchBusGpioEnabled'
-        if ($null -ne $absent) {throw "A missing device key must read as not enabled: $Name"}
-    } $reader.Extent.Text $reader.Name
-}
-& {
-    param([string]$Definition)
-    $state = @{exists=$true;created=0;values=@{ExistingProviderValue=17};badReadback=$false}
-    function Test-Path {param([string]$LiteralPath) return $state.exists}
-    function New-Item {
-        param([string]$Path,[switch]$Force)
-        if ($state.exists -or $Force) {throw 'Existing device key must not be recreated'}
-        $state.exists = $true; $state.created++
-    }
-    function New-ItemProperty {
-        param([string]$LiteralPath,[string]$Name,[int]$Value,[string]$PropertyType,[switch]$Force)
-        if (!$state.exists -or $PropertyType -ne 'DWord' -or !$Force) {throw 'Invalid gate write'}
-        $state.values[$Name] = $Value
-    }
-    function Get-ItemPropertyValue {
-        param([string]$LiteralPath,[string]$Name)
-        if ($state.badReadback) {return -1}
-        return $state.values[$Name]
-    }
-    Invoke-Expression $Definition
-    Set-Gate 'HKLM:\InMemoryOnly' 'FirstGate' 0
-    Set-Gate 'HKLM:\InMemoryOnly' 'SecondGate' 1
-    if ($state.created -ne 0 -or $state.values.ExistingProviderValue -ne 17 -or
-        $state.values.FirstGate -ne 0 -or $state.values.SecondGate -ne 1) {throw 'Gate writer replaced other device parameters'}
-    $state.exists = $false
-    Set-Gate 'HKLM:\InMemoryOnly' 'ThirdGate' 1
-    if ($state.created -ne 1) {throw 'Missing device key was not created once'}
-    $state.badReadback = $true; $rejected = $false
-    try {Set-Gate 'HKLM:\InMemoryOnly' 'FailedGate' 1}
-    catch {if ($_.Exception.Message -ne 'Gate readback failed: FailedGate') {throw};$rejected = $true}
-    if (!$rejected) {throw 'Gate readback failure was ignored'}
-} $writers[0].Extent.Text
-$launch = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Launch-TouchGpioTrial.ps1') -Raw
-if ($launch -notmatch 'New-TimeSpan\s+-Minutes\s+120\b' -or $launch -notmatch 'execution_limit_minutes=120\b') {throw 'Task timeout and receipt must cover the bounded trial'}
-# The phone clock is corrected before the scheduled task exists. A clock jump
-# while a task with an execution time limit runs makes Task Scheduler compute
-# the task runtime from the new time and hard terminate the action, which
-# ended a real attempt before any hardware step.
-$runnerText = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Run-TouchGpioTrial.ps1') -Raw
-if ($runnerText -match 'Set-Date') {throw 'The runtime runner must never change the clock under the task'}
-if ($launch -notmatch 'Set-Date') {throw 'The launcher must correct the phone clock before the task starts'}
-$clockIndex = $launch.IndexOf('Set-Date')
-$registerIndex = $launch.IndexOf('Register-ScheduledTask')
-if ($clockIndex -lt 0 -or $registerIndex -lt 0 -or $clockIndex -gt $registerIndex) {throw 'The clock must be corrected before the scheduled task is registered'}
-if ($runnerText -notmatch 'Assert-Budget' -or $runnerText -notmatch 'Stopwatch') {throw 'The runtime runner must bound the trial with a monotonic budget'}
-# PnPUtil answers 259 (ERROR_NO_MORE_ITEMS) when the package is already the
-# selected driver for that device. That is a successful install, and treating
-# it as a failure aborted a real attempt before any hardware step. The exit
-# code is still recorded and the selected INF is verified separately.
-if ($runnerText -notmatch '\$code -eq 0 -or \$code -eq 259') {throw 'The runtime runner must tolerate the PnPUtil no-more-items exit code'}
-if ($runnerText -notmatch 'ERROR_NO_MORE_ITEMS') {throw 'The tolerated exit code must be documented in the runner'}
-if ($runnerText -notmatch 'phase-host-started\.json' -or $runnerText -notmatch 'phase-test-window\.json') {
-    throw 'The runtime runner must publish phase receipts for the desktop session'
-}
-# The enumeration timeline has to be recorded as plain text around every
-# provider restart, because the ACPI child of the bus host may only exist for
-# a moment. A live trace of the kernel PnP and ACPI providers is the second
-# half of that evidence.
-if ($runnerText -notmatch 'Watch-DeviceNodes\.ps1' -or $runnerText -notmatch 'watch-' -or
-    $runnerText -notmatch 'Copy-SetupApiLog') {
-    throw 'The runtime runner must record the enumeration timeline and the SetupAPI snapshots'
-}
-if ($runnerText -notmatch 'Start-LiveTrace' -or $runnerText -notmatch 'Microsoft-Windows-Kernel-Acpi') {
-    throw 'The runtime runner must record a live trace of the kernel PnP and ACPI providers'
-}
-$watcher = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Watch-DeviceNodes.ps1') -Raw
-if ($watcher -notmatch 'ConvertTo-Json' -or $watcher -notmatch 'Add-Content') {
-    throw 'The device node sampler must write plain text samples'
-}
-# The sampler is started by the runner as a separate process, so its machine
-# guard has to be checked on its own: its parameter is mandatory and the guard
-# is only reached once the parameter is bound.
-$watcherRejected = $false
-try {& (Join-Path $PSScriptRoot 'Watch-DeviceNodes.ps1') -Output (Join-Path $env:TEMP 'timelm-guard-watch.jsonl')}
-catch {if ($_.Exception.Message -ne 'Wrong machine') {throw}; $watcherRejected = $true}
-if (!$watcherRejected) {throw 'The device node sampler did not reject the PC'}
-# A gate that an earlier attempt of this bundle left enabled is restored, and
-# a gate that anybody else enabled is refused instead of reset.
-if ($runnerText -notmatch 'Pre-existing hardware gate enabled' -or $runnerText -notmatch 'gates-restored\.json') {
-    throw 'The runtime runner must restore only its own gates and record the restore'
-}
-# A re-arm on the phone may only remove the Startup entry that this script
-# staged itself. Anything else has to stay untouched.
-$stage = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Stage-TouchGpioTrial.ps1') -Raw
-if ($stage -notmatch 'refusing to disarm it' -or $stage -notmatch 'refusing to rearm') {
-    throw 'The staging re-arm must refuse a foreign Startup entry and a plain re-arm'
-}
-# A clean bundle is staged with the host gate written as zero. One is only
-# staged when this bundle's own host INF is already installed: the resumed
-# attempt's first device start has to reach the bitbang prepare path.
-if ($stage -notmatch 'resumeFromInstalledInf' -or $stage -notmatch '-GateValue \$gateTarget') {
-    throw 'The staging must reserve the armed host gate for a resumed attempt'
-}
-# The resume basis is the package the device itself selected in the hive, not
-# an INF file that merely sits in the store: trial 9 staged an armed gate
-# over a foreign selection and the runner refused the bundle before baseline.
-if ($stage -notmatch 'resumeFromSelectedInf' -or
-    $stage -notmatch 'selected_inf_match' -or
-    $stage -notmatch '-BundleInfHash \$hostInfHash') {
-    throw 'The staging must read the selected package, not the store listing'
-}
-# Every staged boot carries exactly one bonding attempt id; the runner keeps
-# the staged value and the adapter echoes it as TimelmBitbangAttempt.
-$armText = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Arm-TouchGpioHostGate.ps1') -Raw
-if ($stage -notmatch '-AttemptId \$attemptId' -or $armText -notmatch 'TimelmTouchAttemptId') {
-    throw 'The staging must arm the attempt identity with the hive'
-}
-# Lessons from the 24.10.2026 staging preflight (attempts one to four):
-# a registry provider path refuses the FileSystem-only -Directory switch,
-# provider enumeration can keep the mounted hive locked after unload, the
-# phone-off check must run after the mount is cleared and verified, and a
-# clean bundle stages the gate at zero (the runner arms the gate itself).
-if ($armText -match '-Directory' -or
-    $armText -notmatch 'Invoke-Reg @\(''query'',\$classKey,''/s''\)' -or
-    $armText -notmatch 'reg\.exe query \$mountReg' -or
-    $armText -notmatch 'would not release' -or
-    $armText.IndexOf('$null = Remove-Mount') -gt $armText.IndexOf('$hiveHashBefore = ')) {
-    throw 'The Arm must read the hive via reg.exe and verify its own mount removal before the phone-off check'
-}
-$commonText = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'TouchGpioCommon.ps1') -Raw
-if ($commonText -notmatch 'Get-SharedSha256' -or
-    $commonText -notmatch '\[IO\.FileShare\]::ReadWrite -bor \[IO\.FileShare\]::Delete' -or
-    $commonText -notmatch 'GetBaseException\(\)') {
-    throw 'The hash fallback must share like the real Get-FileHash and retry only a held file'
-}
-if ($stage -notmatch 'selected_inf_match\.matches -ne \$resumeFromSelectedInf' -or
-    $stage -notmatch 'Host gate staging wrote the wrong gate') {
-    throw 'The staging final receipt must agree with the reference pass: a clean bundle stages the gate at zero'
-}
-# A host start that is refused must leave its registry snapshot behind: the
-# snapshot is the evidence, the refusal only stops the trial (trial 9 lost
-# its Code 10 evidence to a throw ordered ahead of the snapshot).
-if ($runnerText -notmatch "Save-Json 'host-parameters\.json'") {
-    throw 'The runtime runner must publish the driver parameter snapshot'
-}
-if ($runnerText.IndexOf("Save-Json 'host-parameters.json'") -gt
-    $runnerText.IndexOf('GPIO I2C host did not start')) {
-    throw 'The failed host snapshot must be written before the refusal'
-}
-# The provider must publish its effective gate before the host is restarted:
-# trial 9 ran the whole window with the provider gate at 0.
-if ($runnerText -notmatch 'provider-gates-after-restart\.json' -or
-    $runnerText -notmatch 'provider effective gate stayed 0') {
-    throw 'The runtime runner must assert the provider effective gate before the host start'
-}
-# The runtime binding: staged/kept attempt id on the device key, recorded
-# attempt in the host receipt.
-if ($runnerText -notmatch 'TimelmTouchAttemptId' -or
-    $runnerText -notmatch 'TimelmBitbangAttempt' -or
-    $runnerText -notmatch "'attempt\.json'") {
-    throw 'The runtime runner must bind one attempt id to one host start'
-}
-# Retiring a previous attempt is still a re-arm: the old bundle must prove the
-# trial family identity (manifest rules plus restore-first metadata for the)
-# same Windows image) before its leftovers are archived.
-if ($stage -notmatch 'GPIO trial family' -or $stage -notmatch 'touch-gpio\.json') {
-    throw 'The staging must retire only provably own previous attempt leftovers'
-}
-# The Device Manager helper opens the console in the desktop session and has to
-# expand it, so the drivers Windows loaded are visible while the trial runs.
-$helper = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'TouchGpioDeviceManager.ps1') -Raw
-if ($helper -notmatch 'ExpandCollapsePattern' -or $helper -notmatch 'devmgmt\.msc') {
-    throw 'The Device Manager helper must open and expand the console'
-}
-if ($helper -notmatch 'Send-Keys ''\*''' -or $helper -notmatch 'uia') {
-    throw 'The Device Manager helper must keep a keyboard fallback for the tree'
-}
-$helperCmd = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Timelm-device-manager.cmd') -Raw
-if ($helperCmd -notmatch 'TouchGpioDeviceManager\.ps1' -or $helperCmd -notmatch 'ARM64' -or $helperCmd -notmatch 'TIMELM-V60') {
-    throw 'The Device Manager startup entry must be guarded and must call the helper'
-}
-if ($stage -notmatch 'Timelm-device-manager\.cmd' -or
-    $stage -notmatch 'Device manager startup entry is not this trial own') {
-    throw 'The staging must arm the Device Manager helper and refuse a foreign entry'
-}
-# The button trial entry keeps the Volume, Power and Assist keys usable while
-# the touch trial is on the screen, and it is disarmed by the same rule.
-if ($stage -notmatch 'Timelm-buttons\.cmd' -or
-    $stage -notmatch 'Button startup entry is not this trial own') {
-    throw 'The staging must arm the button trial entry and refuse a foreign entry'
-}
-# The helper watches the state the driver published and writes it to a file
-# that survives a bugcheck of the kernel.
-if ($helper -notmatch 'driver-status\.log' -or $helper -notmatch 'TimelmBitbangStage') {
-    throw 'The Device Manager helper must record the live driver status'
-}
-# The driver writes the steps of the bitbang path to a file and flushes every
-# line, because the registry is lost when the kernel bugchecks.
-$driverRoot = Join-Path $PSScriptRoot '..\..\..\GPLDrivers\Windows\KonaGeniI2c'
-$traceSource = Get-Content -LiteralPath (Join-Path $driverRoot 'trace_windows.c') -Raw
-$bitbangSource = Get-Content -LiteralPath (Join-Path $driverRoot 'bitbang_windows.c') -Raw
-$driverSource = Get-Content -LiteralPath (Join-Path $driverRoot 'driver.c') -Raw
-if ($traceSource -notmatch 'ZwFlushBuffersFile' -or $traceSource -notmatch 'driver-trace\.log') {
-    throw 'The driver trace must flush every line to the disk'
-}
-if ($bitbangSource -notmatch 'TimelmTrace' -or $driverSource -notmatch 'TimelmTrace') {
-    throw 'The bitbang path must write its trace'
-}
-if ((Get-Content -LiteralPath (Join-Path $driverRoot 'kona_geni.vcxproj') -Raw) -notmatch 'trace_windows\.c') {
-    throw 'The driver project must build the trace'
-}
-if ($Artifact) {
-    . (Join-Path $PSScriptRoot 'TouchGpioCommon.ps1')
-    $null = Get-TouchGpioManifest $Artifact
-}
-& (Join-Path $PSScriptRoot 'Test-TouchGpioPackage.ps1')
-# Exercise the result analyzer on a synthetic evidence tree. No phone and no
-# hardware: a wrong chip identity, a foreign SSDT or a missing runtime log
-# must never be reported as an accepted trial.
+$ErrorActionPreference='Stop'
+if($env:PROCESSOR_ARCHITECTURE -eq 'ARM64'){throw 'Run tests on the build PC'}
+. (Join-Path $PSScriptRoot 'TouchGpioCommon.ps1')
 . (Join-Path $PSScriptRoot 'Analyze-TouchGpioResult.ps1')
+function Remove-TouchGpioTestItem {
+    param([string]$LiteralPath,[switch]$Recurse,[switch]$Force)
+    $path=[IO.Path]::GetFullPath($LiteralPath)
+    $temp=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')+'\'
+    if(!$path.StartsWith($temp,[StringComparison]::OrdinalIgnoreCase) -or
+       $path.Substring($temp.Length) -notmatch '^timelm-gpio-(result|empty)-[a-f0-9]{8}(\\|$)'){throw 'Unsafe test cleanup path'}
+    Remove-Item -LiteralPath $path -Recurse:$Recurse -Force:$Force
+}
+foreach($file in Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.ps1' -File) {
+    $tokens=$null;$errors=$null
+    $null=[Management.Automation.Language.Parser]::ParseFile($file.FullName,[ref]$tokens,[ref]$errors)
+    if($errors){throw ($errors|Out-String)}
+}
+foreach($name in @('Launch-TouchGpioTrial.ps1','Run-TouchGpioTrial.ps1','TouchGpioDeviceManager.ps1')) {
+    $refused=$false
+    try {& (Join-Path $PSScriptRoot $name)}catch{if($_.Exception.Message -ne 'Wrong machine'){throw};$refused=$true}
+    if(!$refused){throw 'Machine guard did not refuse this PC'}
+}
+& (Join-Path $PSScriptRoot 'Test-TouchGpioContracts.ps1')
+if($Artifact){$null=Get-TouchGpioManifest $Artifact}
 function Get-SyntheticHash([string]$Path) {
     $stream = [IO.File]::OpenRead($Path)
     try {
@@ -267,7 +31,7 @@ function Get-SyntheticHash([string]$Path) {
         try {return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-','')} finally {$sha.Dispose()}
     } finally {$stream.Dispose()}
 }
-function New-SyntheticEvidence([string]$Root, [bool]$Good, [int]$FirstPinId = 38) {
+function New-SyntheticEvidence([string]$Root, [bool]$Good, [int]$FirstPinId = 1) {
     foreach ($folder in @('boot','runtime\before\20261021T000000Z-test','runtime\after\20261021T000000Z-test')) {
         $null = [IO.Directory]::CreateDirectory((Join-Path $Root $folder))
     }
@@ -308,10 +72,10 @@ function New-SyntheticEvidence([string]$Root, [bool]$Good, [int]$FirstPinId = 38
         [ordered]@{device='TIML0001';name='TimelmBitbangStage';value=4},
         [ordered]@{device='TIML0001';name='TimelmBitbangPinCount';value=5},
         [ordered]@{device='TIML0001';name='TimelmBitbangPinId0';value=$FirstPinId},
-        [ordered]@{device='TIML0001';name='TimelmBitbangPinId1';value=67},
-        [ordered]@{device='TIML0001';name='TimelmBitbangPinId2';value=68},
-        [ordered]@{device='TIML0001';name='TimelmBitbangPinId3';value=36},
-        [ordered]@{device='TIML0001';name='TimelmBitbangPinId4';value=37},
+        [ordered]@{device='TIML0001';name='TimelmBitbangPinId1';value=2},
+        [ordered]@{device='TIML0001';name='TimelmBitbangPinId2';value=3},
+        [ordered]@{device='TIML0001';name='TimelmBitbangPinId3';value=4},
+        [ordered]@{device='TIML0001';name='TimelmBitbangPinId4';value=5},
         [ordered]@{device='TIML0001';name='TimelmBitbangIdleLines';value=3},
         [ordered]@{device='TIML0001';name='TimelmBitbangIdentityStatus';value=0},
         [ordered]@{device='TIML0001';name='TimelmBitbangIdentity0';value=$identity0},
@@ -321,6 +85,18 @@ function New-SyntheticEvidence([string]$Root, [bool]$Good, [int]$FirstPinId = 38
         [ordered]@{device='LGSW4290';name='TimelmTouchProductId';value=@($expected)},
         [ordered]@{device='LGSW4290';name='TimelmTouchIrqs';value=7},
         [ordered]@{device='LGSW4290';name='TimelmTouchDecoded';value=5})
+    foreach($pair in @(@('TimelmHostBackend',1),@('TimelmHostBuildId',539365412),@('TimelmBitbangBuildId',539365412),
+        @('TimelmBitbangSchema',2),@('TimelmBitbangAttempt',7),@('TimelmBitbangEpochLow',123),@('TimelmBitbangEpochHigh',0),
+        @('TimelmBitbangProviderEpochLow',456),@('TimelmBitbangProviderEpochHigh',0),@('TimelmBitbangSnapshotValid',1),
+        @('TimelmBitbangProviderGate',1),@('TimelmBitbangProviderStatus',0))) {
+        $values += [ordered]@{device='TIML0001';name=$pair[0];value=$pair[1]}
+    }
+    foreach($i in 0..4) {
+        $values += [ordered]@{device='TIML0001';name=('TimelmBitbangPinIdHigh'+$i);value=0}
+        $values += [ordered]@{device='TIML0001';name=('TimelmBitbangConnOrdinal'+$i);value=($i+1)}
+    }
+    Write-TouchGpioJson (Join-Path $Root 'runtime/driver-attempt.json') @{attempt_id=7;expected_build_id=539365412;mode='test'}
+    Write-TouchGpioJson (Join-Path $Root 'runtime/provider-gates-after-restart.json') @{TouchBusGpioEnabled=1;TimelmGpioBitbangGate=1}
     ConvertTo-Json -InputObject $values -Depth 5 |
         Set-Content -LiteralPath (Join-Path $Root 'runtime\after\20261021T000000Z-test\touch-driver-diagnostics.json')
     $entities = @(
@@ -337,7 +113,15 @@ try {
     $confirmed = Get-TouchGpioResult -Root $syntheticRoot -TapSwipeObserved $true
     if ($confirmed.verdict -ne 'accepted') {throw "Unexpected confirmed verdict: $($confirmed.verdict)"}
     if ($confirmed.steps['tap-and-swipe'].status -ne 'proven') {throw 'The user confirmation was not recorded'}
-    Remove-Item -LiteralPath (Join-Path $syntheticRoot 'runtime\after') -Recurse -Force
+    Write-TouchGpioJson (Join-Path $syntheticRoot 'runtime/driver-attempt.json') @{attempt_id=8;expected_build_id=539365412;mode='test'}
+    $stale=Get-TouchGpioResult -Root $syntheticRoot
+    if($stale.verdict -ne 'incomplete' -or $stale.steps['fresh-host-evidence'].status -ne 'failed'){throw 'Stale attempt was accepted by the analyzer'}
+    New-SyntheticEvidence $syntheticRoot $true
+    [IO.File]::WriteAllBytes((Join-Path $syntheticRoot 'runtime/provider-gates-after-restart.json'),[byte[]](0,0,0))
+    $nul=Get-TouchGpioResult -Root $syntheticRoot
+    if($nul.verdict -ne 'incomplete' -or $nul.steps['valid-runtime-receipts'].status -ne 'failed'){throw 'NUL receipt was accepted by the analyzer'}
+    New-SyntheticEvidence $syntheticRoot $true
+    Remove-TouchGpioTestItem -LiteralPath (Join-Path $syntheticRoot 'runtime\after') -Recurse -Force
     $empty = Get-TouchGpioResult -Root $syntheticRoot
     if ($empty.verdict -ne 'incomplete') {throw "Missing evidence was accepted: $($empty.verdict)"}
     New-SyntheticEvidence $syntheticRoot $false
@@ -349,7 +133,7 @@ try {
     # be rejected even when every other step is proven. The synthetic tree is
     # rebuilt with the wrong pin instead of editing the JSON, because Windows
     # PowerShell 5.1 rewrites a parsed array as {"value":[...]}.
-    New-SyntheticEvidence $syntheticRoot $true 39
+    New-SyntheticEvidence $syntheticRoot $true 0
     $badShape = Get-TouchGpioResult -Root $syntheticRoot
     if ($badShape.verdict -ne 'incomplete' -or $badShape.steps['gpio-resource-shape'].status -ne 'failed') {
         throw 'An unexpected GPIO connection resource was accepted'
@@ -390,7 +174,7 @@ try {
     # terminated. That is proven failure evidence, not a missing step, and it
     # must never be reported as a finished trial.
     New-SyntheticEvidence $syntheticRoot $true
-    Remove-Item -LiteralPath (Join-Path $syntheticRoot 'runtime\complete.json') -Force
+    Remove-TouchGpioTestItem -LiteralPath (Join-Path $syntheticRoot 'runtime\complete.json') -Force
     $terminated = Get-TouchGpioResult -Root $syntheticRoot
     if ($terminated.steps['runtime-completed'].status -ne 'failed') {
         throw 'A terminated run was not reported as a failure'
@@ -408,18 +192,18 @@ try {
     New-SyntheticEvidence $syntheticRoot $true
     [ordered]@{error='PnPUtil install-Touch returned 3010';need_next_boot=$true;utc='2026-10-21T00:00:00Z'} |
         ConvertTo-Json | Set-Content -LiteralPath (Join-Path $syntheticRoot 'runtime\trial-error.json')
-    Remove-Item -LiteralPath (Join-Path $syntheticRoot 'runtime\complete.json') -Force
+    Remove-TouchGpioTestItem -LiteralPath (Join-Path $syntheticRoot 'runtime\complete.json') -Force
     $errored = Get-TouchGpioResult -Root $syntheticRoot
     if ($errored.steps['runtime-no-error'].status -ne 'failed' -or $errored.steps['runtime-completed'].status -ne 'failed') {
         throw 'A run that stopped with an error was not reported'
     }
-    Remove-Item -LiteralPath (Join-Path $syntheticRoot 'runtime\trial-error.json') -Force
+    Remove-TouchGpioTestItem -LiteralPath (Join-Path $syntheticRoot 'runtime\trial-error.json') -Force
     $bare = Join-Path ([IO.Path]::GetTempPath()) ('timelm-gpio-empty-' + [guid]::NewGuid().ToString('N').Substring(0,8))
     $null = [IO.Directory]::CreateDirectory($bare)
     $none = Get-TouchGpioResult -Root $bare
     if ($none.verdict -ne 'no-evidence') {throw "Missing runtime log was not reported: $($none.verdict)"}
-    Remove-Item -LiteralPath $bare -Recurse -Force
+    Remove-TouchGpioTestItem -LiteralPath $bare -Recurse -Force
 } finally {
-    if (Test-Path -LiteralPath $syntheticRoot) {Remove-Item -LiteralPath $syntheticRoot -Recurse -Force}
+    if (Test-Path -LiteralPath $syntheticRoot) {Remove-TouchGpioTestItem -LiteralPath $syntheticRoot -Recurse -Force}
 }
 'PASS: all GPIO trial scripts parse, the runtime runner rejects this PC before clock, certificate, registry, installation or shutdown operations, the bundle builder only produces a verifiable package, and the result analyzer rejects a wrong identity, a foreign SSDT and missing evidence.'

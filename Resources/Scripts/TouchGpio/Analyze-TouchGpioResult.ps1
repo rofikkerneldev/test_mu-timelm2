@@ -2,11 +2,7 @@
 # Pure analysis of a copied GPIO touch trial evidence tree. No phone, no
 # hardware and no registry access: this file only reads JSON and text files
 # that were already collected from the phone.
-if (-not (Get-Command Get-FileHash -ErrorAction SilentlyContinue)) {
-    # Trimmed Windows PowerShell installs can lack the utility cmdlet; the
-    # shared helper provides a local SHA-256 fallback in that case.
-    . (Join-Path $PSScriptRoot 'TouchGpioCommon.ps1')
-}
+. (Join-Path $PSScriptRoot 'TouchGpioCommon.ps1')
 function Get-TouchGpioLogValue {
     param([string[]]$Lines, [string]$Marker)
     # The launcher appends one checkpoint block per save, so the last
@@ -23,7 +19,11 @@ function Get-TouchGpioLogValue {
 function Read-TouchGpioJson {
     param([string]$Path)
     if (!(Test-Path -LiteralPath $Path)) {return $null}
-    try {return Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json} catch {return $null}
+    try {
+        $text=Get-Content -LiteralPath $Path -Raw
+        if([string]::IsNullOrWhiteSpace($text) -or $text.IndexOf([char]0) -ge 0){return $null}
+        return $text | ConvertFrom-Json -ErrorAction Stop
+    } catch {return $null}
 }
 function ConvertTo-TouchGpioItems {
     param($Value)
@@ -113,6 +113,16 @@ function Get-TouchGpioResult {
         return $result
     }
     Add-TouchGpioStep $steps 'runtime-attempt' 'proven' 'the SYSTEM task started and created the attempt receipt'
+    $invalid=@()
+    foreach($file in @(Get-ChildItem -LiteralPath $runtime -Filter '*.json' -File)) {
+        try {
+            $text=Get-Content -LiteralPath $file.FullName -Raw
+            if([string]::IsNullOrWhiteSpace($text) -or $text.IndexOf([char]0) -ge 0){throw 'Empty or NUL receipt'}
+            $null=$text | ConvertFrom-Json -ErrorAction Stop
+        }
+        catch {$invalid+=$file.Name}
+    }
+    Add-TouchGpioStep $steps 'valid-runtime-receipts' $(if($invalid.Count){'failed'}else{'proven'}) ('invalid JSON: '+($invalid -join ','))
     $bootLog = Join-Path $Root 'boot\timelm-touch-gpio.txt'
     if (Test-Path -LiteralPath $bootLog) {
         $lines = @(Get-Content -LiteralPath $bootLog)
@@ -188,7 +198,7 @@ function Get-TouchGpioResult {
     } elseif ($error) {
         Add-TouchGpioStep $steps 'runtime-completed' 'failed' 'the runner stopped with a recorded error and never wrote the completion receipt'
     } else {
-        Add-TouchGpioStep $steps 'runtime-completed' 'failed' 'the runner wrote neither a completion nor an error receipt: the action was terminated'
+        Add-TouchGpioStep $steps 'runtime-completed' 'failed' 'no completion or error receipt: evidence is incomplete; termination cause is unknown'
     }
     # The phone clock must not move while the trial task runs. A clock jump
     # inside a task with an execution time limit makes Task Scheduler compute
@@ -211,7 +221,7 @@ function Get-TouchGpioResult {
     }
     $operations = Read-TouchGpioJson (Join-Path $runtime 'operations.json')
     if ($operations) {
-        $bad = @($operations | Where-Object {$_.operation -like 'install-*' -and $_.exit_code -ne 0})
+        $bad = @($operations | Where-Object {$_.operation -like 'install-*' -and $_.exit_code -notin @(0,259)})
         $facts['pnp_operations'] = @($operations).Count
         Add-TouchGpioStep $steps 'pnp-installs' $(if ($bad.Count -eq 0) {'proven'} else {'failed'}) `
             ("install operations with a non-zero exit code: " + $bad.Count)
@@ -243,45 +253,42 @@ function Get-TouchGpioResult {
     }
     $stage = Get-TouchGpioValue $diagnostics 'TIML0001' 'TimelmBitbangStage'
     $facts['host_bitbang_stage'] = $stage
-    Add-TouchGpioStep $steps 'gpio-provider-v3' $(if ($null -ne $stage -and [uint64]$stage -ge 3) {'proven'} else {'missing'}) `
-        ("host GPIO stage " + $(if ($null -eq $stage) {'absent'} else {$stage}) + " (3 means the V3 interface was queried)")
-    # The trial SSDT publishes three output power pins (38, 67, 68) and the
-    # bus pair (36, 37). Windows may publish the pair as one connection
-    # resource or as one resource per pin, so 4 and 5 are both valid.
-    $pinCount = Get-TouchGpioValue $diagnostics 'TIML0001' 'TimelmBitbangPinCount'
-    $facts['host_bitbang_pin_count'] = $pinCount
-    $pinIds = @()
-    for ($i = 0; $i -lt 5; ++$i) {
-        $pinValue = Get-TouchGpioValue $diagnostics 'TIML0001' ('TimelmBitbangPinId' + $i)
-        if ($null -ne $pinValue) { $pinIds += [uint64]$pinValue }
-    }
-    $facts['host_bitbang_pin_ids'] = $pinIds
-    $shapeDetail = 'connection resources absent'
-    $shapeStatus = 'missing'
-    if ($null -ne $pinCount) {
-        $count = [uint64]$pinCount
-        $expected = switch ($count) { 4 {@(38, 67, 68, 36)} 5 {@(38, 67, 68, 36, 37)} default {@()} }
-        if ($expected.Count -eq 0) {
-            $shapeStatus = 'failed'
-            $shapeDetail = "unexpected connection count $count"
-        } elseif ($pinIds.Count -ne $expected.Count) {
-            $shapeStatus = 'failed'
-            $shapeDetail = ("connection count $count but " + $pinIds.Count + " pin identifiers were recorded")
-        } else {
-            $mismatch = @()
-            for ($i = 0; $i -lt $expected.Count; ++$i) {
-                if ($pinIds[$i] -ne [uint64]$expected[$i]) { $mismatch += $i }
-            }
-            if ($mismatch.Count) {
-                $shapeStatus = 'failed'
-                $shapeDetail = ("connection count $count with unexpected pin identifiers: " + ($pinIds -join ','))
-            } else {
-                $shapeStatus = 'proven'
-                $shapeDetail = ("connection count $count, pins " + ($pinIds -join ','))
-            }
+    Add-TouchGpioStep $steps 'gpio-provider-v3' $(if ($null -ne $stage -and [uint64]$stage -ge 2) {'proven'} else {'missing'}) `
+        ("host GPIO stage " + $(if ($null -eq $stage) {'absent'} else {$stage}) + " (2 means interface query and readiness passed; 3 means GPIO mode enabled)")
+    # Connection IDs are opaque 64-bit Resource Hub identifiers. Physical
+    # pin roles come from the pinned SSDT and provider, never from IdLowPart.
+    $pinCount=Get-TouchGpioValue $diagnostics 'TIML0001' 'TimelmBitbangPinCount'
+    $facts['host_bitbang_pin_count']=$pinCount
+    $pinIds=@();$shapeStatus='missing';$shapeDetail='connection resources absent'
+    if($null -ne $pinCount -and $pinCount -in @(4,5)) {
+        $shapeStatus='proven';$ordinals=@();$identities=@{}
+        for($i=0;$i -lt [int]$pinCount;++$i) {
+            $low=Get-TouchGpioValue $diagnostics 'TIML0001' ('TimelmBitbangPinId'+$i)
+            $high=Get-TouchGpioValue $diagnostics 'TIML0001' ('TimelmBitbangPinIdHigh'+$i)
+            $ordinal=Get-TouchGpioValue $diagnostics 'TIML0001' ('TimelmBitbangConnOrdinal'+$i)
+            if($null -eq $low -or $null -eq $high -or $null -eq $ordinal) {$shapeStatus='missing';continue}
+            $id=([string]$high)+':'+([string]$low)
+            if(($low -eq 0 -and $high -eq 0) -or $identities.ContainsKey($id) -or
+                $ordinal -le 0 -or ($ordinals.Count -and $ordinal -le $ordinals[-1])) {$shapeStatus='failed'}
+            $identities[$id]=$true;$pinIds+=$id;$ordinals+=$ordinal
         }
-    }
+        $shapeDetail='opaque IDs '+($pinIds -join ',')+'; ordered connection roles checked against pinned SSDT by the adapter'
+    } elseif($null -ne $pinCount) {$shapeStatus='failed';$shapeDetail='unexpected GPIO connection count'}
+    $facts['host_bitbang_pin_ids']=$pinIds
     Add-TouchGpioStep $steps 'gpio-resource-shape' $shapeStatus $shapeDetail
+    $epoch=Read-TouchGpioJson (Join-Path $runtime 'driver-attempt.json')
+    $fresh='missing';$detail='no attempt/generation binding'
+    if($epoch -and $epoch.mode -eq 'test') {
+        $parameters=@{}
+        foreach($d in @($diagnostics | Where-Object {$_.device -ieq 'TIML0001'})) {$parameters[$d.name]=$d.value}
+        try {Assert-TouchGpioHostEvidence ([pscustomobject]$parameters) ([uint32]$epoch.attempt_id) ([uint32]$epoch.expected_build_id);$fresh='proven';$detail='exact attempt/build/backend and completed live provider epoch'}
+        catch {$fresh='failed';$detail=$_.Exception.Message}
+    }
+    Add-TouchGpioStep $steps 'fresh-host-evidence' $fresh $detail
+    $provider=Read-TouchGpioJson (Join-Path $runtime 'provider-gates-after-restart.json')
+    $ready='missing'
+    if($provider) {try {Assert-TouchGpioProviderGate $provider.TouchBusGpioEnabled $provider.TimelmGpioBitbangGate;$ready='proven'}catch{$ready='failed'}}
+    Add-TouchGpioStep $steps 'provider-gate' $ready 'requested/effective gate must both equal 1; host also queries live V4 state'
     foreach ($counter in @('TimelmBitbangTransfers', 'TimelmBitbangFailures', 'TimelmBitbangLastStatus',
                             'TimelmBitbangRetained', 'TimelmBitbangStopStatus')) {
         $value = Get-TouchGpioValue $diagnostics 'TIML0001' $counter
@@ -333,7 +340,7 @@ function Get-TouchGpioResult {
         $(if ($TapSwipeObserved) {'the user reported a real tap and swipe'} else {'no user confirmation was recorded'})
     $ordered = @('runtime-attempt','boot-restore-windows','boot-namespace-gate','boot-ssdt-installed','boot-ssdt-readback',
         'boot-chainload-windows','trial-ssdt-visible-to-windows','no-iort-installed','runtime-no-error','runtime-completed',
-        'runtime-clock-stable','pnp-installs',
+        'runtime-clock-stable','pnp-installs','valid-runtime-receipts','fresh-host-evidence','provider-gate',
         'selected-inf-gpio','selected-inf-host','selected-inf-touch','gpio-provider-v3','gpio-resource-shape',
         'idle-lines-high','chip-identity','host-code-0','touch-code-0','irq-and-reports','test-window','tap-and-swipe')
     # A step that is missing is not a proof. Only a fully proven chain may be

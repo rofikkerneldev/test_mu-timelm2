@@ -18,7 +18,7 @@
 
  static const UINT32 TileOffsets[] = {
      [0] = SOUTH,   [1] = SOUTH,   [2] = SOUTH,   [3] = SOUTH,   [4] = NORTH,   [5] = NORTH,
-@@ -180,6 +182,26 @@
+@@ -180,6 +182,28 @@
      status = STATUS_INSUFFICIENT_RESOURCES;
 
      gpioContext = (PGPIO_DEVICE_CONTEXT)Context;
@@ -29,6 +29,8 @@
 +    if (gpioContext->TouchBusActive) return STATUS_DEVICE_BUSY;
 +    gpioContext->TouchDevice = Device;
 +    gpioContext->TouchGpioEnabled = FALSE;
++    gpioContext->TouchGeneration = KeQueryInterruptTime();
++    if (!gpioContext->TouchGeneration) gpioContext->TouchGeneration = 1;
 +    {
 +        WDFKEY key;
 +        ULONG enable = 0;
@@ -45,7 +47,7 @@
 
      resourceCount = WdfCmResourceListGetCount(ResourcesTranslated);
      for (ULONG Index = 0; Index < resourceCount; Index++) {
-@@ -205,38 +227,7 @@
+@@ -205,38 +229,7 @@
              goto Exit;
      }
 
@@ -85,7 +87,7 @@
 
  Exit:
      TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Exit");
-@@ -258,7 +249,18 @@
+@@ -258,7 +251,18 @@
 
      gpioContext = (PGPIO_DEVICE_CONTEXT)Context;
      if (gpioContext->Base != 0) {
@@ -105,7 +107,7 @@
      }
 
      TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Exit");
-@@ -312,11 +314,11 @@
+@@ -312,11 +316,11 @@
      _In_ WDF_POWER_DEVICE_STATE TargetState
  )
  {
@@ -119,7 +121,7 @@
  }
 
  UINT32
-@@ -347,16 +349,13 @@
+@@ -347,16 +351,13 @@
 
      switch (PullConfiguration) {
      case GPIO_PIN_PULL_CONFIGURATION_NONE:
@@ -139,7 +141,7 @@
          break;
      case GPIO_PIN_PULL_CONFIGURATION_DEFAULT:
          break;
-@@ -365,6 +364,8 @@
+@@ -365,6 +366,8 @@
          goto Exit;
          break;
      }
@@ -148,7 +150,7 @@
 
      switch (ConnectMode) {
      case ConnectModeInput:
-@@ -408,7 +409,21 @@
+@@ -408,7 +411,21 @@
      for (ULONG index = 0; index < ConnectParameters->PinCount; index++) {
          pinNumber = pinNumberTable[index] + ConnectParameters->BankId * GPIO_PER_BANK;
 
@@ -171,7 +173,7 @@
          TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "GPIO[%d] mode: %d, pull: %d", pinNumber, ConnectParameters->ConnectMode, ConnectParameters->PullConfiguration);
      }
 
-@@ -426,8 +441,22 @@
+@@ -426,8 +443,22 @@
  {
      TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Entry");
 
@@ -196,7 +198,7 @@
 
      TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Exit");
      return STATUS_SUCCESS;
-@@ -528,14 +557,7 @@
+@@ -528,14 +559,7 @@
 
      intrReg = Read32((PULONG)(Context->Base + pinOffset));
 
@@ -212,7 +214,7 @@
 
      Write32((PULONG)(Context->Base + pinOffset), intrReg);
  }
-@@ -556,7 +578,8 @@
+@@ -556,7 +580,8 @@
 
      TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Entry");
 
@@ -222,7 +224,7 @@
          status = STATUS_NOT_SUPPORTED;
          goto Exit;
      }
-@@ -575,17 +598,8 @@
+@@ -575,17 +600,8 @@
      intrReg &= ~(INTR_TARGET_MASK << INTR_TARGET_BIT);
      intrReg |= INTR_TARGET_KPSS_VAL << INTR_TARGET_BIT;
 
@@ -242,7 +244,7 @@
 
      // Unmask interrupt
      intrReg |= BIT(INTR_ENABLE_BIT);
-@@ -644,6 +658,10 @@
+@@ -644,6 +660,10 @@
      ULONG intrReg;
 
      TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Entry");
@@ -253,7 +255,7 @@
      gpioContext = (PGPIO_DEVICE_CONTEXT)Context;
      pinNumber = ReconfigureParameters->PinNumber + ReconfigureParameters->BankId * GPIO_PER_BANK;
 
-@@ -652,16 +670,8 @@
+@@ -652,16 +672,8 @@
      intrReg = Read32((PULONG)(gpioContext->Base + pinOffset));
 
      intrReg |= BIT(INTR_RAW_STATUS_BIT);
@@ -272,7 +274,7 @@
 
      Write32((PULONG)(gpioContext->Base + pinOffset), intrReg);
 
-@@ -832,6 +842,266 @@
+@@ -832,6 +844,302 @@
      return STATUS_SUCCESS;
  }
 
@@ -330,6 +332,25 @@
 +            gpioContext->TouchInterfacesAdded |= 2u;
 +        }
 +
++        if (!(gpioContext->TouchInterfacesAdded & 8u)) {
++            TIMELM_TOUCH_BUS_V4 touch;
++            WDF_QUERY_INTERFACE_CONFIG query;
++            RtlZeroMemory(&touch, sizeof(touch));
++            touch.Interface.Size = sizeof(touch);
++            touch.Interface.Version = 4;
++            touch.Interface.Context = gpioContext;
++            touch.Interface.InterfaceReference = GPIOTouchReference;
++            touch.Interface.InterfaceDereference = GPIOTouchDereference;
++            touch.SetGpioMode = GPIOTouchGpioMode;
++            touch.SetLines = GPIOTouchSetLines;
++            touch.GetLines = GPIOTouchGetLines;
++            touch.QueryState = GPIOTouchQueryState;
++            WDF_QUERY_INTERFACE_CONFIG_INIT(&query, (PINTERFACE)&touch,
++                &GUID_TIMELM_TOUCH_BUS_V4, NULL);
++            status = WdfDeviceAddQueryInterface(Device, &query);
++            if (!NT_SUCCESS(status)) goto Exit;
++            gpioContext->TouchInterfacesAdded |= 8u;
++        }
 +        if (!(gpioContext->TouchInterfacesAdded & 4u)) {
 +            WDF_QUERY_INTERFACE_CONFIG_INIT(
 +                &queryInterfaceConfig,
@@ -387,6 +408,23 @@
 +    value = KonaGpioOpenDrainValue(value, release);
 +    Write32(ctl, value);
 +    return ((Read32(ctl) ^ value) & 0x3ffu) ? STATUS_IO_DEVICE_ERROR : STATUS_SUCCESS;
++}
++NTSTATUS GPIOTouchQueryState(PVOID Context, ULONG *Gate, ULONGLONG *Generation)
++{
++    PGPIO_DEVICE_CONTEXT context = Context;
++    KIRQL oldIrql;
++    NTSTATUS status = STATUS_SUCCESS;
++    if (!Gate || !Generation) return STATUS_INVALID_PARAMETER;
++    *Gate = 0; *Generation = 0;
++    if (!TouchGpioReady(context)) return STATUS_DEVICE_NOT_READY;
++    KeAcquireSpinLock(&context->TouchGpioLock, &oldIrql);
++    if (!TouchGpioReady(context)) status = STATUS_DEVICE_NOT_READY;
++    else {
++        *Gate = context->TouchGpioEnabled ? 1u : 0u;
++        *Generation = context->TouchGeneration;
++    }
++    KeReleaseSpinLock(&context->TouchGpioLock, oldIrql);
++    return status;
 +}
 +NTSTATUS GPIOTouchGpioMode(PVOID Context, BOOLEAN Enable)
 +{
@@ -541,7 +579,7 @@
      _In_ WDFDRIVER Driver
 --- a/src/GPIO/Driver.h
 +++ b/src/GPIO/Driver.h
-@@ -49,6 +49,14 @@
+@@ -49,6 +49,15 @@
  {
      ULONG_PTR Base;
      ULONG Length;
@@ -551,12 +589,13 @@
 +    BOOLEAN TouchGpioLockReady, TouchGpioEnabled;
 +    ULONG TouchPinsConnected;
 +    ULONG TouchInterfacesAdded;
++    ULONGLONG TouchGeneration;
 +    ULONG TouchGpioSavedCtl[2], TouchGpioSavedIo[2];
 +    WDFDEVICE TouchDevice;
  } GPIO_DEVICE_CONTEXT, * PGPIO_DEVICE_CONTEXT;
 
  WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(GPIO_DEVICE_CONTEXT, DeviceGetContext)
-@@ -87,4 +95,12 @@
+@@ -87,4 +96,13 @@
      UCHAR function
      );
 
@@ -565,6 +604,7 @@
 +VOID GPIOTouchReference(PVOID Context);
 +VOID GPIOTouchDereference(PVOID Context);
 +NTSTATUS GPIOTouchGpioMode(PVOID Context, BOOLEAN Enable);
++NTSTATUS GPIOTouchQueryState(PVOID Context, ULONG *Gate, ULONGLONG *Generation);
 +NTSTATUS GPIOTouchSetLines(PVOID Context, BOOLEAN ReleaseScl, BOOLEAN ReleaseSda);
 +NTSTATUS GPIOTouchGetLines(PVOID Context, PBOOLEAN SclHigh, PBOOLEAN SdaHigh);
 +

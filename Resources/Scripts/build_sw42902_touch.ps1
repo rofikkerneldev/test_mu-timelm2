@@ -22,6 +22,8 @@ $commit = (& git -C $repo rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Unable to record source commit' }
 [ordered]@{commit=$commit;configuration=$Configuration;architecture='ARM64';kmdf='1.33';hardware_validation='pending'} |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $output 'source.json')
+& python (Join-Path $PSScriptRoot 'record_touch_source.py') --component touch --output (Join-Path $output 'source-inputs.json')
+if($LASTEXITCODE -ne 0){throw 'Touch source provenance failed'}
 $hashes = foreach ($file in Get-ChildItem -LiteralPath $output -File -Recurse) {
     if ($file.Name -eq 'sha256.json') { continue }
     [ordered]@{path=[IO.Path]::GetRelativePath($output,$file.FullName);sha256=(Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant();size=$file.Length}

@@ -23,8 +23,12 @@ param(
     # INF the device actually selected. An INF that merely sits in the store
     # is not the selected package; trial 9 refused a bundle over exactly
     # that difference, so the resume decision has to come from here.
-    [string]$BundleInfHash = '')
+    [string]$BundleInfHash = '',
+    [string]$BundleSysHash = '',
+    [string]$ProviderInfHash = '',
+    [string]$ProviderSysHash = '')
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'TouchGpioCommon.ps1')
 $device = 'ACPI\TIML0001'
 $instance = 'e'
 $gateName = 'NativeGpioI2cEnabled'
@@ -106,10 +110,10 @@ try {
     $keyKey = $mountKey + '\' + $relative
     if (!(Test-Path -LiteralPath $keyKey)) {throw 'Host device parameters key not found in the phone hive'}
     $before = Get-GateValues $keyKey
+    $null = Invoke-Reg @('add',$keyReg,'/v',$gateName,'/t','REG_DWORD','/d','0','/f')
     foreach ($name in $zeroGates) {
         $null = Invoke-Reg @('add',$keyReg,'/v',$name,'/t','REG_DWORD','/d','0','/f')
     }
-    $null = Invoke-Reg @('add',$keyReg,'/v',$gateName,'/t','REG_DWORD','/d',[string]$GateValue,'/f')
     if ($AttemptId -gt 0) {
         if ($AttemptId -gt 4294967295) {throw 'Attempt id does not fit a DWORD'}
         $null = Invoke-Reg @('add',$keyReg,'/v','TimelmTouchAttemptId','/t','REG_DWORD','/d',[string]$AttemptId,'/f')
@@ -119,55 +123,19 @@ try {
     # actually bound to, not whichever INF happens to sit in the store. The
     # tree itself is read in reg.exe: the provider would hold hundreds of
     # enumeration keys open behind the GC and refuse the unload of this hive.
-    $selected = [ordered]@{matches=$false;driver='';node='';inf='';inf_path='';inf_sha256='';nodes_scanned=0}
-    if ($BundleInfHash) {
-        $infRoot = Join-Path (Join-Path $WindowsRoot 'Windows') 'INF'
-        $enumKey = $mountReg + '\ControlSet00' + $current + '\Enum\' + $device + '\' + $instance
-        foreach ($line in @(Invoke-Reg @('query',$enumKey))) {
-            if ($line -match '^\s+Driver\s+REG_(?:SZ|EXPAND_SZ)\s+(.+)$') {$selected.driver = $Matches[1].Trim()}
-        }
-        $classKey = $mountReg + '\ControlSet00' + $current + '\Control\Class'
-        $nodes = @()
-        foreach ($line in @(Invoke-Reg @('query',$classKey,'/s'))) {
-            if ($line.Trim().Length -gt 0 -and !$line.StartsWith('    ')) {
-                $nodes += @{name=([string]$line.Trim()).Split('\')[-1];values=@{}}
-                continue
-            }
-            if (!$nodes.Count) {continue}
-            $values = $nodes[-1].values
-            $match = [regex]::Match($line, '^\s{3,4}([^\s]+?)\s+REG_(?:DWORD|SZ|EXPAND_SZ|BINARY|MULTI_SZ)\s+(.*)$')
-            if ($match.Success) {$values[[string]$match.Groups[1].Value] = [string]$match.Groups[2].Value.TrimEnd()}
-        }
-        foreach ($node in $nodes) {
-            $values = $node.values
-            if (!$values.ContainsKey('MatchingDeviceId') -or $values['MatchingDeviceId'] -ne $device) {continue}
-            $selected.nodes_scanned++
-            $infName = ''
-            foreach ($name in @('InfPath','DriverInfPath')) {
-                if ($values.ContainsKey($name) -and $values[$name]) {$infName = $values[$name]; break}
-            }
-            if (!$infName) {continue}
-            $infFile = Join-Path $infRoot $infName
-            $infHash = ''
-            if (Test-Path -LiteralPath $infFile) {$infHash = (Get-FileHash -LiteralPath $infFile).Hash}
-            if ($infHash -ieq $BundleInfHash) {
-                $selected.matches = $true
-                $selected.node = $node.name
-                $selected.inf = $infName
-                $selected.inf_path = $infFile
-                $selected.inf_sha256 = $infHash
-                break
-            }
-            if (!$selected.node) {
-                # Only a reference candidate to show which binding the
-                # device held instead of the bundle.
-                $selected.node = $node.name
-                $selected.inf = $infName
-                $selected.inf_path = $infFile
-                $selected.inf_sha256 = $infHash
-            }
-        }
+    $selected = Get-TouchGpioSelectedPackage -RegistryRoot $mountReg -ControlSet ('ControlSet00'+$current) `
+        -DeviceId ($device+'\'+$instance) -WindowsRoot $WindowsRoot -InfHash $BundleInfHash -SysHash $BundleSysHash -Service 'kona_geni'
+    $provider = Get-TouchGpioSelectedPackage -RegistryRoot $mountReg -ControlSet ('ControlSet00'+$current) `
+        -DeviceId 'ACPI\KONA1001\0' -WindowsRoot $WindowsRoot -InfHash $ProviderInfHash -SysHash $ProviderSysHash -Service 'GPIO'
+    if ($GateValue -notin @(0,1)) {throw 'Host gate must be zero or one'}
+    if ($GateValue -eq 1 -and (!$selected.matches -or !$provider.matches -or $AttemptId -le 0)) {
+        throw 'Test boot requires exact selected host/provider INF and SYS, plus a new attempt id'
     }
+    $providerRelative = 'ControlSet00'+$current+'\Enum\ACPI\KONA1001\0\Device Parameters'
+    $providerReg = $mountReg+'\'+$providerRelative
+    $null = Invoke-Reg @('add',$providerReg,'/v','TouchBusGpioEnabled','/t','REG_DWORD','/d',[string]$GateValue,'/f')
+    $null = Invoke-Reg @('add',$keyReg,'/v','TimelmBitbangSnapshotValid','/t','REG_DWORD','/d','0','/f')
+    $null = Invoke-Reg @('add',$keyReg,'/v',$gateName,'/t','REG_DWORD','/d',[string]$GateValue,'/f')
     $after = Get-GateValues $keyKey
 } finally {
     $null = Remove-Mount
@@ -175,10 +143,12 @@ try {
 
 $null = Invoke-Reg @('load',$mountReg,$hive)
 try {
+    $providerReadBack = Get-ItemPropertyValue -LiteralPath ($mountKey+'\'+$providerRelative) -Name 'TouchBusGpioEnabled'
     $readBack = Get-GateValues ($mountKey + '\ControlSet00' + $current + '\Enum\' + $device + '\' + $instance + '\Device Parameters')
 } finally {
     $null = Remove-Mount
 }
+if ($providerReadBack -ne $GateValue) {throw 'Provider requested gate readback failed'}
 if ($readBack[$gateName] -ne $GateValue) {throw 'Host gate readback failed'}
 foreach ($name in $zeroGates) {
     if ($readBack[$name] -ne 0) {throw "Host gate $name is not zero"}
@@ -188,7 +158,7 @@ $hiveHashAfter = (Get-FileHash -LiteralPath $hive -Algorithm SHA256).Hash
 [ordered]@{phase='host-gate-armed';utc=[DateTime]::UtcNow.ToString('o');device=$device;instance=$instance;
     control_set=('ControlSet00'+$current);key=('ControlSet00'+$current+'\Enum\'+$device+'\'+$instance+'\Device Parameters');
     gate=$gateName;value=$GateValue;attempt_id=$AttemptId;attempt_id_readback=$readBack['TimelmTouchAttemptId'];
-    selected_inf_match=$selected;before=$before;after=$after;readback=$readBack;
+    selected_inf_match=$selected;provider_selection=$provider;provider_requested_gate=$providerReadBack;before=$before;after=$after;readback=$readBack;
     hive_sha256_before=$hiveHashBefore;hive_sha256_after=$hiveHashAfter} |
     ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $Receipt -Encoding UTF8
 "host gate $gateName=$GateValue armed for $device ($instance) in ControlSet00$current (selected_inf_match=$($selected.matches), attempt_id=$AttemptId)"

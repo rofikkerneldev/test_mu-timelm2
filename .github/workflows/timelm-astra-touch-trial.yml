@@ -1,0 +1,77 @@
+name: Build Astra GPIO touch trial
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/astra-touch-gpio-r13]
+permissions:
+  contents: read
+jobs:
+  verify-and-launcher:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install EFI compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y clang lld
+      - name: Fetch pinned EFI headers
+        run: git submodule update --init Mu_Basecore
+      - name: Production adapter, provider and electrical regressions
+        run: |
+          mkdir -p Build/AstraTests
+          gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g -IGPLDrivers/Windows/KonaGeniI2c/tests/bitbang_shim GPLDrivers/Windows/KonaGeniI2c/tests/bitbang_windows_test.c -o /tmp/adapter
+          /tmp/adapter | tee Build/AstraTests/adapter.txt
+          gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g GPLDrivers/Windows/KonaGeniI2c/tests/bitbang_test.c GPLDrivers/Windows/KonaGeniI2c/bitbang_i2c.c -o /tmp/wire
+          /tmp/wire | tee Build/AstraTests/wire.txt
+          python3 Resources/DeviceOverlays/timelm/Drivers/KonaGPIO/test_touch_bus.py | tee Build/AstraTests/provider.txt
+          python3 Resources/Scripts/tests/test_touch_gpio_contract.py | tee Build/AstraTests/acpi.txt
+      - name: Build restore-first ARM64 EFI with pinned 952-byte contract
+        run: bash Resources/Scripts/build_touch_gpio_trial.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: astra-launcher-${{ github.sha }}
+          path: |
+            Build/TouchGpio/
+            Build/AstraTests/
+          if-no-files-found: error
+  windows-bundle:
+    needs: verify-and-launcher
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: WOA-Kona/Drivers
+          ref: 3dcdec0bd59e3e77be92629b2ed9e095ae6e19e8
+          path: kona-source
+      - uses: actions/download-artifact@v4
+        with:
+          name: astra-launcher-${{ github.sha }}
+          path: launcher-artifact
+      - name: Windows PowerShell behavior regressions
+        shell: powershell
+        run: ./Resources/Scripts/TouchGpio/Test-TouchGpioGuards.ps1
+      - name: Build signed ARM64 provider, host and touch client
+        shell: pwsh
+        run: |
+          ./Resources/Scripts/build_geni_i2c.ps1
+          ./Resources/Scripts/build_sw42902_touch.ps1
+          ./Resources/Scripts/build_kona_drivers.ps1 -Source ./kona-source -Destination ./kona-packages -TimelmTouchFixes
+      - name: Assemble exact-revision trial bundle
+        shell: pwsh
+        run: |
+          ./Resources/Scripts/TouchGpio/Build-TouchGpioPackage.ps1 -GpioPackage ./kona-packages -HostPackage ./GPLDrivers/Windows/KonaGeniI2c/out/ARM64/Debug -TouchPackage ./GPLDrivers/Windows/Sw42902Touch/driver/kmdf/out/ARM64/Debug -Trial ./launcher-artifact/TouchGpio -Output ./astra-trial -ReplacementManifest ./Resources/Tests/TouchGpio/replacements.json -Receipt ./bundle-receipt.json
+          ./Resources/Scripts/TouchGpio/Test-TouchGpioGuards.ps1 -Artifact ./astra-trial
+          Copy-Item ./bundle-receipt.json ./astra-trial/
+          Copy-Item ./launcher-artifact/AstraTests ./astra-trial/Tests -Recurse
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: timelm-astra-touch-trial-${{ github.sha }}
+          path: |
+            astra-trial/
+            bundle-receipt.json
+            kona-packages/
+            GPLDrivers/Windows/KonaGeniI2c/out/
+            GPLDrivers/Windows/Sw42902Touch/driver/kmdf/out/
+          if-no-files-found: warn

@@ -10,6 +10,7 @@
 #include "board_windows.h"
 #include "bitbang_windows.h"
 #include "trace_windows.h"
+#include "trial_build.h"
 /* The provider's actual public interface GUID is shared with board_windows.c;
  * use a local constant rather than instantiate another DEFINE_GUID symbol. */
 static const GUID ProviderGuid={0x3d4f477b,0x4937,0x407b,{0x93,0x29,0xf7,0xc8,0x8c,0x9a,0x01,0x88}};
@@ -44,8 +45,35 @@ enum BbFailOp {
     BbFailNone=0, BbFailContract, BbFailMemory, BbFailClass, BbFailCount,
     BbFailOpenBus, BbFailLinks, BbFailProvider, BbFailIface,
     BbFailOpenOut, BbFailWriteLow, BbFailMux, BbFailVcl, BbFailVdd,
-    BbFailReset, BbFailSample, BbFailIdentity
+    BbFailReset, BbFailSample, BbFailIdentity, BbFailReady
 };
+
+static VOID RecordFailure(BB_WINDOWS *b,NTSTATUS status)
+{
+    if(b->FailureValid) return;
+    b->FailureValid=TRUE;
+    b->FailurePin=b->OpPin;b->FailureValue=b->OpValue;
+    b->FailureStatus=(ULONG)status;b->FailureBytes=b->OpBytes;
+    GeniRecord(b->Device,L"TimelmBitbangFirstFailureOp",b->FailOp);
+    GeniRecord(b->Device,L"TimelmBitbangFirstFailurePin",b->FailurePin);
+    GeniRecord(b->Device,L"TimelmBitbangFirstFailureValue",b->FailureValue);
+    GeniRecord(b->Device,L"TimelmBitbangFirstFailureStatus",b->FailureStatus);
+    GeniRecord(b->Device,L"TimelmBitbangFirstFailureBytes",b->FailureBytes);
+    GeniRecord(b->Device,L"TimelmBitbangFirstFailureValid",1);
+}
+static NTSTATUS CheckProvider(BB_WINDOWS *b)
+{
+    ULONG gate=0;ULONGLONG generation=0;
+    NTSTATUS s=b->Bus.QueryState(b->Bus.Interface.Context,&gate,&generation);
+    GeniRecord(b->Device,L"TimelmBitbangProviderGate",gate);
+    GeniRecord(b->Device,L"TimelmBitbangProviderEpochLow",(ULONG)generation);
+    GeniRecord(b->Device,L"TimelmBitbangProviderEpochHigh",(ULONG)(generation>>32));
+    if(NT_SUCCESS(s) && (gate!=1 || !generation ||
+        (b->ProviderGeneration && b->ProviderGeneration!=generation))) s=STATUS_DEVICE_NOT_READY;
+    GeniRecord(b->Device,L"TimelmBitbangProviderStatus",(ULONG)s);
+    if(NT_SUCCESS(s)) b->ProviderGeneration=generation;
+    return s;
+}
 
 static VOID DelayMs(ULONG ms)
 { LARGE_INTEGER t;t.QuadPart=-10000LL*ms;(void)KeDelayExecutionThread(KernelMode,FALSE,&t); }
@@ -85,6 +113,7 @@ static NTSTATUS OpenPin(BB_WINDOWS *b,ULONG index)
 {
     DECLARE_UNICODE_STRING_SIZE(path,RESOURCE_HUB_PATH_SIZE);
     WDF_IO_TARGET_OPEN_PARAMS open;NTSTATUS s;
+    b->OpPin=index;b->OpValue=0xffffffffu;b->OpBytes=0;
     if(b->Pins[index]) return STATUS_SUCCESS;
     s=RESOURCE_HUB_CREATE_PATH_FROM_ID(&path,b->PinIds[index].LowPart,b->PinIds[index].HighPart);
     if (!NT_SUCCESS(s)) {b->OpenStatus[index]=(ULONG)s;GeniRecord(b->Device,OpenStatusLabels[index],(ULONG)s);return s;}
@@ -100,15 +129,23 @@ static NTSTATUS OpenPin(BB_WINDOWS *b,ULONG index)
 static NTSTATUS Pin(BB_WINDOWS *b,ULONG index,UCHAR high)
 {
     WDF_MEMORY_DESCRIPTOR mem;WDF_REQUEST_SEND_OPTIONS opt;ULONG_PTR n=0;NTSTATUS s;
+    if(!b->Cleaning) {b->OpPin=index;b->OpValue=high;b->OpBytes=0;}
     if (!b->Pins[index]) return STATUS_DEVICE_NOT_READY;
     WDF_MEMORY_DESCRIPTOR_INIT_BUFFER(&mem,&high,sizeof(high));
     WDF_REQUEST_SEND_OPTIONS_INIT(&opt,WDF_REQUEST_SEND_OPTION_TIMEOUT);
     WDF_REQUEST_SEND_OPTIONS_SET_TIMEOUT(&opt,WDF_REL_TIMEOUT_IN_MS(100));
     s=WdfIoTargetSendIoctlSynchronously(b->Pins[index],NULL,IOCTL_GPIO_WRITE_PINS,&mem,&mem,&opt,&n);
     if (NT_SUCCESS(s) && n!=sizeof(high)) s=STATUS_DEVICE_DATA_ERROR;
-    b->WriteStatus[index]=(ULONG)s;b->WriteBytes[index]=NT_SUCCESS(s)?(ULONG)n:0u;
-    GeniRecord(b->Device,WriteStatusLabels[index],(ULONG)s);
-    GeniRecord(b->Device,WriteBytesLabels[index],b->WriteBytes[index]);
+    if(b->Cleaning) {
+        GeniRecord(b->Device,L"TimelmBitbangCleanupPin",index);
+        GeniRecord(b->Device,L"TimelmBitbangCleanupStatus",(ULONG)s);
+        GeniRecord(b->Device,L"TimelmBitbangCleanupBytes",(ULONG)n);
+    } else {
+        b->OpBytes=(ULONG)n;
+        b->WriteStatus[index]=(ULONG)s;b->WriteBytes[index]=(ULONG)n;
+        GeniRecord(b->Device,WriteStatusLabels[index],(ULONG)s);
+        GeniRecord(b->Device,WriteBytesLabels[index],b->WriteBytes[index]);
+    }
     return s;
 }
 NTSTATUS BbWindowsPrepare(BB_WINDOWS *b,WDFDEVICE device,WDFCMRESLIST resources)
@@ -119,6 +156,29 @@ NTSTATUS BbWindowsPrepare(BB_WINDOWS *b,WDFDEVICE device,WDFCMRESLIST resources)
         b->Pins[3] || b->Pins[4])
         return STATUS_DEVICE_BUSY;
     b->Device=device;
+    b->Generation=KeQueryInterruptTime();if(!b->Generation)b->Generation=1;
+    b->ProviderGeneration=0;b->FailureValid=FALSE;b->Cleaning=FALSE;
+    b->OpPin=b->OpValue=0xffffffffu;b->OpBytes=0;
+    GeniRecord(device,L"TimelmBitbangSnapshotValid",0);
+    GeniRecord(device,L"TimelmBitbangSchema",TIMELM_TOUCH_DIAGNOSTIC_SCHEMA);
+    GeniRecord(device,L"TimelmBitbangBuildId",TIMELM_TOUCH_BUILD_ID);
+    GeniRecord(device,L"TimelmBitbangEpochLow",(ULONG)b->Generation);
+    GeniRecord(device,L"TimelmBitbangEpochHigh",(ULONG)(b->Generation>>32));
+    GeniRecord(device,L"TimelmBitbangFirstFailureValid",0);
+    GeniRecord(device,L"TimelmBitbangIdentityStatus",(ULONG)STATUS_DEVICE_NOT_READY);
+    GeniRecord(device,L"TimelmBitbangIdentity0",0);GeniRecord(device,L"TimelmBitbangIdentity1",0);
+    GeniRecord(device,L"TimelmBitbangIdleLines",0);
+    GeniRecord(device,L"TimelmBitbangPinCount",0);
+    GeniRecord(device,L"TimelmBitbangTransfers",0);GeniRecord(device,L"TimelmBitbangFailures",0);
+    for(i=0;i<BB_WINDOWS_MAX_PINS;++i) {
+        b->OpenStatus[i]=b->WriteStatus[i]=(ULONG)STATUS_DEVICE_NOT_READY;
+        b->WriteBytes[i]=0;
+        GeniRecord(device,OpenStatusLabels[i],b->OpenStatus[i]);
+        GeniRecord(device,WriteStatusLabels[i],b->WriteStatus[i]);
+        GeniRecord(device,WriteBytesLabels[i],0);
+        GeniRecord(device,PinIdLabels[i],0);GeniRecord(device,PinIdHighLabels[i],0);
+        GeniRecord(device,OrdinalLabels[i],0);
+    }
     /* Attempt identity is written by the runner to the device key before the
      * boot; absent means zero. It binds every record below to one boot. */
     {
@@ -134,6 +194,7 @@ NTSTATUS BbWindowsPrepare(BB_WINDOWS *b,WDFDEVICE device,WDFCMRESLIST resources)
         GeniRecord(device, L"TimelmBitbangAttempt", b->Attempt);
         GeniRecord(device, L"TimelmBitbangFailOp", 0);
     }
+    if(!b->Attempt) {s=STATUS_INVALID_PARAMETER;b->FailOp=BbFailContract;goto Fail;}
     GeniRecord(device,L"TimelmBitbangStage",1);
     TimelmTrace("bb-contract-enter");
     s=GeniBoardCheckContractValue(device,0x54420501u);
@@ -165,6 +226,7 @@ NTSTATUS BbWindowsPrepare(BB_WINDOWS *b,WDFDEVICE device,WDFCMRESLIST resources)
         TimelmTraceValue("bb-pin-id",(ULONG)b->PinIds[i].LowPart);}
     /* Reserve the bus pins for the full provider lifetime before muxing. */
     for(i=BB_WINDOWS_POWER_PINS;i<pins;++i) {s=OpenPin(b,i);TimelmTraceStatus("bb-openpin-in",s);if(!NT_SUCCESS(s)) {b->FailOp=BbFailOpenBus;goto Fail;}}
+    b->OpPin=b->OpValue=0xffffffffu;b->OpBytes=0;
     TimelmTrace("bb-provider-links-enter");
     s=IoGetDeviceInterfaces(&ProviderGuid,NULL,0,&links);
     TimelmTraceStatus("bb-provider-links",s);
@@ -178,30 +240,34 @@ NTSTATUS BbWindowsPrepare(BB_WINDOWS *b,WDFDEVICE device,WDFCMRESLIST resources)
     TimelmTraceStatus("bb-provider-open",s);
     if (!NT_SUCCESS(s)) {WdfObjectDelete(b->Provider);b->Provider=NULL;b->FailOp=BbFailProvider;goto Fail;}
     TimelmTrace("bb-iface-query-enter");
-    s=WdfIoTargetQueryForInterface(b->Provider,&GUID_TIMELM_TOUCH_BUS_V3,
-        (PINTERFACE)&b->Bus,sizeof(b->Bus),3,NULL);
+    s=WdfIoTargetQueryForInterface(b->Provider,&GUID_TIMELM_TOUCH_BUS_V4,
+        (PINTERFACE)&b->Bus,sizeof(b->Bus),4,NULL);
     TimelmTraceStatus("bb-iface-query",s);
     if (!NT_SUCCESS(s)) {b->FailOp=BbFailIface;goto Fail;}
     GeniRecord(device,L"TimelmBitbangIfaceVer",(ULONG)b->Bus.Interface.Version);
     GeniRecord(device,L"TimelmBitbangIfaceSize",(ULONG)b->Bus.Interface.Size);
     b->Acquired=TRUE;
-    if(b->Bus.Interface.Version!=3 || b->Bus.Interface.Size!=sizeof(b->Bus) ||
-       !b->Bus.SetGpioMode || !b->Bus.SetLines || !b->Bus.GetLines || !b->Bus.Interface.InterfaceDereference) {
+    if(b->Bus.Interface.Version!=4 || b->Bus.Interface.Size!=sizeof(b->Bus) ||
+       !b->Bus.SetGpioMode || !b->Bus.SetLines || !b->Bus.GetLines ||
+       !b->Bus.QueryState || !b->Bus.Interface.InterfaceDereference) {
         s=STATUS_NOT_SUPPORTED;b->FailOp=BbFailIface;goto Fail;
     }
+    s=CheckProvider(b);if(!NT_SUCCESS(s)) {b->FailOp=BbFailReady;goto Fail;}
     ExFreePool(links);
     b->Io.Context=b;b->Io.SetLines=Lines;b->Io.GetLines=Sample;b->Io.NowUs=Now;
     b->Io.DelayUs=Pause;b->Io.Cancelled=Cancelled;
     GeniRecord(device,L"TimelmBitbangStage",2);
     TimelmTrace("bb-prepare-done");
     GeniRecord(device,L"TimelmBitbangFailOp",0);
+    GeniRecord(device,L"TimelmBitbangSnapshotValid",1);
     return STATUS_SUCCESS;
 Fail:
     if(links) ExFreePool(links);
+    RecordFailure(b,s);
     GeniRecord(device,L"TimelmBitbangStatus",(ULONG)s);
     GeniRecord(device,L"TimelmBitbangFailOp",b->FailOp);
     TimelmTraceStatus("bb-prepare-fail",s);
-    BbWindowsRelease(b);return s;
+    BbWindowsRelease(b);GeniRecord(device,L"TimelmBitbangSnapshotValid",1);return s;
 }
 NTSTATUS BbWindowsStart(BB_WINDOWS *b)
 {
@@ -209,12 +275,16 @@ NTSTATUS BbWindowsStart(BB_WINDOWS *b)
     static const UCHAR expected[8]={'B','3','W','6','8','T','I','M'};
     BB_MESSAGE m[2];int scl=0,sda=0;
     if(!b->Acquired || b->Ready || b->Powered || b->Muxed || b->StartedOnce || b->Retained) return STATUS_DEVICE_NOT_READY;
+    GeniRecord(b->Device,L"TimelmBitbangSnapshotValid",0);
+    b->OpPin=b->OpValue=0xffffffffu;b->OpBytes=0;
+    s=CheckProvider(b);if(!NT_SUCCESS(s)) {b->FailOp=BbFailReady;goto Fail;}
     b->Powered=TRUE;
     b->FailOp=0;
     GeniRecord(b->Device,L"TimelmBitbangFailOp",0);
     TimelmTrace("bb-power-enter");
     for(i=0;i<3;++i) {s=OpenPin(b,i);TimelmTraceStatus("bb-openpin-out",s);if(!NT_SUCCESS(s)) {b->FailOp=BbFailOpenOut;goto Fail;}
         s=Pin(b,i,0);TimelmTraceStatus("bb-write-out",s);if(!NT_SUCCESS(s)) {b->FailOp=BbFailWriteLow;goto Fail;}}
+    b->OpPin=b->OpValue=0xffffffffu;b->OpBytes=0;
     b->Muxed=TRUE; /* include a partial failed GPIO-mode transition in rollback */
     TimelmTrace("bb-setgpiomode-enter");
     s=b->Bus.SetGpioMode(b->Bus.Interface.Context,TRUE);
@@ -225,6 +295,7 @@ NTSTATUS BbWindowsStart(BB_WINDOWS *b)
     DelayMs(1);s=Pin(b,2,1);TimelmTraceStatus("bb-write-vdd",s);if(!NT_SUCCESS(s)) {b->FailOp=BbFailVdd;goto Fail;}
     DelayMs(10);s=Pin(b,0,1);TimelmTraceStatus("bb-write-reset",s);if(!NT_SUCCESS(s)) {b->FailOp=BbFailReset;goto Fail;}
     DelayMs(90);
+    b->OpPin=b->OpValue=0xffffffffu;b->OpBytes=0;
     TimelmTrace("bb-sample-enter");
     if(!Sample(b,&scl,&sda)) {s=b->LastStatus;TimelmTraceStatus("bb-sample",s);b->FailOp=BbFailSample;goto Fail;}
     TimelmTraceValue("bb-idle-lines",(scl?2u:0u)|(sda?1u:0u));
@@ -241,16 +312,19 @@ NTSTATUS BbWindowsStart(BB_WINDOWS *b)
     if(RtlCompareMemory(id,expected,8)!=8) {s=STATUS_NO_SUCH_DEVICE;b->FailOp=BbFailIdentity;goto Fail;}
     b->Ready=TRUE;b->StartedOnce=TRUE;GeniRecord(b->Device,L"TimelmBitbangStage",4);
     GeniRecord(b->Device,L"TimelmBitbangStatus",(ULONG)STATUS_SUCCESS);
-    GeniRecord(b->Device,L"TimelmBitbangFailOp",0);return STATUS_SUCCESS;
+    GeniRecord(b->Device,L"TimelmBitbangFailOp",0);
+    GeniRecord(b->Device,L"TimelmBitbangSnapshotValid",1);return STATUS_SUCCESS;
 Fail:
+    RecordFailure(b,s);
     GeniRecord(b->Device,L"TimelmBitbangStatus",(ULONG)s);
     GeniRecord(b->Device,L"TimelmBitbangFailOp",b->FailOp);
-    (void)BbWindowsStop(b);return s;
+    (void)BbWindowsStop(b);GeniRecord(b->Device,L"TimelmBitbangSnapshotValid",1);return s;
 }
 NTSTATUS BbWindowsStop(BB_WINDOWS *b)
 {
     ULONG i;NTSTATUS s=STATUS_SUCCESS,t;b->Ready=FALSE;
     TimelmTrace("bb-stop-enter");
+    b->Cleaning=TRUE;
     if(b->Powered) {
         static const ULONG order[3]={0,2,1};
         for(i=0;i<3;++i) if(b->Pins[order[i]]) {t=Pin(b,order[i],0);if(!NT_SUCCESS(t))s=t;DelayMs(1);}
@@ -258,6 +332,7 @@ NTSTATUS BbWindowsStop(BB_WINDOWS *b)
     }
     if(b->Muxed) {t=b->Bus.SetGpioMode(b->Bus.Interface.Context,FALSE);if(!NT_SUCCESS(t))s=t;else b->Muxed=FALSE;}
     if(!NT_SUCCESS(s)) b->Retained=TRUE;
+    b->Cleaning=FALSE;
     GeniRecord(b->Device,L"TimelmBitbangRetained",b->Retained?1u:0u);
     GeniRecord(b->Device,L"TimelmBitbangStopStatus",(ULONG)s);
     TimelmTraceStatus("bb-stop-exit",s);

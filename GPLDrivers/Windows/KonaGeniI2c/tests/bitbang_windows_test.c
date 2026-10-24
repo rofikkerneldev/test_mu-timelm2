@@ -28,6 +28,16 @@ static enum BB_RESULT transferResult;
 static unsigned events[128],eventCount,pinLevels[3];
 static ULONG recordedPinCount;static unsigned recordedCounts;
 static ULONG recordedPinId[5];static unsigned recordedIds;
+static ULONG providerGate;
+static ULONGLONG providerEpoch;
+static int failReady;
+static struct {PCWSTR name;ULONG value;} records[128];
+static unsigned recordCount;
+static ULONG Recorded(PCWSTR name)
+{
+    unsigned i;for(i=0;i<recordCount;++i)if(!wcscmp(records[i].name,name))return records[i].value;
+    assert(!"missing production registry record");return 0;
+}
 
 ULONG WdfCmResourceListGetCount(WDFCMRESLIST list) { return list->Count; }
 PCM_PARTIAL_RESOURCE_DESCRIPTOR WdfCmResourceListGetDescriptor(WDFCMRESLIST list,ULONG index)
@@ -35,6 +45,10 @@ PCM_PARTIAL_RESOURCE_DESCRIPTOR WdfCmResourceListGetDescriptor(WDFCMRESLIST list
 VOID GeniRecord(WDFDEVICE device,PCWSTR name,ULONG value)
 {
     (void)device;
+    {
+        unsigned i;for(i=0;i<recordCount;++i)if(!wcscmp(records[i].name,name))break;
+        assert(i<128);records[i].name=name;records[i].value=value;if(i==recordCount)++recordCount;
+    }
     if (!wcscmp(name,L"TimelmBitbangPinCount")) {recordedPinCount=value;++recordedCounts;return;}
     if (!wcsncmp(name,L"TimelmBitbangPinId",18) && name[18]>='0' && name[18]<='4') {
         recordedPinId[name[18]-'0']=value;++recordedIds;return;
@@ -109,16 +123,19 @@ static NTSTATUS Set(PVOID context,BOOLEAN scl,BOOLEAN sda)
 { (void)context;(void)scl;(void)sda;assert(modeActive);return failSetLines?STATUS_IO_DEVICE_ERROR:STATUS_SUCCESS; }
 static NTSTATUS Get(PVOID context,PBOOLEAN scl,PBOOLEAN sda)
 { (void)context;assert(modeActive);*scl=*sda=TRUE;return failSample?STATUS_IO_DEVICE_ERROR:STATUS_SUCCESS; }
+static NTSTATUS QueryState(PVOID context,ULONG *gate,ULONGLONG *epoch)
+{ (void)context;*gate=providerGate;*epoch=providerEpoch;return failReady?STATUS_DEVICE_NOT_READY:STATUS_SUCCESS; }
 NTSTATUS WdfIoTargetQueryForInterface(WDFIOTARGET target,const GUID *guid,PINTERFACE result,USHORT size,USHORT version,PVOID data)
 {
-    TIMELM_TOUCH_BUS_V3 *interface=(TIMELM_TOUCH_BUS_V3 *)result;
+    TIMELM_TOUCH_BUS_V4 *interface=(TIMELM_TOUCH_BUS_V4 *)result;
     (void)data;assert(target->Id==9 && target->Open);
-    assert(guid->Data1==0xa43b6365u && size==sizeof(*interface) && version==3);
+    assert(guid->Data1==0x0cf0124eu && size==sizeof(*interface) && version==4);
     ++queried;if(failQuery)return STATUS_NOT_SUPPORTED;
     memset(interface,0,sizeof(*interface));interface->Interface.Size=size;
-    interface->Interface.Version=badVersion?2:3;
+    interface->Interface.Version=badVersion?3:4;
     interface->Interface.InterfaceDereference=nullDereference?NULL:Dereference;
     interface->SetGpioMode=Mode;interface->SetLines=Set;interface->GetLines=Get;
+    interface->QueryState=QueryState;
     return STATUS_SUCCESS;
 }
 NTSTATUS WdfIoTargetSendIoctlSynchronously(WDFIOTARGET target,WDFREQUEST request,ULONG ioctl,WDF_MEMORY_DESCRIPTOR *input,WDF_MEMORY_DESCRIPTOR *output,WDF_REQUEST_SEND_OPTIONS *options,ULONG_PTR *returned)
@@ -164,7 +181,8 @@ static void Init(void)
     failModeEnable=failModeDisable=failSample=modeActive=0;
     failSetLines=cancelRequest=modeEnables=modeDisables=0;
     eventCount=0;clockUs=identityAt=0;contractStatus=STATUS_SUCCESS;transferResult=BbOk;
-    attemptValue=0;failAttempt=0;
+    attemptValue=7;failAttempt=0;providerGate=1;providerEpoch=0x123400000007ULL;failReady=0;
+    recordCount=0;memset(records,0,sizeof(records));
     recordedPinCount=0;recordedCounts=0;recordedIds=0;memset(recordedPinId,0,sizeof(recordedPinId));
 }
 /* Windows may publish the {36,37} bus pair as one connection resource or as
@@ -196,7 +214,7 @@ static void SplitBusPins(void)
     assert(bus.Connections==5 && created==3);
     assert(bus.Pins[3] && bus.Pins[3]->Open && bus.Pins[4] && bus.Pins[4]->Open);
     assert(!bus.Pins[0] && !bus.Pins[1] && !bus.Pins[2]);
-    assert(recordedCounts==1 && recordedPinCount==5 && recordedIds==5);
+    assert(recordedCounts>=1 && recordedPinCount==5 && recordedIds>=5);
     assert(recordedPinId[0]==1 && recordedPinId[1]==2 && recordedPinId[2]==3 &&
         recordedPinId[3]==4 && recordedPinId[4]==5);
     assert(BbWindowsStart(&bus)==STATUS_SUCCESS && bus.Ready && identityAt>=102000);
@@ -211,7 +229,7 @@ static void Good(void)
     static const unsigned expected[]={12,14,16,1001,15,17,13,2000,12,16,14,1000};
     BB_MESSAGE message;UCHAR data=0;unsigned allocations;
     Init();Prepare();assert(bus.Acquired && !bus.Ready && created==2);
-    assert(bus.Attempt==0 && bus.FailOp==BbFailNone);
+    assert(bus.Attempt==7 && bus.FailOp==BbFailNone);
     allocations=created;
     assert(!NT_SUCCESS(BbWindowsPrepare(&bus,NULL,&resources)) && created==allocations);
     assert(BbWindowsStart(&bus)==STATUS_SUCCESS && bus.Ready && identityAt>=102000);
@@ -265,7 +283,15 @@ static void StartFailures(void)
         else if (i==4) assert(bus.FailOp==BbFailVcl);
         else if (i==5) assert(bus.FailOp==BbFailVdd);
         else assert(bus.FailOp==BbFailReset);
+        assert(Recorded(L"TimelmBitbangFirstFailureValid")==1);
+        assert(Recorded(L"TimelmBitbangFirstFailureStatus")==((ULONG)STATUS_IO_DEVICE_ERROR));
+        assert(Recorded(L"TimelmBitbangFirstFailurePin")==((i<=3)?i-1:(i==4?1:i==5?2:0)));
+        assert(Recorded(L"TimelmBitbangFirstFailureValue")==((i<=3)?0u:1u));
+        assert(Recorded(L"TimelmBitbangFirstFailureOp")==bus.FailOp);
+        assert(bus.WriteStatus[bus.FailurePin]==(ULONG)STATUS_IO_DEVICE_ERROR);
+        assert(Recorded(L"TimelmBitbangSnapshotValid")==1);
         Clean();
+        assert(Recorded(L"TimelmBitbangFirstFailureStatus")==((ULONG)STATUS_IO_DEVICE_ERROR));
     }
     Init();Prepare();failModeEnable=1;
     assert(!NT_SUCCESS(BbWindowsStart(&bus)) && modeEnables==1 && modeDisables==1 && !modeActive);
@@ -273,6 +299,19 @@ static void StartFailures(void)
     Init();Prepare();failSample=1;assert(!NT_SUCCESS(BbWindowsStart(&bus)));Clean();
     Init();Prepare();badIdentity=1;assert(BbWindowsStart(&bus)==STATUS_NO_SUCH_DEVICE);Clean();
     Init();Prepare();transferResult=BbNack;assert(BbWindowsStart(&bus)==STATUS_NO_SUCH_DEVICE);Clean();
+}
+static void ReadyAndEpoch(void)
+{
+    Init();attemptValue=0;assert(BbWindowsPrepare(&bus,NULL,&resources)==STATUS_INVALID_PARAMETER);assert(!pinCalls);Clean();
+    Init();failAttempt=1;assert(!NT_SUCCESS(BbWindowsPrepare(&bus,NULL,&resources)));assert(!pinCalls);Clean();
+    Init();providerGate=0;assert(!NT_SUCCESS(BbWindowsPrepare(&bus,NULL,&resources)));assert(!pinCalls);Clean();
+    Init();providerGate=2;assert(!NT_SUCCESS(BbWindowsPrepare(&bus,NULL,&resources)));assert(!pinCalls);Clean();
+    Init();providerEpoch=0;assert(!NT_SUCCESS(BbWindowsPrepare(&bus,NULL,&resources)));assert(!pinCalls);Clean();
+    Init();Prepare();++providerEpoch;assert(!NT_SUCCESS(BbWindowsStart(&bus)));assert(!pinCalls && bus.FailOp==BbFailReady);Clean();
+    Init();Prepare();providerGate=0;assert(!NT_SUCCESS(BbWindowsStart(&bus)));assert(!pinCalls && bus.FailOp==BbFailReady);Clean();
+    Init();Prepare();failReady=1;assert(!NT_SUCCESS(BbWindowsStart(&bus)));assert(!pinCalls);Clean();
+    Init();resources.Entries[0].u.Connection.IdHighPart=0x12345678;Prepare();
+    assert(bus.PinIds[0].HighPart==0x12345678);Clean();
 }
 static void Retained(void)
 {
@@ -313,7 +352,7 @@ static void Retained(void)
 }
 int main(void)
 {
-    Good();SplitBusPins();PrepareFailures();StartFailures();Retained();
+    Good();SplitBusPins();PrepareFailures();StartFailures();Retained();ReadyAndEpoch();
     puts("Production bitbang Windows adapter: exact identity/power order, prepare/start failures, partial enable cleanup, no resume and retained reservations passed");
     return 0;
 }

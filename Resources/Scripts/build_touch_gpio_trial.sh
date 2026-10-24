@@ -10,7 +10,8 @@ if [[ -n "${TIMELM_TOUCH_DSDT_SNAPSHOT:-}" && -n "${TIMELM_TOUCH_SSDT_SNAPSHOT:-
   python3 Resources/Scripts/generate_touch_enumeration.py "$output" --gpio --snapshot \
     "$TIMELM_TOUCH_DSDT_SNAPSHOT" "$TIMELM_TOUCH_SSDT_SNAPSHOT"
 elif [[ -z "${TIMELM_TOUCH_DSDT_SNAPSHOT:-}" && -z "${TIMELM_TOUCH_SSDT_SNAPSHOT:-}" ]]; then
-  python3 Resources/Scripts/generate_touch_enumeration.py "$output" --gpio
+  python3 Resources/Scripts/generate_touch_enumeration.py "$output" --gpio --snapshot \
+    Resources/Tests/TouchGpio/DSDT-952.aml Resources/Tests/TouchGpio/SSDT-451.aml
 else
   echo 'Set both TIMELM_TOUCH_DSDT_SNAPSHOT and TIMELM_TOUCH_SSDT_SNAPSHOT, or neither.' >&2
   exit 2
@@ -32,6 +33,7 @@ clang --target=aarch64-pc-windows-msvc -O2 -ffreestanding -fshort-wchar \
   -o "$output/TouchEnumeration.obj"
 lld-link /machine:arm64 /subsystem:efi_application /entry:TouchEnumerationEntry \
   /nodefaultlib /out:"$output/TouchGpioOnce.efi" "$output/TouchEnumeration.obj"
+python3 Resources/Scripts/record_touch_source.py --component launcher --output "$output/source-inputs.json"
 python3 - "$output" <<'PY'
 from pathlib import Path
 import hashlib,json,struct,subprocess,sys
@@ -48,6 +50,9 @@ meta=dict(commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).s
     requires_no_matching_drivers=False,gpio_touch_trial=True,bbtrial=True,
     ssdt_sha256=hashlib.sha256((out/'TouchGpio.aml').read_bytes()).hexdigest(),
     windows_reference=json.load(open('Platforms/LG/timelmPkg/Applications/I2cClockDiag/WindowsBootReference.json')))
+meta['source']=json.loads((out/'source-inputs.json').read_text())
+meta['dsdt_sha256']='b759e921e4224158834b5867a456ab988a49d5f900ee90d2b77ed984d9a6c5fe'
+meta['dsdt_mode']='live-snapshot-952'
 (out/'touch-gpio.json').write_text(json.dumps(meta,indent=2)+'\n')
 print(json.dumps(meta,indent=2))
 PY

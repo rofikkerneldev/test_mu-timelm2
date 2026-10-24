@@ -85,10 +85,12 @@ $metadata = [ordered]@{
     architecture = 'ARM64'
     target_os = 'Windows 11 ARM64; installed timelm OS is 26H2 build 26300.9457; hardware validation pending'
     kmdf = '1.33'
-    components = @('GPIO','SPMI','PMIC')
+    components = $(if($TimelmTouchFixes -and !$TimelmPowerFixes){@('GPIO')}else{@('GPIO','SPMI','PMIC')})
     patches = $patchMetadata
 }
 $metadata | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $Destination 'source.json')
+& python (Join-Path $PSScriptRoot 'record_touch_source.py') --component gpio --output (Join-Path $Destination 'source-inputs.json') --upstream-root $Source
+if($LASTEXITCODE -ne 0){throw 'GPIO source provenance failed'}
 foreach ($component in $metadata.components) {
     $project = Join-Path $Source "src\$component\$component.vcxproj"
     $log = Join-Path $Destination "$component-build.log"
@@ -118,4 +120,4 @@ $hashes = foreach ($file in Get-ChildItem -LiteralPath $Destination -Recurse -Fi
     [ordered]@{path=[IO.Path]::GetRelativePath($Destination,$file.FullName);sha256=(Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant();size=$file.Length}
 }
 $hashes | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $Destination 'sha256.json')
-Write-Host 'All three ARM64 DEBUG packages built. Installation and hardware validation remain required.'
+Write-Host 'Requested ARM64 DEBUG packages built. Installation and hardware validation remain required.'
