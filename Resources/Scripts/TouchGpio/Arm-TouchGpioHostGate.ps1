@@ -35,13 +35,6 @@ $mountKey = 'HKLM:\TIMELM_TOUCHGPIO'
 $hive = Join-Path $WindowsRoot 'Windows\System32\config\SYSTEM'
 
 if (!(Test-Path -LiteralPath $hive)) {throw 'Phone SYSTEM hive not found'}
-$hiveHashBefore = (Get-FileHash -LiteralPath $hive -Algorithm SHA256).Hash
-$locked = $false
-try {
-    $stream = [IO.File]::Open($hive,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
-    $stream.Close()
-} catch [IO.IOException] { $locked = $true }
-if ($locked) {throw 'The phone SYSTEM hive is in use; stop the phone Windows before the gate is armed'}
 
 function Invoke-Reg([string[]]$Arguments) {
     $output = & reg.exe @Arguments 2>&1
@@ -49,18 +42,48 @@ function Invoke-Reg([string[]]$Arguments) {
     return $output
 }
 function Remove-Mount() {
-    # A stale mount is removed on a best effort basis: the phone hive is the
-    # only thing that matters here, a leftover mount would block the load.
-    # reg.exe reports a missing mount with a failing exit code on stderr, and
-    # this script's strict error preference must not turn that harmless
-    # nothing-to-unload report into a staging failure. Whether the hive can
-    # really be opened is proven by the load that follows this call.
+    # Every start clears any mount this trial family left behind, and the
+    # removal is verified instead of assumed: a mount whose keys are still
+    # referenced keeps the hive file locked, and the phone-off check below
+    # or the after-unload hash would then fight a live mount. reg.exe
+    # reports a missing mount with a failing exit code on stderr, and the
+    # script's strict error preference must not turn that harmless
+    # nothing-to-unload report into a staging failure.
     $preference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
-    try {& reg.exe unload $mountReg 2>&1 | Out-Null} catch {}
-    $ErrorActionPreference = $preference
+    try {
+        & reg.exe unload $mountReg 2>&1 | Out-Null
+        $removed = $false
+        foreach ($i in 1..5) {
+            $null = & reg.exe query $mountReg 2>&1
+            if ($LASTEXITCODE -ne 0) {$removed = $true; break}
+            # A registry provider handle still held open is released by a
+            # collection pass; reg.exe itself cannot free it.
+            [GC]::Collect()
+            [GC]::WaitForPendingFinalizers()
+            & reg.exe unload $mountReg 2>&1 | Out-Null
+            Start-Sleep -Milliseconds 250
+        }
+    } finally {
+        $ErrorActionPreference = $preference
+    }
     $global:LASTEXITCODE = 0
+    if (!$removed) {throw ('Mounted hive ' + $mountReg + ' would not release; a key is still open')}
 }
+# A stale mount from a failed attempt keeps the loaded hive file locked: the
+# mount is cleared BEFORE the phone-off check so that check measures the hive
+# outside of this trial's own leftovers.
+$null = Remove-Mount
+$hiveHashBefore = (Get-FileHash -LiteralPath $hive -Algorithm SHA256).Hash
+$locked = $false
+try {
+    $stream = [IO.File]::Open($hive,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+    $stream.Close()
+} catch {
+    if ($_.Exception.GetBaseException() -is [System.IO.IOException]) {$locked = $true} else {throw}
+}
+if ($locked) {throw 'The phone SYSTEM hive is in use; stop the phone Windows before the gate is armed'}
+
 function Get-GateValues([string]$KeyPath) {
     $values = @{}
     if (!(Test-Path -LiteralPath $KeyPath)) {return $values}
@@ -93,50 +116,55 @@ try {
     }
     # The device's selected package decides a resumed attempt: follow the
     # Enum binding into the Class tree and hash the INF file the device is
-    # actually bound to, not whichever INF happens to sit in the store.
+    # actually bound to, not whichever INF happens to sit in the store. The
+    # tree itself is read in reg.exe: the provider would hold hundreds of
+    # enumeration keys open behind the GC and refuse the unload of this hive.
     $selected = [ordered]@{matches=$false;driver='';node='';inf='';inf_path='';inf_sha256='';nodes_scanned=0}
     if ($BundleInfHash) {
         $infRoot = Join-Path (Join-Path $WindowsRoot 'Windows') 'INF'
-        $enumKey = $mountKey + '\ControlSet00' + $current + '\Enum\' + $device + '\' + $instance
-        $enumProps = Get-ItemProperty -LiteralPath $enumKey -ErrorAction SilentlyContinue
-        if ($enumProps -and ($enumProps.PSObject.Properties.Name -contains 'Driver')) {
-            $selected.driver = [string]$enumProps.Driver
+        $enumKey = $mountReg + '\ControlSet00' + $current + '\Enum\' + $device + '\' + $instance
+        foreach ($line in @(Invoke-Reg @('query',$enumKey))) {
+            if ($line -match '^\s+Driver\s+REG_(?:SZ|EXPAND_SZ)\s+(.+)$') {$selected.driver = $Matches[1].Trim()}
         }
-        $classRoot = $mountKey + '\ControlSet00' + $current + '\Control\Class'
-        if (Test-Path -LiteralPath $classRoot) {
-            # The registry provider has no -Directory switch (that one is a
-            # dynamic FileSystem parameter); enumerating a hive yields keys.
-            foreach ($classDir in @(Get-ChildItem -LiteralPath $classRoot -ErrorAction SilentlyContinue)) {
-                foreach ($node in @(Get-ChildItem -LiteralPath $classDir.PSPath -ErrorAction SilentlyContinue)) {
-                    $nodeProps = Get-ItemProperty -LiteralPath $node.PSPath -ErrorAction SilentlyContinue
-                    if (!$nodeProps -or ($nodeProps.PSObject.Properties.Name -notcontains 'MatchingDeviceId') -or
-                        $nodeProps.MatchingDeviceId -ne $device) {continue}
-                    $selected.nodes_scanned++
-                    $infName = ''
-                    if ($nodeProps.PSObject.Properties.Name -contains 'InfPath') {$infName = [string]$nodeProps.InfPath}
-                    elseif ($nodeProps.PSObject.Properties.Name -contains 'DriverInfPath') {$infName = [string]$nodeProps.DriverInfPath}
-                    if (!$infName) {continue}
-                    $infFile = Join-Path $infRoot $infName
-                    $infHash = ''
-                    if (Test-Path -LiteralPath $infFile) {$infHash = (Get-FileHash -LiteralPath $infFile).Hash}
-                    if ($infHash -ieq $BundleInfHash) {
-                        $selected.matches = $true
-                        $selected.node = $node.PSChildName
-                        $selected.inf = $infName
-                        $selected.inf_path = $infFile
-                        $selected.inf_sha256 = $infHash
-                        break
-                    }
-                    if (!$selected.node) {
-                        # Only a reference candidate to show which binding the
-                        # device held instead of the bundle.
-                        $selected.node = $node.PSChildName
-                        $selected.inf = $infName
-                        $selected.inf_path = $infFile
-                        $selected.inf_sha256 = $infHash
-                    }
-                }
-                if ($selected.matches) {break}
+        $classKey = $mountReg + '\ControlSet00' + $current + '\Control\Class'
+        $nodes = @()
+        foreach ($line in @(Invoke-Reg @('query',$classKey,'/s'))) {
+            if ($line.Trim().Length -gt 0 -and !$line.StartsWith('    ')) {
+                $nodes += @{name=([string]$line.Trim()).Split('\')[-1];values=@{}}
+                continue
+            }
+            if (!$nodes.Count) {continue}
+            $values = $nodes[-1].values
+            $match = [regex]::Match($line, '^\s{3,4}([^\s]+?)\s+REG_(?:DWORD|SZ|EXPAND_SZ|BINARY|MULTI_SZ)\s+(.*)$')
+            if ($match.Success) {$values[[string]$match.Groups[1].Value] = [string]$match.Groups[2].Value.TrimEnd()}
+        }
+        foreach ($node in $nodes) {
+            $values = $node.values
+            if (!$values.ContainsKey('MatchingDeviceId') -or $values['MatchingDeviceId'] -ne $device) {continue}
+            $selected.nodes_scanned++
+            $infName = ''
+            foreach ($name in @('InfPath','DriverInfPath')) {
+                if ($values.ContainsKey($name) -and $values[$name]) {$infName = $values[$name]; break}
+            }
+            if (!$infName) {continue}
+            $infFile = Join-Path $infRoot $infName
+            $infHash = ''
+            if (Test-Path -LiteralPath $infFile) {$infHash = (Get-FileHash -LiteralPath $infFile).Hash}
+            if ($infHash -ieq $BundleInfHash) {
+                $selected.matches = $true
+                $selected.node = $node.name
+                $selected.inf = $infName
+                $selected.inf_path = $infFile
+                $selected.inf_sha256 = $infHash
+                break
+            }
+            if (!$selected.node) {
+                # Only a reference candidate to show which binding the
+                # device held instead of the bundle.
+                $selected.node = $node.name
+                $selected.inf = $infName
+                $selected.inf_path = $infFile
+                $selected.inf_sha256 = $infHash
             }
         }
     }
