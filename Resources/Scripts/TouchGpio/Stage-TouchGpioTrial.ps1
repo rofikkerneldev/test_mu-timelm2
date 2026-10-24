@@ -225,7 +225,13 @@ try {
     $gateArmed = Test-Path -LiteralPath $gateReceipt
     if (!$gateArmed) {throw "Host gate staging failed: $gateOutput"}
     $gateStatus = ConvertFrom-Json (Get-Content -LiteralPath $gateReceipt -Raw)
-    if (!$gateStatus.selected_inf_match.matches) {throw 'Host gate staging lost the selected reference'}
+    # The final pass must reproduce the reference pass detection byte for
+    # byte: on a resumed attempt both receipts show the bundle INF selected
+    # (gate 1), on a clean bundle both show no binding (gate 0; the runner
+    # arms the gate itself inside the trial boot). Asserting matches=$true
+    # unconditionally stalled a clean phone at exactly this check.
+    if ($gateStatus.selected_inf_match.matches -ne $resumeFromSelectedInf) {throw 'Host gate staging lost the selected reference'}
+    if ($gateStatus.value -ne $gateTarget) {throw 'Host gate staging wrote the wrong gate'}
     if ($gateStatus.attempt_id_readback -ne $attemptId) {throw 'Host gate staging lost the attempt id'}
     $null = New-Item -ItemType Directory -Path $bundle
     $sources = @(
