@@ -25,7 +25,7 @@ try {
 $taskName = 'TimelmTouchGpioOnce'
 try {
     $exe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
-    $script = Join-Path $PSScriptRoot 'Run-TouchGpioTrial.ps1'
+    $script = Join-Path $PSScriptRoot 'Invoke-TouchGpioSupervised.ps1'
     $arguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "'+$script+'"'
     # The phone RTC runs hours behind the PC reference time, and the clock has
     # to be corrected here, before the scheduled task exists. A clock jump
@@ -50,18 +50,17 @@ try {
     if ($existing) {
         # The SYSTEM account is written in several shapes by the task service.
         $systemAccounts = @('SYSTEM','S-1-5-18','NT AUTHORITY\SYSTEM')
+        $legacyArguments='-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "'+(Join-Path $PSScriptRoot 'Run-TouchGpioTrial.ps1')+'"'
         if (@($existing.Actions).Count -ne 1 -or $existing.Actions[0].Execute -ine $exe -or
-            $existing.Actions[0].Arguments -cne $arguments -or
+            $existing.Actions[0].Arguments -cnotin @($arguments,$legacyArguments) -or
             $existing.Principal.UserId -notin $systemAccounts) {throw 'Trial task already exists; refusing to overwrite or rearm it'}
         Unregister-ScheduledTask -TaskName $taskName -TaskPath '\' -Confirm:$false
         $replacedStaleTask = $true
     }
     $action = New-ScheduledTaskAction -Execute $exe -Argument $arguments -WorkingDirectory $PSScriptRoot
     $taskPrincipal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
-    # Five bounded PnP operations, two collectors and the test window can take
-    # over 23 minutes in the slow-success case. The task limit stays well above
-    # that, so the runner's own monotonic budget is always the first bound to
-    # trigger and a clock correction can never terminate the action.
+    # The parent supervisor enforces a 25-minute child deadline independent of
+    # a blocked worker cmdlet. The scheduler's two-hour limit is only a backstop.
     $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 120) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
     $task = New-ScheduledTask -Action $action -Principal $taskPrincipal -Settings $settings
     $null = Register-ScheduledTask -TaskName $taskName -TaskPath '\' -InputObject $task

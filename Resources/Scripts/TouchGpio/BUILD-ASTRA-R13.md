@@ -4,6 +4,16 @@ Kandidat ini mengimplementasikan koreksi review Astra 24 Oktober terhadap baseli
 
 ## Perubahan dan batas
 
+Koreksi runner setelah boot prepare R13: snapshot memakai proyeksi nilai registry
+tanpa PSDrive/PSProvider, dibaca dalam child berbatas 15 detik. Task SYSTEM kini
+menjalankan supervisor yang membatasi worker 25 menit ditambah grace penghentian/
+drain output, lalu meminta shutdown normal sebelum task cleanup. `supervisor.json`
+mengikat attempt, exit/error worker dan hasil permintaan shutdown. Receipt worker
+tidak lagi mengklaim shutdown selesai; penerimaan shutdown oleh OS belum membuktikan
+HP benar-benar mati. Tes PS5.1 menjalankan snapshot produksi dan menyuntikkan timeout,
+exit nonzero, worker tidak ditemukan, receipt gagal, serta shutdown gagal dengan
+callback aman di PC. Driver C, gate dan algoritme transport tetap sama.
+
 | Review | Implementasi kandidat |
 |---|---|
 | R1 | Query satu Class key dari Enum Driver; wajib cocok INF, service dan hash SYS. Tidak memindai Class tree untuk menentukan selected package. Filter HID vhidmini divalidasi melalui INF filter contract dan service binary, terpisah dari function service inbox |

@@ -343,6 +343,16 @@ function Get-TouchGpioResult {
         'runtime-clock-stable','pnp-installs','valid-runtime-receipts','fresh-host-evidence','provider-gate',
         'selected-inf-gpio','selected-inf-host','selected-inf-touch','gpio-provider-v3','gpio-resource-shape',
         'idle-lines-high','chip-identity','host-code-0','touch-code-0','irq-and-reports','test-window','tap-and-swipe')
+    if($epoch -and $epoch.supervised -eq $true) {
+        $supervisor=Read-TouchGpioJson (Join-Path $runtime 'supervisor.json')
+        $ok=$supervisor -and $supervisor.attempt_id -eq $epoch.attempt_id -and
+            $supervisor.phase -eq 'worker-exited' -and $null -ne $supervisor.worker_exit_code -and
+            $supervisor.worker_exit_code -eq 0 -and !$supervisor.worker_error -and
+            $supervisor.shutdown_requested -eq $true -and !$supervisor.shutdown_error
+        Add-TouchGpioStep $steps 'supervisor-shutdown-request' $(if($ok){'proven'}else{'failed'}) `
+            'matching supervisor receipt must show worker exit and an accepted shutdown request; this does not prove physical power-off'
+        $ordered+='supervisor-shutdown-request'
+    }
     # A step that is missing is not a proof. Only a fully proven chain may be
     # reported as hardware evidence, and only the user can confirm the tap.
     $core = @($ordered | Where-Object {$_ -ne 'tap-and-swipe'})

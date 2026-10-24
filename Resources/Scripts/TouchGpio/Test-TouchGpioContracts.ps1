@@ -1,6 +1,9 @@
 # Production helper behavioral tests, isolated files and mocked registry reads.
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'TouchGpioCommon.ps1')
+$probeScript=Join-Path $PSScriptRoot 'Invoke-ProbeProcess.ps1'
+if(!(Test-Path -LiteralPath $probeScript)){$probeScript=Join-Path $PSScriptRoot '../TouchEnumeration/Invoke-ProbeProcess.ps1'}
+. $probeScript
 $testRoot=Join-Path ([IO.Path]::GetTempPath()) ('timelm-contracts-'+[guid]::NewGuid().ToString('N'))
 $null=New-Item -ItemType Directory -Path $testRoot
 function Expect-Refusal([scriptblock]$Action) {
@@ -66,7 +69,68 @@ try {
     if((Get-Content -LiteralPath $receipt -Raw | ConvertFrom-Json).phase -ne 'after'){throw 'Interrupted temporary write changed committed receipt'}
     Write-TouchGpioJson (Join-Path $testRoot 'array.json') @(@{operation='single'})
     if(!(Get-Content -LiteralPath (Join-Path $testRoot 'array.json') -Raw).TrimStart().StartsWith('[')){throw 'One-element array lost its JSON shape'}
-    'PASS: exact selected binding/SYS, strict gates, stale/missing attempt/build/epoch rejection, atomic JSON and interrupted-write isolation'
+    # Regression: the real provider object contains a deep PSDrive/PSProvider
+    # reflection graph. R13 stalled before installation while encoding it.
+    $raw=Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\TimeZoneInformation'
+    Expect-Refusal {Write-TouchGpioJson (Join-Path $testRoot 'raw-registry.json') $raw}
+    if(Test-Path (Join-Path $testRoot 'raw-registry.json')) {throw 'Raw registry object was published'}
+    $flat=ConvertTo-TouchGpioRegistryValues $raw
+    Write-TouchGpioJson (Join-Path $testRoot 'flat-registry.json') $flat
+    $flatJson=Get-Content -LiteralPath (Join-Path $testRoot 'flat-registry.json') -Raw
+    if($flatJson -match '"PS(?:Path|ParentPath|ChildName|Drive|Provider)"' -or $flatJson.Length -gt 32768) {throw 'Registry provider metadata escaped projection'}
+    $typed=[pscustomobject]@{SignedDword=-1;Qword=[long]4294967297;Binary=[byte[]](0,128,255);Multi=[string[]]@('one','two')}
+    $typed | Add-Member ScriptProperty PSDrive {throw 'Metadata getter must never run'}
+    $projected=ConvertTo-TouchGpioRegistryValues $typed
+    Write-TouchGpioJson (Join-Path $testRoot 'typed-registry.json') $projected
+    $roundtrip=Get-Content -LiteralPath (Join-Path $testRoot 'typed-registry.json') -Raw | ConvertFrom-Json
+    if($roundtrip.SignedDword -ne -1 -or $roundtrip.Qword -ne 4294967297 -or
+        ($roundtrip.Binary -join ',') -ne '0,128,255' -or ($roundtrip.Multi -join ',') -ne 'one,two') {throw 'Registry value types were lost'}
+    Expect-Refusal {ConvertTo-TouchGpioRegistryValues ([pscustomobject]@{Bad=[IO.MemoryStream]::new()})}
+    # Execute the production snapshot functions only, without the ARM64 runner
+    # entry point. This catches a producer accidentally passing the raw object.
+    $tokens=$null;$errors=$null
+    $runnerAst=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'Run-TouchGpioTrial.ps1'),[ref]$tokens,[ref]$errors)
+    if($errors.Count){throw 'Runner parse failed'}
+    foreach($name in @('Save-Json','Save-HostSnapshot')) {
+        $definition=$runnerAst.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name},$true)
+        if(!$definition){throw 'Production snapshot function missing'}
+        . ([scriptblock]::Create($definition.Extent.Text))
+    }
+    $logs=Join-Path $testRoot 'snapshot';$null=New-Item -ItemType Directory -Path $logs
+    $hostKey='HKLM:\SYSTEM\CurrentControlSet\Control\TimeZoneInformation'
+    $snapshotReader=Join-Path $PSScriptRoot 'Export-TouchGpioRegistryValues.ps1'
+    $script:attemptId=7;$script:runnerId='snapshot-regression'
+    Save-HostSnapshot 'entry'
+    $snapshot=Get-Content (Join-Path $logs 'host-bitbang.json') -Raw | ConvertFrom-Json
+    if($snapshot.phase -ne 'entry' -or $snapshot.attempt_id -ne 7 -or
+        $snapshot.parameters.PSObject.Properties.Name -contains 'PSDrive') {throw 'Production snapshot did not publish plain registry values'}
+    $events=Get-Content (Join-Path $logs 'events.jsonl') | ForEach-Object {$_ | ConvertFrom-Json}
+    if(@($events | Where-Object {$_.event -eq 'host-snapshot-read'}).Count -ne 1 -or
+        @($events | Where-Object {$_.event -eq 'host-snapshot-failed'}).Count) {throw 'Production snapshot read/publish failed'}
+    # Supervision uses the production bounded process helper, but the shutdown
+    # callback only records calls. No shutdown command or phone task is run.
+    $exe="$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+    $probe=@{calls=0}
+    $shutdown={ $probe.calls++ }
+    $superArgs=@{Executable=$exe;StdoutPath=(Join-Path $testRoot 'worker-out.txt');StderrPath=(Join-Path $testRoot 'worker-err.txt');
+        StatePath=(Join-Path $testRoot 'supervisor.json');AttemptId=7;TimeoutMs=5000;RequestShutdown=$shutdown}
+    $exited=Invoke-TouchGpioSupervisedWorker @superArgs -Arguments @('-NoProfile','-Command','exit 7')
+    if($exited.worker_exit_code -ne 7 -or !$exited.shutdown_requested -or $probe.calls -ne 1){throw 'Worker nonzero exit prevented shutdown'}
+    $superArgs.TimeoutMs=200
+    $timer=[Diagnostics.Stopwatch]::StartNew()
+    $blocked=Invoke-TouchGpioSupervisedWorker @superArgs -Arguments @('-NoProfile','-Command','Start-Sleep -Seconds 60')
+    if($blocked.phase -ne 'worker-failed' -or $blocked.worker_error -notmatch 'time limit' -or
+        !$blocked.shutdown_requested -or $probe.calls -ne 2 -or $timer.ElapsedMilliseconds -gt 8000){throw 'Worker deadline failed to reach shutdown callback'}
+    $superArgs.TimeoutMs=5000;$superArgs.Executable=Join-Path $testRoot 'missing-worker.exe'
+    $missing=Invoke-TouchGpioSupervisedWorker @superArgs -Arguments @('missing')
+    if(!$missing.worker_error -or !$missing.shutdown_requested -or $probe.calls -ne 3){throw 'Worker launch failure prevented shutdown'}
+    $superArgs.StatePath=Join-Path $testRoot 'missing-parent/state.json'
+    $unwritable=Invoke-TouchGpioSupervisedWorker @superArgs -Arguments @('missing')
+    if(!$unwritable.shutdown_requested -or $probe.calls -ne 4){throw 'Receipt failure prevented shutdown'}
+    $superArgs.StatePath=Join-Path $testRoot 'supervisor.json';$superArgs.RequestShutdown={throw 'injected shutdown failure'}
+    $refused=Invoke-TouchGpioSupervisedWorker @superArgs -Arguments @('missing')
+    if($refused.shutdown_requested -or $refused.shutdown_error -ne 'injected shutdown failure'){throw 'Shutdown failure was hidden'}
+    'PASS: exact binding/SYS, strict gates, attempt/build/epoch, atomic JSON, isolated plain registry snapshot, worker exit/timeout/launch/receipt failures and shutdown failure evidence'
 } finally {
     $resolved=[IO.Path]::GetFullPath($testRoot)
     $expectedParent=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')+'\'

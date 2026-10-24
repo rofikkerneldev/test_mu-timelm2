@@ -32,6 +32,9 @@ function Invoke-ProbeProcess {
         # Process.Start owns the process handle until Dispose; capture status
         # before disposing instead of refreshing a Start-Process wrapper.
         $exitCode = $process.ExitCode
+        # A descendant can inherit a pipe after the direct child exits. Never
+        # turn a bounded process wait into an unbounded output-drain wait.
+        if (!$stdout.Wait(5000) -or !$stderr.Wait(5000)) {throw 'Process output pipes did not close within five seconds'}
         [IO.File]::WriteAllText($StdoutPath, $stdout.Result)
         [IO.File]::WriteAllText($StderrPath, $stderr.Result)
         if ($null -eq $exitCode) { throw 'Process exit status is unavailable' }

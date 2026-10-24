@@ -2,6 +2,14 @@
 
 Current candidate: [Astra R13, schema 2](BUILD-ASTRA-R13.md). It implements the reviewed binding/readiness/failure-record corrections and uses prepare-then-cold-test activation. Read this candidate guide first; the implementation notes below describe the earlier trial history.
 
+Runner correction after the R13 prepare stall: registry snapshots now contain
+only registry values, read in a child with a 15-second deadline. The SYSTEM
+task runs `Invoke-TouchGpioSupervised.ps1`, which bounds the worker to 25 minutes
+plus process/output-drain grace, then requests normal shutdown even on timeout
+or worker failure. Cleanup runs after that request. Inspect `supervisor.json`
+along with the worker receipts: a shutdown request is not proof of power-off,
+driver installation, or working touch. No active bus is restarted by this fix.
+
 > **Review update, 2026-10-24 (cbd97ab3): partial implementation, not hardware success.** Read [the review](../../../docs/touch-gpio-handoff-20261023/REVIEW-OPENCODE-20261024.md) before another trial. The latest boot contains the pinned 952-byte DSDT and 451-byte SSDT, but evidence does not establish that the newly instrumented host ran. Four runtime JSON receipts contain only NUL bytes; the offline SYSTEM hive has unequal sequence numbers.
 >
 > The evidence/orchestration claims below describe intended behavior and are qualified by these confirmed gaps: the offline selected-INF helper reads Enum Driver but accepts a matching INF from any Class node; the effective-provider-gate assertion accepts missing/nonzero values other than 1; successful rollback overwrites per-pin write failures. Attempt/backend are recorded without strict generation validation, and snapshots do not cover all earlier exceptions. The result analyzer still incorrectly compares Resource Hub connection IDs to physical GPIO numbers. Local reproductions and the next acceptance criteria are linked in the review. Do not interpret the existing guard tests as proof these invariants hold.

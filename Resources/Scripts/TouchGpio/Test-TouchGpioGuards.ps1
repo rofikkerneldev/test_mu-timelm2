@@ -17,7 +17,7 @@ foreach($file in Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.ps1' -File)
     $null=[Management.Automation.Language.Parser]::ParseFile($file.FullName,[ref]$tokens,[ref]$errors)
     if($errors){throw ($errors|Out-String)}
 }
-foreach($name in @('Launch-TouchGpioTrial.ps1','Run-TouchGpioTrial.ps1','TouchGpioDeviceManager.ps1')) {
+foreach($name in @('Launch-TouchGpioTrial.ps1','Run-TouchGpioTrial.ps1','Invoke-TouchGpioSupervised.ps1','TouchGpioDeviceManager.ps1')) {
     $refused=$false
     try {& (Join-Path $PSScriptRoot $name)}catch{if($_.Exception.Message -ne 'Wrong machine'){throw};$refused=$true}
     if(!$refused){throw 'Machine guard did not refuse this PC'}
@@ -113,6 +113,17 @@ try {
     $confirmed = Get-TouchGpioResult -Root $syntheticRoot -TapSwipeObserved $true
     if ($confirmed.verdict -ne 'accepted') {throw "Unexpected confirmed verdict: $($confirmed.verdict)"}
     if ($confirmed.steps['tap-and-swipe'].status -ne 'proven') {throw 'The user confirmation was not recorded'}
+    Write-TouchGpioJson (Join-Path $syntheticRoot 'runtime/driver-attempt.json') @{attempt_id=7;expected_build_id=539365412;mode='test';supervised=$true}
+    $noSupervisor=Get-TouchGpioResult -Root $syntheticRoot
+    if($noSupervisor.verdict -ne 'incomplete'){throw 'Missing supervisor receipt was accepted'}
+    $supervisor=@{attempt_id=7;phase='worker-exited';worker_exit_code=0;worker_error=$null;shutdown_requested=$true;shutdown_error=$null}
+    Write-TouchGpioJson (Join-Path $syntheticRoot 'runtime/supervisor.json') $supervisor
+    if((Get-TouchGpioResult -Root $syntheticRoot).steps['supervisor-shutdown-request'].status -ne 'proven'){throw 'Matching supervisor receipt rejected'}
+    foreach($change in @(@('attempt_id',8),@('worker_error','deadline'),@('worker_exit_code',$null),@('shutdown_requested',$false))) {
+        $bad=$supervisor.Clone();$bad[$change[0]]=$change[1]
+        Write-TouchGpioJson (Join-Path $syntheticRoot 'runtime/supervisor.json') $bad
+        if((Get-TouchGpioResult -Root $syntheticRoot).verdict -ne 'incomplete'){throw 'Failed/stale supervisor receipt was accepted'}
+    }
     Write-TouchGpioJson (Join-Path $syntheticRoot 'runtime/driver-attempt.json') @{attempt_id=8;expected_build_id=539365412;mode='test'}
     $stale=Get-TouchGpioResult -Root $syntheticRoot
     if($stale.verdict -ne 'incomplete' -or $stale.steps['fresh-host-evidence'].status -ne 'failed'){throw 'Stale attempt was accepted by the analyzer'}

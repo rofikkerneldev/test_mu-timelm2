@@ -100,9 +100,30 @@ function Get-TouchGpioDevice([string]$Id) {
     return $devices[0]
 }
 
+function ConvertTo-TouchGpioRegistryValues($Properties) {
+    # Registry provider objects also carry PSDrive/PSProvider. Those objects
+    # lead into reflection metadata and must never enter a JSON diagnostic.
+    if ($null -eq $Properties) {throw 'Registry properties are missing'}
+    $values = [ordered]@{}
+    foreach ($property in $Properties.PSObject.Properties) {
+        if ($property.Name -in @('PSPath','PSParentPath','PSChildName','PSDrive','PSProvider')) {continue}
+        if ($property.MemberType -ne 'NoteProperty') {throw 'Expected registry value properties'}
+        $data = $property.Value
+        if ($null -ne $data -and
+            $data -isnot [string] -and $data -isnot [int] -and $data -isnot [uint32] -and
+            $data -isnot [long] -and $data -isnot [uint64] -and $data -isnot [byte[]] -and
+            $data -isnot [string[]]) {throw ('Unsupported registry value type: '+$property.Name)}
+        $values[$property.Name] = $data
+    }
+    return $values
+}
 function Write-TouchGpioJson([string]$Path, $Value) {
     # Publish only after flush, readback and JSON validation. A temporary file
     # from an interrupted write is not a committed phase receipt.
+    if ($null -ne $Value -and $Value -isnot [System.Collections.IDictionary] -and
+        ($Value.PSObject.Properties['PSDrive'] -or $Value.PSObject.Properties['PSProvider'])) {
+        throw 'Project registry values before writing a JSON receipt'
+    }
     $full = [IO.Path]::GetFullPath($Path)
     $temp = $full + '.' + [guid]::NewGuid().ToString('N') + '.pending'
     $text = ConvertTo-Json -InputObject $Value -Depth 16
@@ -126,6 +147,30 @@ function Get-TouchGpioHelperSources([string]$Root) {
         $names[$file.Name]=$true
     }
     return $files
+}
+function Invoke-TouchGpioSupervisedWorker {
+    param([string]$Executable,[string[]]$Arguments,[string]$StdoutPath,[string]$StderrPath,
+          [string]$StatePath,[uint32]$AttemptId,[int]$TimeoutMs,[scriptblock]$RequestShutdown)
+    if(!$AttemptId -or $TimeoutMs -le 0 -or !$RequestShutdown){throw 'Invalid supervisor contract'}
+    $watch=[Diagnostics.Stopwatch]::StartNew()
+    $state=[ordered]@{phase='worker-starting';attempt_id=$AttemptId;timeout_ms=$TimeoutMs;
+        worker_exit_code=$null;worker_error=$null;shutdown_requested=$false;shutdown_error=$null;elapsed_ms=0}
+    try{
+        Write-TouchGpioJson $StatePath $state
+        $state.worker_exit_code=Invoke-ProbeProcess -Executable $Executable -Arguments $Arguments `
+            -StdoutPath $StdoutPath -StderrPath $StderrPath -TimeoutMs $TimeoutMs
+        $state.phase='worker-exited'
+    }catch{
+        $state.phase='worker-failed';$state.worker_error=$_.Exception.Message
+    }finally{
+        # No receipt, registry read, or task cleanup may stand between worker
+        # termination/deadline and the independent normal shutdown request.
+        try{& $RequestShutdown;$state.shutdown_requested=$true}
+        catch{$state.shutdown_error=$_.Exception.Message}
+        $state.elapsed_ms=$watch.ElapsedMilliseconds
+        try{Write-TouchGpioJson $StatePath $state}catch{}
+    }
+    return $state
 }
 function Add-TouchGpioEvent([string]$Path, $Value) {
     $line = (ConvertTo-Json -InputObject $Value -Depth 8 -Compress) + "`r`n"

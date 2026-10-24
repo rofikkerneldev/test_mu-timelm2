@@ -1,4 +1,5 @@
-# One attempt on the identified ARM64 V60 desktop. Never run this on the PC.
+# One worker attempt on the identified ARM64 V60. The supervisor owns shutdown.
+param([switch]$Supervised)
 $ErrorActionPreference = 'Stop'
 if ($env:PROCESSOR_ARCHITECTURE -ne 'ARM64' -or $env:COMPUTERNAME -ne 'TIMELM-V60') {throw 'Wrong machine'}
 $marker = Join-Path $env:SystemDrive 'TimelmTools\OobeHelper\timelm-device.marker'
@@ -8,8 +9,10 @@ $setup = Get-ItemProperty 'HKLM:\SYSTEM\Setup'
 if ($setup.SystemSetupInProgress -ne 0 -or $setup.OOBEInProgress -ne 0) {throw 'Setup incomplete'}
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 if ($identity.User.Value -ne 'S-1-5-18') {throw 'Phone SYSTEM task identity required'}
+if (!$Supervised) {throw 'Run through Invoke-TouchGpioSupervised.ps1'}
 . (Join-Path $PSScriptRoot 'TouchGpioCommon.ps1')
 . (Join-Path $PSScriptRoot 'Invoke-ProbeProcess.ps1')
+$snapshotReader=Join-Path $PSScriptRoot 'Export-TouchGpioRegistryValues.ps1'
 $logs = Join-Path $env:SystemDrive 'TimelmLogs\TouchGpioTrial'
 $null = New-Item -ItemType Directory -Path $logs -Force
 $attempt = Join-Path $logs 'attempt.json'
@@ -192,7 +195,16 @@ function Assert-SelectedInf([string]$PackageName, [string]$DeviceId) {
 }
 function Save-HostSnapshot([string]$Phase) {
     try {
-        $parameters = Get-ItemProperty -LiteralPath $hostKey -ErrorAction Stop
+        Add-TouchGpioEvent (Join-Path $logs 'events.jsonl') @{event='host-snapshot-begin';phase=$Phase;
+            attempt_id=$script:attemptId;runner_id=$script:runnerId;utc=[DateTime]::UtcNow.ToString('o')}
+        $snapshotFile=Join-Path $logs ('host-snapshot-'+$Phase+'-'+[guid]::NewGuid().ToString('N')+'.json')
+        $code=Invoke-ProbeProcess -Executable "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+            -Arguments @('-NoProfile','-ExecutionPolicy','Bypass','-File',$snapshotReader,'-RegistryPath',$hostKey,'-Output',$snapshotFile) `
+            -StdoutPath ($snapshotFile+'.stdout.txt') -StderrPath ($snapshotFile+'.stderr.txt') -TimeoutMs 15000
+        if($code -ne 0){throw "Registry snapshot child returned $code"}
+        Add-TouchGpioEvent (Join-Path $logs 'events.jsonl') @{event='host-snapshot-read';phase=$Phase;
+            attempt_id=$script:attemptId;runner_id=$script:runnerId;utc=[DateTime]::UtcNow.ToString('o')}
+        $parameters = Get-Content -LiteralPath $snapshotFile -Raw | ConvertFrom-Json
         Save-Json 'host-parameters.json' $parameters
         Save-Json 'host-bitbang.json' @{phase=$Phase;attempt_id=$script:attemptId;
             attempt_recorded=$parameters.TimelmBitbangAttempt;backend=$parameters.TimelmHostBackend;
@@ -223,7 +235,7 @@ public static class TouchGpioAwake {
     if ($plan.schema -ne 2 -or $plan.mode -notin @('prepare','test') -or $plan.attempt_id -le 0 -or
         $plan.expected_build_id -ne 539365412) {throw 'Invalid activation plan'}
     $script:attemptId=[uint32]$plan.attempt_id
-    Save-Json 'driver-attempt.json' @{attempt_id=$script:attemptId;runner_id=$script:runnerId;mode=$plan.mode;expected_build_id=$plan.expected_build_id}
+    Save-Json 'driver-attempt.json' @{attempt_id=$script:attemptId;runner_id=$script:runnerId;mode=$plan.mode;expected_build_id=$plan.expected_build_id;supervised=$true}
     # The clock is never changed under this task. A clock jump while a task
     # with an execution time limit is running makes Task Scheduler compute the
     # task runtime from the new time and hard terminate the action, which
@@ -328,21 +340,9 @@ foreach ($watch in @($script:activeWatches.ToArray())) {Stop-NodeWatch $watch}
 try {
     Save-HostSnapshot 'final'
     $after = Collect-Phase 'after'
-    Save-Json 'complete.json' @{mode=$plan.mode;after=$after;error=$trialError;need_next_boot=$needNextBoot;normal_shutdown=$true;utc=[DateTime]::UtcNow.ToString('o')}
+    Save-Json 'complete.json' @{mode=$plan.mode;after=$after;error=$trialError;need_next_boot=$needNextBoot;shutdown_pending=$true;shutdown_owner='supervisor';utc=[DateTime]::UtcNow.ToString('o')}
 } catch {Save-Json 'collection-failed.json' @{error=$_.Exception.Message;trial_error=$trialError;utc=[DateTime]::UtcNow.ToString('o')}}
 finally {if ($awake) {[TouchGpioAwake]::Release();$awake = $false}
     foreach ($watch in @($script:activeWatches.ToArray())) {Stop-NodeWatch $watch}}
 Save-Json 'operations.json' @($operations.ToArray())
-try {
-    $task = Get-ScheduledTask -TaskName 'TimelmTouchGpioOnce' -TaskPath '\' -ErrorAction SilentlyContinue
-    if ($task) {
-        $expectedExe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
-        $expectedArgs = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "'+(Join-Path $PSScriptRoot 'Run-TouchGpioTrial.ps1')+'"'
-        if (@($task.Actions).Count -ne 1 -or $task.Actions[0].Execute -ine $expectedExe -or
-            $task.Actions[0].Arguments -cne $expectedArgs -or $task.Principal.UserId -notin @('SYSTEM','S-1-5-18')) {throw 'Refusing to remove an unrelated task'}
-        Unregister-ScheduledTask -TaskName 'TimelmTouchGpioOnce' -TaskPath '\' -Confirm:$false
-        Save-Json 'task-cleanup.json' @{removed=$true;utc=[DateTime]::UtcNow.ToString('o')}
-    }
-} catch {Save-Json 'task-cleanup-error.json' @{error=$_.Exception.Message}}
-& "$env:SystemRoot\System32\shutdown.exe" /s /t 30 /c 'Timelm GPIO touch trial complete. Logs saved; reconnect Mu Mass Storage.'
-if ($LASTEXITCODE -ne 0) {throw 'Normal shutdown request failed'}
+# Parent supervisor requests shutdown even if this worker throws or blocks.
