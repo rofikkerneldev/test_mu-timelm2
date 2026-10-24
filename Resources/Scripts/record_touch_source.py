@@ -15,7 +15,7 @@ paths={
  'touch':['GPLDrivers/Windows/Sw42902Touch','Resources/Scripts/build_sw42902_touch.ps1'],
  'gpio':['Resources/DeviceOverlays/timelm/Drivers/KonaGPIO','Resources/Scripts/build_kona_drivers.ps1'],
  'launcher':['Platforms/LG/timelmPkg/Applications/TouchEnumeration','Platforms/LG/timelmPkg/Applications/I2cClockDiag','Resources/Scripts/build_touch_gpio_trial.sh','Resources/Scripts/generate_touch_enumeration.py','Resources/Tests/TouchGpio'],
- 'helpers':['Resources/Scripts/TouchGpio','Resources/Scripts/Collect-TimelmDiagnostics.ps1','Resources/Scripts/Invoke-ProbeProcess.ps1'],
+ 'helpers':['Resources/Scripts/TouchGpio','Resources/Scripts/Collect-TimelmDiagnostics.ps1','Resources/Scripts/TouchEnumeration/Invoke-ProbeProcess.ps1'],
 }[a.component]+['Resources/Scripts/record_touch_source.py']
 names=sorted(set(git('ls-files','-z','--',*paths).decode().strip('\0').split('\0'))-{''})
 files=[dict(path=n,sha256=hashlib.sha256((repo/n).read_bytes()).hexdigest()) for n in names if (repo/n).is_file()]

@@ -116,6 +116,17 @@ function Write-TouchGpioJson([string]$Path, $Value) {
     if ([IO.File]::Exists($full)) {[IO.File]::Replace($temp,$full,[NullString]::Value)}
     else {[IO.File]::Move($temp,$full)}
 }
+function Get-TouchGpioHelperSources([string]$Root) {
+    $files=@(Get-ChildItem -LiteralPath $Root -File | Where-Object {$_.Extension -in @('.ps1','.cmd')})
+    $files+=@((Get-Item (Join-Path $Root '../Collect-TimelmDiagnostics.ps1')),
+        (Get-Item (Join-Path $Root '../TouchEnumeration/Invoke-ProbeProcess.ps1')))
+    $names=@{}
+    foreach($file in $files) {
+        if($names.ContainsKey($file.Name)){throw 'Duplicate helper source name'}
+        $names[$file.Name]=$true
+    }
+    return $files
+}
 function Add-TouchGpioEvent([string]$Path, $Value) {
     $line = (ConvertTo-Json -InputObject $Value -Depth 8 -Compress) + "`r`n"
     $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes($line)

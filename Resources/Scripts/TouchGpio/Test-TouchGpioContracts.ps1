@@ -8,6 +8,9 @@ function Expect-Refusal([scriptblock]$Action) {
     if(!$failed){throw 'An unsafe/missing contract was accepted'}
 }
 try {
+    $helpers=@(Get-TouchGpioHelperSources $PSScriptRoot)
+    if(@($helpers | Where-Object {$_.Name -eq 'Invoke-ProbeProcess.ps1'}).Count -ne 1 -or
+        @($helpers | Where-Object {$_.Name -eq 'Collect-TimelmDiagnostics.ps1'}).Count -ne 1) {throw 'Required runtime helper sources missing'}
     $infRoot=Join-Path $testRoot 'Windows/INF'
     $sysRoot=Join-Path $testRoot 'Windows/System32/DriverStore/FileRepository/host'
     $null=New-Item -ItemType Directory -Path $infRoot,$sysRoot -Force

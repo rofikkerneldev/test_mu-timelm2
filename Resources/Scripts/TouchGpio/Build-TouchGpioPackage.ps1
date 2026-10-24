@@ -163,8 +163,7 @@ try {
     }
     $helperRoot=$Output
     $helpers=New-Object 'System.Collections.Generic.List[object]'
-    foreach($file in @(Get-ChildItem -LiteralPath $PSScriptRoot -File | Where-Object {$_.Extension -in @('.ps1','.cmd')}) +
-        @((Get-Item (Join-Path $PSScriptRoot '../Collect-TimelmDiagnostics.ps1')),(Get-Item (Join-Path $PSScriptRoot '../Invoke-ProbeProcess.ps1')))) {
+    foreach($file in @(Get-TouchGpioHelperSources $PSScriptRoot)) {
         Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $helperRoot $file.Name)
         $helpers.Add([ordered]@{path=$file.Name;sha256=(Get-Sha256 (Join-Path $helperRoot $file.Name))})
     }
