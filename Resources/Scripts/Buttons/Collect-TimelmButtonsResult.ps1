@@ -25,7 +25,7 @@ if ($disks.Count -ne 1 -or $disks[0].Size -ne 126374379520 -or $disks[0].IsBoot 
     throw 'V60 USB disk mismatch'
 }
 $win = Get-Partition -DiskNumber $disks[0].Number -PartitionNumber 30
-if ($win.Offset -ne 62719688704 -or $win.Size -ne 63654666240 -or -not $win.DriveLetter) {
+if ($win.Offset -ne 62719688704 -or $win.Size -ne 42949672960 -or -not $win.DriveLetter) {
     throw 'V60 partition geometry mismatch'
 }
 $winRoot = [string]$win.DriveLetter + ':\'

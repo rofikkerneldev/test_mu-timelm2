@@ -46,7 +46,7 @@ if ($disks.Count -ne 1 -or $disks[0].Size -ne 126374379520) {throw 'V60 USB disk
 $disk = $disks[0]
 $win = Get-Partition -DiskNumber $disk.Number -PartitionNumber 30
 $esp = Get-Partition -DiskNumber $disk.Number -PartitionNumber 29
-if ($win.Size -ne 63654666240 -or $esp.Size -ne 536870912 -or
+if ($win.Size -ne 42949672960 -or $esp.Size -ne 536870912 -or
     $esp.GptType -ne '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}') {throw 'V60 partition geometry mismatch'}
 function Get-VolumeRoot($Partition) {
     $paths = @($Partition.AccessPaths | Where-Object {$_ -like '\\?\Volume*'})
