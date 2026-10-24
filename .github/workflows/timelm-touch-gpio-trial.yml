@@ -1,4 +1,4 @@
-name: Build GPIO touch trial R13
+name: Build deferred GPIO touch trial
 on:
   workflow_dispatch:
   push:

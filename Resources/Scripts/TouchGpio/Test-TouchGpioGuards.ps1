@@ -17,7 +17,7 @@ foreach($file in Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.ps1' -File)
     $null=[Management.Automation.Language.Parser]::ParseFile($file.FullName,[ref]$tokens,[ref]$errors)
     if($errors){throw ($errors|Out-String)}
 }
-foreach($name in @('Launch-TouchGpioTrial.ps1','Run-TouchGpioTrial.ps1','Invoke-TouchGpioSupervised.ps1','TouchGpioDeviceManager.ps1')) {
+foreach($name in @('Launch-TouchGpioTrial.ps1','Run-TouchGpioTrial.ps1','Invoke-TouchGpioSupervised.ps1','TouchGpioDeviceManager.ps1','Install-TouchGpioDeferred.ps1','Capture-TouchGpioDesktop.ps1')) {
     $refused=$false
     try {& (Join-Path $PSScriptRoot $name)}catch{if($_.Exception.Message -ne 'Wrong machine'){throw};$refused=$true}
     if(!$refused){throw 'Machine guard did not refuse this PC'}
@@ -124,6 +124,31 @@ try {
         Write-TouchGpioJson (Join-Path $syntheticRoot 'runtime/supervisor.json') $bad
         if((Get-TouchGpioResult -Root $syntheticRoot).verdict -ne 'incomplete'){throw 'Failed/stale supervisor receipt was accepted'}
     }
+    Write-TouchGpioJson (Join-Path $syntheticRoot 'runtime/supervisor.json') $supervisor
+    Write-TouchGpioJson (Join-Path $syntheticRoot 'runtime/driver-attempt.json') @{attempt_id=7;mode='prepare';supervised=$true;expected_build_id=539365412}
+    Write-TouchGpioJson (Join-Path $syntheticRoot 'runtime/gates-before.json') @{attempt_id=7;host=0;provider=0}
+    Write-TouchGpioJson (Join-Path $syntheticRoot 'runtime/prepared.json') @{attempt_id=7;method='deferred-driver-set';selected_driver_proven=$false}
+    $setPath=Join-Path $syntheticRoot 'runtime/deferred-driver-set';$null=New-Item -ItemType Directory -Path $setPath
+    $deferredFiles=@()
+    foreach($kind in @('GPIO','Host')){
+        $base=if($kind -eq 'GPIO'){'GPIO'}else{'kona_geni'}
+        foreach($ext in @('inf','cat','sys')){
+            $copy=Join-Path $setPath ($base+'.'+$ext);Set-Content $copy ($base+'-fixture')
+            $deferredFiles+=@{path=('Drivers/'+$kind+'/'+$base+'.'+$ext);sha256=(Get-FileHash $copy).Hash}
+        }
+    }
+    $package=Get-Content (Join-Path $syntheticRoot 'runtime/package.json') -Raw | ConvertFrom-Json
+    $package.files=$deferredFiles;Write-TouchGpioJson (Join-Path $syntheticRoot 'runtime/package.json') $package
+    Write-TouchGpioJson (Join-Path $syntheticRoot 'runtime/deferred-result.json') @{attempt_id=7;method='DiInstallDriverW/INSTALL_AS_SET';flags=64;api_success=$true;selected_driver_proven=$false;files=$deferredFiles}
+    Write-TouchGpioJson (Join-Path $syntheticRoot 'runtime/complete.json') @{mode='prepare';need_next_boot=$true;error=$null}
+    Write-TouchGpioJson (Join-Path $syntheticRoot 'runtime/operations.json') @(@{operation='defer-GPIO-Host';exit_code=0;flags=64})
+    $pending=Get-TouchGpioResult -Root $syntheticRoot -TapSwipeObserved $true
+    if($pending.verdict -ne 'prepared-awaiting-cold-selection' -or $pending.facts.hardware_tested){throw 'Deferred preparation was confused with physical touch acceptance'}
+    Add-Content (Join-Path $setPath 'GPIO.sys') 'tamper'
+    if((Get-TouchGpioResult -Root $syntheticRoot).verdict -ne 'incomplete'){throw 'Tampered deferred binary was accepted'}
+    Write-TouchGpioJson (Join-Path $syntheticRoot 'runtime/deferred-result.json') @{attempt_id=8;flags=64;api_success=$true}
+    if((Get-TouchGpioResult -Root $syntheticRoot).verdict -ne 'incomplete'){throw 'Stale deferred set was accepted'}
+    New-SyntheticEvidence $syntheticRoot $true
     Write-TouchGpioJson (Join-Path $syntheticRoot 'runtime/driver-attempt.json') @{attempt_id=8;expected_build_id=539365412;mode='test'}
     $stale=Get-TouchGpioResult -Root $syntheticRoot
     if($stale.verdict -ne 'incomplete' -or $stale.steps['fresh-host-evidence'].status -ne 'failed'){throw 'Stale attempt was accepted by the analyzer'}

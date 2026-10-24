@@ -1,3 +1,13 @@
+# Current continuation: deferred prepare
+
+The R13 workflow now builds the deferred prepare revision on the existing
+`fix/touch-gpio-r13` branch. Read README.md first. Historical 25-minute/live-install
+behavior below describes earlier packages, not newly built helpers. Acceptance
+requires CI exact source hashes, prepare gates zero, normal shutdown, then an
+independent selected-INF/SYS check after boot. A prepared receipt alone cannot
+justify a hardware test. Device Manager screenshots are implemented but require
+a real interactive phone boot to validate their output.
+
 # Kandidat trial Astra R13 — build 0x20261024, diagnostic schema 2
 
 Kandidat ini mengimplementasikan koreksi review Astra 24 Oktober terhadap baseline cbd97ab3. Tujuannya mendapatkan pengujian host GPIO-I2C dengan identitas paket yang pasti dan catatan kegagalan yang tidak hilang saat rollback. Keberhasilan build/tes tidak membuktikan touch fisik bekerja.

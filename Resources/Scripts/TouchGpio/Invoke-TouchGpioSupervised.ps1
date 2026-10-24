@@ -26,10 +26,11 @@ $shutdown={
         -StdoutPath (Join-Path $logs 'shutdown-stdout.txt') -StderrPath (Join-Path $logs 'shutdown-stderr.txt') -TimeoutMs 10000
     if($code -ne 0){throw "Normal shutdown request returned $code"}
 }
+$timeoutMs=if($plan.mode -eq 'prepare'){480000}else{600000}
 $state=Invoke-TouchGpioSupervisedWorker -Executable "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
     -Arguments @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',(Join-Path $PSScriptRoot 'Run-TouchGpioTrial.ps1'),'-Supervised') `
     -StdoutPath (Join-Path $logs 'worker-stdout.txt') -StderrPath (Join-Path $logs 'worker-stderr.txt') `
-    -StatePath (Join-Path $logs 'supervisor.json') -AttemptId $plan.attempt_id -TimeoutMs 1500000 -RequestShutdown $shutdown
+    -StatePath (Join-Path $logs 'supervisor.json') -AttemptId $plan.attempt_id -TimeoutMs $timeoutMs -RequestShutdown $shutdown
 # The OS shutdown request is issued BEFORE any Task Scheduler cleanup. A
 # blocked task API therefore cannot prevent the already scheduled shutdown.
 try{

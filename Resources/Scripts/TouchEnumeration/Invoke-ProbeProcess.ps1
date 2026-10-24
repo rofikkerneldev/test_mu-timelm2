@@ -4,7 +4,9 @@ function Invoke-ProbeProcess {
         [Parameter(Mandatory=$true)][string[]]$Arguments,
         [Parameter(Mandatory=$true)][string]$StdoutPath,
         [Parameter(Mandatory=$true)][string]$StderrPath,
-        [int]$TimeoutMs = 600000
+        [int]$TimeoutMs = 600000,
+        [scriptblock]$OnProgress,
+        [int]$ProgressIntervalMs = 1000
     )
     $quoted = @($Arguments | ForEach-Object {
         $value = [regex]::Replace($_, '(\\*)"', '$1$1\"')
@@ -24,10 +26,21 @@ function Invoke-ProbeProcess {
         if (!$process.Start()) { throw 'Could not launch collector' }
         $stdout = $process.StandardOutput.ReadToEndAsync()
         $stderr = $process.StandardError.ReadToEndAsync()
-        if (!$process.WaitForExit($TimeoutMs)) {
-            $process.Kill()
-            $null = $process.WaitForExit(5000)
-            throw 'Collector exceeded its time limit'
+        $timer=[Diagnostics.Stopwatch]::StartNew()
+        $nextProgress=0L
+        while(!$process.HasExited) {
+            if($timer.ElapsedMilliseconds -ge $TimeoutMs) {
+                try{$process.Kill()}catch{}
+                $null=$process.WaitForExit(5000)
+                throw 'Collector exceeded its time limit'
+            }
+            if($OnProgress -and $timer.ElapsedMilliseconds -ge $nextProgress) {
+                # Diagnostics must never suppress process timeout or shutdown.
+                try{$null=& $OnProgress $timer.ElapsedMilliseconds $process.Id}catch{}
+                $nextProgress=$timer.ElapsedMilliseconds+[Math]::Max(50,$ProgressIntervalMs)
+            }
+            $remaining=[Math]::Max(1,$TimeoutMs-[int]$timer.ElapsedMilliseconds)
+            $null=$process.WaitForExit([Math]::Min(250,$remaining))
         }
         # Process.Start owns the process handle until Dispose; capture status
         # before disposing instead of refreshing a Start-Process wrapper.

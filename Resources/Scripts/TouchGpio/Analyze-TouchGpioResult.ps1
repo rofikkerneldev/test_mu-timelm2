@@ -353,6 +353,42 @@ function Get-TouchGpioResult {
             'matching supervisor receipt must show worker exit and an accepted shutdown request; this does not prove physical power-off'
         $ordered+='supervisor-shutdown-request'
     }
+    if($epoch -and $epoch.mode -eq 'prepare') {
+        $prepared=Read-TouchGpioJson (Join-Path $runtime 'prepared.json')
+        $deferred=Read-TouchGpioJson (Join-Path $runtime 'deferred-result.json')
+        $gates=Read-TouchGpioJson (Join-Path $runtime 'gates-before.json')
+        $deferOps=@($operations | Where-Object {$_.operation -eq 'defer-GPIO-Host' -and $_.exit_code -eq 0 -and $_.flags -eq 64})
+        $filesOk=$false
+        try{
+            $expectedFiles=@($package.files | Where-Object {$_.path -match '^Drivers/(GPIO|Host)/[^/]+\.(inf|cat|sys)$'})
+            if($expectedFiles.Count -ne 6 -or @($deferred.files).Count -ne 6){throw 'Incomplete deferred files'}
+            foreach($file in $expectedFiles){
+                $entry=@($deferred.files | Where-Object {$_.path -ceq $file.path -and $_.sha256 -eq $file.sha256})
+                $copy=Join-Path $runtime ('deferred-driver-set/'+[IO.Path]::GetFileName($file.path))
+                if($entry.Count -ne 1 -or !(Test-Path $copy) -or (Get-FileHash $copy).Hash -ine $file.sha256){throw 'Deferred evidence file mismatch'}
+            }
+            $filesOk=$true
+        }catch{}
+        $deferredOk=$filesOk -and $prepared -and $deferred -and $gates -and
+            $prepared.attempt_id -eq $epoch.attempt_id -and $deferred.attempt_id -eq $epoch.attempt_id -and
+            $gates.attempt_id -eq $epoch.attempt_id -and $gates.host -eq 0 -and $gates.provider -eq 0 -and
+            $prepared.method -eq 'deferred-driver-set' -and $prepared.selected_driver_proven -eq $false -and
+            $deferred.method -eq 'DiInstallDriverW/INSTALL_AS_SET' -and $deferred.flags -eq 64 -and
+            $deferred.api_success -eq $true -and $deferred.selected_driver_proven -eq $false -and
+            @($deferred.files).Count -eq 6 -and $deferOps.Count -eq 1 -and
+            $complete -and $complete.mode -eq 'prepare' -and !$complete.error -and $complete.need_next_boot -eq $true
+        Add-TouchGpioStep $steps 'deferred-driver-set' $(if($deferredOk){'proven'}else{'failed'}) `
+            'API staging plus normal shutdown request only; selection and physical shutdown require postboot evidence'
+        $required=@('runtime-attempt','boot-restore-windows','boot-namespace-gate','boot-ssdt-installed','boot-ssdt-readback',
+            'boot-chainload-windows','trial-ssdt-visible-to-windows','no-iort-installed','runtime-no-error',
+            'runtime-completed','runtime-clock-stable','valid-runtime-receipts','deferred-driver-set','supervisor-shutdown-request')
+        $missing=@($required | Where-Object {!$steps.Contains($_) -or $steps[$_].status -ne 'proven'})
+        $result['unproven_steps']=$missing
+        $result['failed_steps']=@($required | Where-Object {$steps.Contains($_) -and $steps[$_].status -eq 'failed'})
+        $result.verdict=if($missing.Count){'incomplete'}else{'prepared-awaiting-cold-selection'}
+        $facts['hardware_tested']=$false
+        return $result
+    }
     # A step that is missing is not a proof. Only a fully proven chain may be
     # reported as hardware evidence, and only the user can confirm the tap.
     $core = @($ordered | Where-Object {$_ -ne 'tap-and-swipe'})

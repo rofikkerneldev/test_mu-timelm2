@@ -1,3 +1,36 @@
+# Deferred GPIO touch trial
+
+Prepare keeps both gates at zero. GPIO and host are staged together with
+`DiInstallDriverW(..., DIIRFLAG_INSTALL_AS_SET=0x40, out NeedReboot)` in an
+isolated 90-second child. They become eligible during normal shutdown for the
+next boot. Prepare never calls live `/install` for the GPIO/host. Touch is only
+staged. No FORCE_INF, forced binding, registry Class/Enum edits, hardware rescan
+or bus restart is used. API success does not prove selected or loaded drivers.
+
+Supervisor limits: prepare 8 minutes, test 10 minutes; heartbeat every 5 seconds
+includes monotonic elapsed time, worker PID and last committed phase. Snapshot
+15 seconds, collectors 90 seconds, deferred API 90 seconds, PnPUtil 60 seconds,
+trace tools 10 seconds. These are engineering bounds, not measured normal boot
+or FIFO initialization times. Normal completion requests shutdown immediately,
+with OS delay 30 seconds. User-mode supervision cannot recover a stuck kernel.
+
+The interactive observer captures Device Manager PNGs at boot and phase
+boundaries, with attempt/phase/hash/dimensions in per-capture JSON. Each capture
+child is limited to 20 seconds; no F5/rescan is sent. Properties is attempted
+using the actual host display name and recorded as verified only when a matching
+Properties title is exposed. Missing desktop, unsupported UIA, a different title
+or capture timeout remains explicit evidence failure, never a fabricated PNG.
+The prior status overlay was removed so it cannot obscure Device Manager.
+
+After normal shutdown, collect/replay SYSTEM with its current transaction logs
+on a PC copy and check exact Enum -> Class INF and service SYS before planning
+any gate-1 attempt. A one-boot EFI is consumed by its boot; subsequent attempts
+require fresh staging. Preserve the Windows boot managers and BCD.
+
+[Microsoft API contract](https://learn.microsoft.com/en-us/windows/win32/api/newdev/nf-newdev-diinstalldriverw)
+
+## Previous runner documentation (historical)
+
 # One-boot GPIO touch trial
 
 Current candidate: [Astra R13, schema 2](BUILD-ASTRA-R13.md). It implements the reviewed binding/readiness/failure-record corrections and uses prepare-then-cold-test activation. Read this candidate guide first; the implementation notes below describe the earlier trial history.

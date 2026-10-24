@@ -157,8 +157,22 @@ function Invoke-TouchGpioSupervisedWorker {
         worker_exit_code=$null;worker_error=$null;shutdown_requested=$false;shutdown_error=$null;elapsed_ms=0}
     try{
         Write-TouchGpioJson $StatePath $state
+        $state.heartbeat_count=0;$state.worker_pid=$null;$state.worker_phase=$null
+        $progress={param($elapsed,$childPid)
+            $state.phase='worker-running';$state.elapsed_ms=$elapsed;$state.worker_pid=$childPid
+            $state.heartbeat_count++;$state.utc=[DateTime]::UtcNow.ToString('o')
+            $phasePath=Join-Path (Split-Path $StatePath) 'worker-phase.json'
+            if((Test-Path -LiteralPath $phasePath) -and (Get-Item -LiteralPath $phasePath).Length -lt 16384){
+                try{
+                    $phase=Get-Content -LiteralPath $phasePath -Raw | ConvertFrom-Json
+                    if($phase.attempt_id -eq $AttemptId){$state.worker_phase=$phase.phase}
+                }catch{}
+            }
+            Write-TouchGpioJson $StatePath $state
+        }
         $state.worker_exit_code=Invoke-ProbeProcess -Executable $Executable -Arguments $Arguments `
-            -StdoutPath $StdoutPath -StderrPath $StderrPath -TimeoutMs $TimeoutMs
+            -StdoutPath $StdoutPath -StderrPath $StderrPath -TimeoutMs $TimeoutMs -OnProgress $progress `
+            -ProgressIntervalMs 5000
         $state.phase='worker-exited'
     }catch{
         $state.phase='worker-failed';$state.worker_error=$_.Exception.Message

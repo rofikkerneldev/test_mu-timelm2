@@ -42,7 +42,7 @@ $script:activeWatches = New-Object 'System.Collections.Generic.List[object]'
 # before this task starts and must not move while it runs, and a stopwatch
 # keeps the bound even if the clock is corrected again by something else.
 $budget = [Diagnostics.Stopwatch]::StartNew()
-$budgetLimit = [TimeSpan]::FromMinutes(25)
+$budgetLimit = [TimeSpan]::FromMinutes(8)
 function Assert-Budget([string]$Phase) {
     if ($budget.Elapsed -gt $budgetLimit) {throw "Trial budget of $($budgetLimit.TotalMinutes) minutes exceeded in phase $Phase"}
 }
@@ -62,21 +62,27 @@ function Save-Json([string]$Name, $Value) {
     Add-TouchGpioEvent (Join-Path $logs 'events.jsonl') @{event='receipt-committed';name=$Name;attempt_id=$script:attemptId;
         runner_id=$script:runnerId;utc=[DateTime]::UtcNow.ToString('o')}
 }
+function Set-WorkerPhase([string]$Phase) {
+    Assert-Budget $Phase
+    Save-Json 'worker-phase.json' @{phase=$Phase;attempt_id=$script:attemptId;elapsed_ms=$budget.ElapsedMilliseconds;utc=[DateTime]::UtcNow.ToString('o')}
+}
 function Collect-Phase([string]$Phase) {
+    Set-WorkerPhase ('collect-'+$Phase)
     $dest = Join-Path $logs $Phase
     $null = New-Item -ItemType Directory -Path $dest
     $code = Invoke-ProbeProcess -Executable "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
         -Arguments @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $PSScriptRoot 'Collect-TimelmDiagnostics.ps1'),'-SkipEsp','-OutputRoot',$dest) `
-        -StdoutPath (Join-Path $dest 'stdout.txt') -StderrPath (Join-Path $dest 'stderr.txt') -TimeoutMs 180000
+        -StdoutPath (Join-Path $dest 'stdout.txt') -StderrPath (Join-Path $dest 'stderr.txt') -TimeoutMs 90000
     if ($code -ne 0) {throw "Collector $Phase returned $code"}
     $receipts = @(Get-ChildItem -LiteralPath $dest -Filter 'collection-status.json' -File -Recurse)
     if ($receipts.Count -ne 1) {throw "Collector receipt missing for $Phase"}
     return $receipts[0].DirectoryName
 }
 function Pnp([string]$Label, [string[]]$PnpArguments) {
+    Set-WorkerPhase $Label
     Add-TouchGpioEvent (Join-Path $logs 'events.jsonl') @{event='pnp-begin';operation=$Label;attempt_id=$script:attemptId;runner_id=$script:runnerId;utc=[DateTime]::UtcNow.ToString('o')}
     $code = Invoke-ProbeProcess -Executable "$env:SystemRoot\System32\pnputil.exe" -Arguments $PnpArguments `
-        -StdoutPath (Join-Path $logs ($Label+'-stdout.txt')) -StderrPath (Join-Path $logs ($Label+'-stderr.txt')) -TimeoutMs 180000
+        -StdoutPath (Join-Path $logs ($Label+'-stdout.txt')) -StderrPath (Join-Path $logs ($Label+'-stderr.txt')) -TimeoutMs 60000
     $operations.Add([ordered]@{operation=$Label;arguments=$PnpArguments;exit_code=$code;utc=[DateTime]::UtcNow.ToString('o')})
     Save-Json 'operations.json' @($operations.ToArray())
     if ($code -eq 3010) {$script:needNextBoot = $true; throw 'Driver update requires a second boot; collecting before normal shutdown'}
@@ -135,10 +141,10 @@ function Start-LiveTrace {
             'Microsoft-Windows-Kernel-PnP 0xFFFFFFFF 0xFF',
             'Microsoft-Windows-Kernel-Acpi 0xFFFFFFFF 0xFF',
             'Microsoft-Windows-DriverFrameworks-UserMode 0xFFFFFFFF 0xFF')
-        $output = & logman.exe create trace $state.session -pf $state.providers -ets -o $state.output -mode circular -max 64 2>&1
-        $state.exit_code = $LASTEXITCODE
-        $state.output_text = ($output | Out-String)
-        $state.started = ($LASTEXITCODE -eq 0)
+        $state.exit_code=Invoke-ProbeProcess -Executable "$env:SystemRoot\System32\logman.exe" `
+            -Arguments @('create','trace',$state.session,'-pf',$state.providers,'-ets','-o',$state.output,'-mode','circular','-max','64') `
+            -StdoutPath (Join-Path $logs 'trace-start-out.txt') -StderrPath (Join-Path $logs 'trace-start-err.txt') -TimeoutMs 10000
+        $state.started=($state.exit_code -eq 0)
     } catch {
         $state.error = $_.Exception.Message
     }
@@ -148,9 +154,9 @@ function Start-LiveTrace {
 function Stop-LiveTrace($Trace) {
     if ($null -eq $Trace -or !$Trace.started) {return}
     try {
-        $output = & logman.exe stop $Trace.session -ets 2>&1
-        Save-Json 'live-trace-stop.json' @{session=$Trace.session;exit_code=$LASTEXITCODE;
-            output=($output | Out-String);utc=[DateTime]::UtcNow.ToString('o')}
+        $code=Invoke-ProbeProcess -Executable "$env:SystemRoot\System32\logman.exe" -Arguments @('stop',$Trace.session,'-ets') `
+            -StdoutPath (Join-Path $logs 'trace-stop-out.txt') -StderrPath (Join-Path $logs 'trace-stop-err.txt') -TimeoutMs 10000
+        Save-Json 'live-trace-stop.json' @{session=$Trace.session;exit_code=$code;utc=[DateTime]::UtcNow.ToString('o')}
     } catch {
         Save-Json 'live-trace-stop.json' @{session=$Trace.session;error=$_.Exception.Message;utc=[DateTime]::UtcNow.ToString('o')}
     }
@@ -235,6 +241,8 @@ public static class TouchGpioAwake {
     if ($plan.schema -ne 2 -or $plan.mode -notin @('prepare','test') -or $plan.attempt_id -le 0 -or
         $plan.expected_build_id -ne 539365412) {throw 'Invalid activation plan'}
     $script:attemptId=[uint32]$plan.attempt_id
+    $budgetLimit=if($plan.mode -eq 'prepare'){[TimeSpan]::FromMinutes(8)}else{[TimeSpan]::FromMinutes(10)}
+    Set-WorkerPhase 'validate-baseline'
     Save-Json 'driver-attempt.json' @{attempt_id=$script:attemptId;runner_id=$script:runnerId;mode=$plan.mode;expected_build_id=$plan.expected_build_id;supervised=$true}
     # The clock is never changed under this task. A clock jump while a task
     # with an execution time limit is running makes Task Scheduler compute the
@@ -291,15 +299,29 @@ public static class TouchGpioAwake {
             }
             $cert.Reset()
         }
-        Pnp 'install-GPIO' @('/add-driver',(Join-Path $PSScriptRoot 'Drivers\GPIO\GPIO.inf'),'/install')
-        Assert-SelectedInf 'GPIO' $gpioId
-        Copy-SetupApiLog 'after-gpio-install'
-        Pnp 'install-Host' @('/add-driver',(Join-Path $PSScriptRoot 'Drivers\Host\kona_geni.inf'),'/install')
-        Assert-SelectedInf 'Host' $hostId
-        Copy-SetupApiLog 'after-host-install'
+        # INSTALL_AS_SET deliberately keeps the currently running drivers.
+        # Exact selection is checked after normal shutdown, never forged here.
+        Save-Json 'selection-before-GPIO.json' (Get-SelectedInf 'GPIO' $gpioId)
+        Save-Json 'selection-before-Host.json' (Get-SelectedInf 'Host' $hostId)
+        Set-WorkerPhase 'defer-driver-set'
+        $deferredCode=Invoke-ProbeProcess -Executable "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+            -Arguments @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $PSScriptRoot 'Install-TouchGpioDeferred.ps1')) `
+            -StdoutPath (Join-Path $logs 'deferred-stdout.txt') -StderrPath (Join-Path $logs 'deferred-stderr.txt') -TimeoutMs 90000
+        if($deferredCode -ne 0){throw "Deferred installer returned $deferredCode"}
+        $deferred=Get-Content (Join-Path $logs 'deferred-result.json') -Raw | ConvertFrom-Json
+        if($deferred.attempt_id -ne $script:attemptId -or !$deferred.api_success -or
+            $deferred.method -ne 'DiInstallDriverW/INSTALL_AS_SET' -or $deferred.flags -ne 64 -or
+            $deferred.selected_driver_proven -ne $false){throw 'Invalid deferred install receipt'}
+        $operations.Add([ordered]@{operation='defer-GPIO-Host';exit_code=0;method=$deferred.method;flags=64;utc=[DateTime]::UtcNow.ToString('o')})
+        Save-Json 'operations.json' @($operations.ToArray())
+        Copy-SetupApiLog 'after-deferred-set'
         Pnp 'stage-Touch' @('/add-driver',(Join-Path $PSScriptRoot 'Drivers\Touch\vhidmini.inf'))
         $needNextBoot=$true
-        Save-Json 'prepared.json' @{mode='prepare';next_step='Cold shutdown, reconnect mass storage, review and stage a new test attempt';hardware_tested=$false}
+        Save-Json 'prepared.json' @{mode='prepare';method='deferred-driver-set';attempt_id=$script:attemptId;
+            next_step='Normal shutdown activates the set; reconnect mass storage and verify selected INF/SYS before a new attempt';
+            hardware_tested=$false;selected_driver_proven=$false}
+        Set-WorkerPhase 'prepare-staged'
+        Wait-Seconds 10 'prepare-screenshot-grace'
     } else {
         Assert-SelectedInf 'GPIO' $gpioId
         Assert-SelectedInf 'Host' $hostId
@@ -325,6 +347,7 @@ public static class TouchGpioAwake {
     }
 } catch {
     $trialError = $_.Exception.Message
+    try{Set-WorkerPhase 'trial-error'}catch{}
     Save-HostSnapshot 'exception'
     Save-Json 'trial-error.json' @{error=$trialError;need_next_boot=$needNextBoot;utc=[DateTime]::UtcNow.ToString('o')}
 }

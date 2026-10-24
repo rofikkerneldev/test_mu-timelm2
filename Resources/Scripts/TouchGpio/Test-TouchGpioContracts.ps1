@@ -130,6 +130,48 @@ try {
     $superArgs.StatePath=Join-Path $testRoot 'supervisor.json';$superArgs.RequestShutdown={throw 'injected shutdown failure'}
     $refused=Invoke-TouchGpioSupervisedWorker @superArgs -Arguments @('missing')
     if($refused.shutdown_requested -or $refused.shutdown_error -ne 'injected shutdown failure'){throw 'Shutdown failure was hidden'}
+    # Production heartbeat must survive a running child and diagnostic failure.
+    $superArgs.Executable=$exe;$superArgs.RequestShutdown=$shutdown;$superArgs.TimeoutMs=5000
+    $running=Invoke-TouchGpioSupervisedWorker @superArgs -Arguments @('-NoProfile','-Command','Start-Sleep -Milliseconds 800; exit 0')
+    if($running.worker_exit_code -ne 0 -or $running.heartbeat_count -lt 1 -or !$running.worker_pid){throw 'Running child heartbeat not persisted'}
+    $code=Invoke-ProbeProcess -Executable $exe -Arguments @('-NoProfile','-Command','Start-Sleep -Milliseconds 300; exit 0') `
+        -StdoutPath $superArgs.StdoutPath -StderrPath $superArgs.StderrPath -TimeoutMs 5000 -OnProgress {throw 'diagnostic failure'}
+    if($code -ne 0){throw 'Diagnostic failure changed process result'}
+    . (Join-Path $PSScriptRoot 'TouchGpioDeferred.ps1')
+    & {
+        $fake=[pscustomobject]@{files=@()}
+        $packageRoot=Join-Path $testRoot 'deferred-source';$null=New-Item -ItemType Directory $packageRoot
+        foreach($kind in @('GPIO','Host')){
+            $dir=Join-Path $packageRoot ('Drivers/'+$kind);$null=New-Item -ItemType Directory $dir
+            foreach($ext in @('inf','cat','sys')){
+                $name=if($kind -eq 'GPIO'){'GPIO'}else{'kona_geni'}
+                $relative='Drivers/'+$kind+'/'+$name+'.'+$ext
+                Set-Content -LiteralPath (Join-Path $packageRoot $relative) -Value ($relative+'-fixture')
+                $fake.files+=@{path=$relative;sha256=(Get-FileHash (Join-Path $packageRoot $relative)).Hash}
+            }
+        }
+        # The manifest loader is already tested independently; inject only its
+        # result to test production copy/flag/error behavior without any driver API.
+        function Get-TouchGpioManifest {param($Root) return $fake}
+        $apiProbe=@{calls=0}
+        $api={param($directory,$flags)
+            $apiProbe.calls++
+            if($flags -ne 64 -or @(Get-ChildItem $directory -File).Count -ne 6){throw 'Wrong set or unsafe API flags'}
+            return @{success=$true;need_reboot=$false;win32_error=0}
+        }
+        $params=@{Root=$packageRoot;Destination=(Join-Path $testRoot 'deferred-set');AttemptId=7;OsBuild=19041;Install=$api}
+        $result=Invoke-TouchGpioDeferredInstall @params
+        if(!$result.api_success -or $result.selected_driver_proven -or $result.flags -ne 64 -or $apiProbe.calls -ne 1){throw 'Deferred staging mistaken for selection'}
+        Expect-Refusal {Invoke-TouchGpioDeferredInstall @params}
+        $params.Destination=Join-Path $testRoot 'deferred-old-os';$params.OsBuild=15063
+        Expect-Refusal {Invoke-TouchGpioDeferredInstall @params}
+        $params.OsBuild=19041;$params.Destination=Join-Path $testRoot 'deferred-api-fail';$params.Install={@{success=$false;win32_error=5}}
+        Expect-Refusal {Invoke-TouchGpioDeferredInstall @params}
+        $params.Destination=Join-Path $testRoot 'deferred-tamper';$params.Install=$api
+        Add-Content -LiteralPath (Join-Path $packageRoot $fake.files[0].path) -Value 'tampered'
+        Expect-Refusal {Invoke-TouchGpioDeferredInstall @params}
+        if($apiProbe.calls -ne 1){throw 'Rejected set reached installation API'}
+    }
     'PASS: exact binding/SYS, strict gates, attempt/build/epoch, atomic JSON, isolated plain registry snapshot, worker exit/timeout/launch/receipt failures and shutdown failure evidence'
 } finally {
     $resolved=[IO.Path]::GetFullPath($testRoot)

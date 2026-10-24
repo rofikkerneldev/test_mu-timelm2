@@ -59,7 +59,7 @@ try {
     }
     $action = New-ScheduledTaskAction -Execute $exe -Argument $arguments -WorkingDirectory $PSScriptRoot
     $taskPrincipal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
-    # The parent supervisor enforces a 25-minute child deadline independent of
+    # The parent supervisor enforces an 8-minute prepare / 10-minute test deadline independent of
     # a blocked worker cmdlet. The scheduler's two-hour limit is only a backstop.
     $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 120) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
     $task = New-ScheduledTask -Action $action -Principal $taskPrincipal -Settings $settings
