@@ -157,6 +157,28 @@ $armText = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Arm-TouchGpioHostG
 if ($stage -notmatch '-AttemptId \$attemptId' -or $armText -notmatch 'TimelmTouchAttemptId') {
     throw 'The staging must arm the attempt identity with the hive'
 }
+# Lessons from the 24.10.2026 staging preflight (attempts one to four):
+# a registry provider path refuses the FileSystem-only -Directory switch,
+# provider enumeration can keep the mounted hive locked after unload, the
+# phone-off check must run after the mount is cleared and verified, and a
+# clean bundle stages the gate at zero (the runner arms the gate itself).
+if ($armText -match '-Directory' -or
+    $armText -notmatch 'Invoke-Reg @\(''query'',\$classKey,''/s''\)' -or
+    $armText -notmatch 'reg\.exe query \$mountReg' -or
+    $armText -notmatch 'would not release' -or
+    $armText.IndexOf('$null = Remove-Mount') -gt $armText.IndexOf('$hiveHashBefore = ')) {
+    throw 'The Arm must read the hive via reg.exe and verify its own mount removal before the phone-off check'
+}
+$commonText = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'TouchGpioCommon.ps1') -Raw
+if ($commonText -notmatch 'Get-SharedSha256' -or
+    $commonText -notmatch '\[IO\.FileShare\]::ReadWrite -bor \[IO\.FileShare\]::Delete' -or
+    $commonText -notmatch 'GetBaseException\(\)') {
+    throw 'The hash fallback must share like the real Get-FileHash and retry only a held file'
+}
+if ($stage -notmatch 'selected_inf_match\.matches -ne \$resumeFromSelectedInf' -or
+    $stage -notmatch 'Host gate staging wrote the wrong gate') {
+    throw 'The staging final receipt must agree with the reference pass: a clean bundle stages the gate at zero'
+}
 # A host start that is refused must leave its registry snapshot behind: the
 # snapshot is the evidence, the refusal only stops the trial (trial 9 lost
 # its Code 10 evidence to a throw ordered ahead of the snapshot).
