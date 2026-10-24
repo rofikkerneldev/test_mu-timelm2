@@ -1,17 +1,35 @@
 # Shared read-only validation. Importing this file does not change the machine.
+function Get-SharedSha256([Parameter(Mandatory=$true)][string]$LiteralPath, [string]$Algorithm = 'SHA256') {
+    # The same sharing flags the real Get-FileHash uses (ReadWrite + Delete):
+    # a phone hive or an ESP artifact can still be held for a moment when a
+    # scanner noticed the write, and a reader that only shares read would
+    # break the trial there. Retry briefly instead of failing the stage.
+    for ($attempt = 1; $attempt -le 8; $attempt++) {
+        try {
+            $share = [IO.FileShare]([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+            $stream = New-Object IO.FileStream($LiteralPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,$share)
+            try {
+                $hash = [Security.Cryptography.HashAlgorithm]::Create($Algorithm)
+                try {
+                    return [pscustomobject]@{Path=$LiteralPath;Algorithm=$Algorithm;
+                        Hash=([BitConverter]::ToString($hash.ComputeHash($stream))).Replace('-','')}
+                } finally {$hash.Dispose()}
+            } finally {$stream.Dispose()}
+        } catch {
+            # MethodInvocationException-style wrapping hides the sharing
+            # violation; retry only when the base exception really is one.
+            if ($attempt -eq 8) {throw}
+            if (!($_.Exception.GetBaseException() -is [System.IO.IOException])) {throw}
+            Start-Sleep -Milliseconds 250
+        }
+    }
+}
 if (-not (Get-Command Get-FileHash -ErrorAction SilentlyContinue)) {
     # Some trimmed Windows PowerShell installs ship the utility module without
     # Get-FileHash. Compute SHA-256 directly so the trial never depends on it.
     function Get-FileHash {
         param([Parameter(Mandatory=$true)][string]$LiteralPath, [string]$Algorithm = 'SHA256')
-        $stream = [IO.File]::OpenRead($LiteralPath)
-        try {
-            $hash = [Security.Cryptography.HashAlgorithm]::Create($Algorithm)
-            try {
-                return [pscustomobject]@{Path=$LiteralPath;Algorithm=$Algorithm;
-                    Hash=([BitConverter]::ToString($hash.ComputeHash($stream))).Replace('-','')}
-            } finally {$hash.Dispose()}
-        } finally {$stream.Dispose()}
+        return Get-SharedSha256 -LiteralPath $LiteralPath -Algorithm $Algorithm
     }
 }
 function Get-TouchGpioManifest([string]$Root) {

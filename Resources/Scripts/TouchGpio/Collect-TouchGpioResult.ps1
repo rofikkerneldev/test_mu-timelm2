@@ -14,11 +14,7 @@ $expectedWindowsHash = 'fae47d78487e781aa06466775cb461adeb7ff7f887fe2c15295bb2eb
 $expectedEspHash = $null
 $copied = New-Object 'System.Collections.Generic.List[object]'
 function Get-TouchGpioHash([string]$Path) {
-    $stream = [IO.File]::OpenRead($Path)
-    try {
-        $sha = [Security.Cryptography.SHA256]::Create()
-        try {return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-','')} finally {$sha.Dispose()}
-    } finally {$stream.Dispose()}
+    return (Get-SharedSha256 -LiteralPath $Path).Hash
 }
 function Copy-Verified([string]$Source, [string]$Destination) {
     $null = [IO.Directory]::CreateDirectory((Split-Path -Parent $Destination))
