@@ -104,8 +104,10 @@ try {
         }
         $classRoot = $mountKey + '\ControlSet00' + $current + '\Control\Class'
         if (Test-Path -LiteralPath $classRoot) {
-            foreach ($classDir in @(Get-ChildItem -LiteralPath $classRoot -Directory -ErrorAction SilentlyContinue)) {
-                foreach ($node in @(Get-ChildItem -LiteralPath $classDir.PSPath -Directory -ErrorAction SilentlyContinue)) {
+            # The registry provider has no -Directory switch (that one is a
+            # dynamic FileSystem parameter); enumerating a hive yields keys.
+            foreach ($classDir in @(Get-ChildItem -LiteralPath $classRoot -ErrorAction SilentlyContinue)) {
+                foreach ($node in @(Get-ChildItem -LiteralPath $classDir.PSPath -ErrorAction SilentlyContinue)) {
                     $nodeProps = Get-ItemProperty -LiteralPath $node.PSPath -ErrorAction SilentlyContinue
                     if (!$nodeProps -or ($nodeProps.PSObject.Properties.Name -notcontains 'MatchingDeviceId') -or
                         $nodeProps.MatchingDeviceId -ne $device) {continue}
