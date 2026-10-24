@@ -26,7 +26,7 @@ Tidak ada loop restart atau fallback trial otomatis. Kegagalan start direkam lal
 
 ## Build dan validasi
 
-Workflow `.github/workflows/timelm-astra-touch-trial.yml` membangun launcher di Ubuntu dan provider/host/client ARM64 bertanda tangan test di Windows. Seluruh komponen harus berasal dari commit yang sama. Artefak bundle ada dalam direktori `astra-trial/`; PDB dan source manifests juga diunggah untuk analisis dump.
+Workflow `.github/workflows/timelm-touch-gpio-trial.yml` membangun launcher di Ubuntu dan provider/host/client ARM64 bertanda tangan test di Windows. Seluruh komponen harus berasal dari commit yang sama. Artefak bundle ada dalam direktori `astra-trial/`; PDB dan source manifests juga diunggah untuk analisis dump.
 
 Tes lokal/CI mencakup production C adapter dan provider dengan ASan/UBSan, electrical core, snapshot ACPI benar/rusak, exact selected vs stale node, hash SYS salah, gate null/0/1/2, attempt/backend/build/epoch salah, first-failure setelah cleanup, atomic JSON dan analyzer evidence tidak lengkap. Full signature trust/load dan operasi sentuh harus dibuktikan pada HP.
 

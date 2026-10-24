@@ -1,8 +1,8 @@
-name: Build Astra GPIO touch trial
+name: Build GPIO touch trial R13
 on:
   workflow_dispatch:
   push:
-    branches: [codex/astra-touch-gpio-r13]
+    branches: [fix/touch-gpio-r13]
 permissions:
   contents: read
 jobs:
@@ -28,7 +28,7 @@ jobs:
         run: bash Resources/Scripts/build_touch_gpio_trial.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: astra-launcher-${{ github.sha }}
+          name: touch-launcher-${{ github.sha }}
           path: |
             Build/TouchGpio/
             Build/AstraTests/
@@ -46,7 +46,7 @@ jobs:
           path: kona-source
       - uses: actions/download-artifact@v4
         with:
-          name: astra-launcher-${{ github.sha }}
+          name: touch-launcher-${{ github.sha }}
           path: launcher-artifact
       - name: Windows PowerShell behavior regressions
         shell: powershell
@@ -67,7 +67,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: timelm-astra-touch-trial-${{ github.sha }}
+          name: timelm-touch-gpio-r13-${{ github.sha }}
           path: |
             astra-trial/
             bundle-receipt.json
